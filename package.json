@@ -1,0 +1,27 @@
+{
+  "name": "aetherdex-cloud-bot",
+  "version": "1.0.0",
+  "description": "24/7 Standalone Cloud Bot Engine for AetherDex (Hyperliquid L1)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [
+    "hyperliquid",
+    "bot",
+    "trading",
+    "firebase",
+    "aetherdex"
+  ],
+  "author": "AetherDex Core Team",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "ethers": "^6.13.5",
+    "express": "^4.21.2",
+    "firebase-admin": "^13.0.1",
+    "msgpack-lite": "^0.1.26"
+  }
+}
