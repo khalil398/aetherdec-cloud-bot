@@ -42,31 +42,44 @@ const activeEngines = new Map();
 if (admin.apps.length > 0) {
   const db = admin.firestore();
 
-  console.log("📡 Listening to Firestore bot_config changes across all users...");
+  const handleConfigChange = (change, db) => {
+    const docRef = change.doc.ref;
+    const pathSegments = docRef.path.split("/");
+    // Path format: users/{uid}/bot/bot_config or users/{uid}/bot_config/config
+    const uid = pathSegments[1];
+    const config = change.doc.data();
+    if (!uid || !config) return;
 
-  // Real-time snapshot listener on bot_config across all users
-  db.collectionGroup("bot")
-    .where("__name__", "==", "bot_config")
-    .onSnapshot((snapshot) => {
-      snapshot.docChanges().forEach(async (change) => {
-        const docRef = change.doc.ref;
-        const pathSegments = docRef.path.split("/");
-        // Path format: users/{uid}/bot/bot_config
-        const uid = pathSegments[1];
-        const config = change.doc.data();
+    console.log(`🔔 Bot config update for UID [${uid}]: active=${config.active}, strategy='${config.strategy}'`);
 
-        console.log(`🔔 Bot config update for UID [${uid}]: active=${config.active}, strategy='${config.strategy}'`);
+    if (config.active) {
+      startWorker(uid, db, config);
+    } else {
+      stopWorker(uid);
+    }
+  };
 
-        if (config.active) {
-          startWorker(uid, db, config);
-        } else {
-          stopWorker(uid);
-        }
-      });
-    }, (error) => {
-      console.error("❌ Firestore Snapshot Error:", error.message);
+  // Primary listener on subcollection "bot" (document "bot_config")
+  db.collectionGroup("bot").onSnapshot((snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if (change.doc.id === "bot_config") {
+        handleConfigChange(change, db);
+      }
     });
+  }, (error) => {
+    console.error("❌ Firestore 'bot' CollectionGroup Error:", error.message);
+  });
+
+  // Fallback listener on subcollection "bot_config"
+  db.collectionGroup("bot_config").onSnapshot((snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      handleConfigChange(change, db);
+    });
+  }, (error) => {
+    console.error("❌ Firestore 'bot_config' CollectionGroup Error:", error.message);
+  });
 }
+
 
 async function startWorker(uid, db, config) {
   stopWorker(uid);
