@@ -146,45 +146,54 @@ async function executeBotTick(uid, db, config, botSecret) {
   const signalResult = await evaluateEmaRibbonStrategy(targetCoin, candles5m);
   const { isUptrend, isBuySignal, isSellSignal, metrics } = signalResult;
 
+  const isEmaStrategyActive = (config.strategy === "5m EMA High/Low" || config.strategy === "Trend Following" || !config.strategy);
+
   console.log(`[${uid}] 📊 5m Indicators (${targetCoin}): Price=$${currentPrice}, EMA200=${metrics.ema200?.toFixed(2)}, EMA8_low=${metrics.ema8_low?.toFixed(2)}, EMA34_high=${metrics.ema34_high?.toFixed(2)}`);
-  console.log(`[${uid}] 🚦 Signals: Uptrend=${isUptrend}, BUY=${isBuySignal}, SELL=${isSellSignal}`);
+  console.log(`[${uid}] 🚦 Signals (Mode '${config.strategy}'): Uptrend=${isUptrend}, BUY=${isBuySignal}, SELL=${isSellSignal}`);
 
   // 3. Trade Execution Logic
-  if (isBuySignal && usdcBalance > 5.0 && config.active) {
-    console.log(`[${uid}] 🚀 SPOT BUY SIGNAL TRIGGERED! Executing Spot Buy for ${targetCoin} with $${usdcBalance.toFixed(2)} USDC...`);
-    try {
-      const allocPct = (config.allocation_pct || 100) / 100.0;
-      const buyAmountUsdc = usdcBalance * allocPct;
-      const sizeToBuy = (buyAmountUsdc / currentPrice).toFixed(4);
+  if (isEmaStrategyActive) {
+    if (isBuySignal && usdcBalance > 5.0 && config.active) {
+      console.log(`[${uid}] 🚀 SPOT BUY SIGNAL TRIGGERED! Executing Spot Buy for ${targetCoin} with $${usdcBalance.toFixed(2)} USDC...`);
+      try {
+        const allocPct = (config.allocation_pct || 100) / 100.0;
+        const buyAmountUsdc = usdcBalance * allocPct;
+        const sizeToBuy = (buyAmountUsdc / currentPrice).toFixed(4);
 
-      const spotAssetIndex = targetCoin === "BTC" ? 10200 : 10000;
-      await placeAgentOrder({
-        agentPrivateKey,
-        masterAddress,
-        assetIndex: spotAssetIndex,
-        isBuy: true,
-        limitPx: (currentPrice * 1.01).toFixed(2),
-        sz: sizeToBuy
-      });
-    } catch (err) {
-      console.error(`[${uid}] Spot Buy Execution Failed:`, err.message);
+        const spotAssetIndex = targetCoin === "BTC" ? 10200 : 10000;
+        await placeAgentOrder({
+          agentPrivateKey,
+          masterAddress,
+          assetIndex: spotAssetIndex,
+          isBuy: true,
+          limitPx: (currentPrice * 1.01).toFixed(2),
+          sz: sizeToBuy
+        });
+      } catch (err) {
+        console.error(`[${uid}] Spot Buy Execution Failed:`, err.message);
+      }
+    } else if (isSellSignal && tokenBalance > 0.0001 && config.active) {
+      console.log(`[${uid}] 🔻 SPOT SELL SIGNAL TRIGGERED! Selling 100% of ${tokenBalance} ${targetCoin} back to USDC...`);
+      try {
+        const spotAssetIndex = targetCoin === "BTC" ? 10200 : 10000;
+        await placeAgentOrder({
+          agentPrivateKey,
+          masterAddress,
+          assetIndex: spotAssetIndex,
+          isBuy: false,
+          limitPx: (currentPrice * 0.99).toFixed(2),
+          sz: tokenBalance.toFixed(4)
+        });
+      } catch (err) {
+        console.error(`[${uid}] Spot Sell Execution Failed:`, err.message);
+      }
     }
-  } else if (isSellSignal && tokenBalance > 0.0001 && config.active) {
-    console.log(`[${uid}] 🔻 SPOT SELL SIGNAL TRIGGERED! Selling 100% of ${tokenBalance} ${targetCoin} back to USDC...`);
-    try {
-      const spotAssetIndex = targetCoin === "BTC" ? 10200 : 10000;
-      await placeAgentOrder({
-        agentPrivateKey,
-        masterAddress,
-        assetIndex: spotAssetIndex,
-        isBuy: false,
-        limitPx: (currentPrice * 0.99).toFixed(2),
-        sz: tokenBalance.toFixed(4)
-      });
-    } catch (err) {
-      console.error(`[${uid}] Spot Sell Execution Failed:`, err.message);
-    }
+  } else if (config.strategy === "Smart DCA / Dip Buyer") {
+    console.log(`[${uid}] 💡 Smart DCA: Monitoring 24h market dips for ${targetCoin}`);
+  } else if (config.strategy === "Grid Trading") {
+    console.log(`[${uid}] 🕸️ Grid Trading: Monitoring grid levels for ${targetCoin}`);
   }
+
 
   // 4. Write Telemetry Stats back to Firestore users/{uid}/bot/bot_status
   const statusDocRef = db.doc(`users/${uid}/bot/bot_status`);
