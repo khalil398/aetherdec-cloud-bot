@@ -52,6 +52,30 @@ async function fetchAllMids() {
 }
 
 /**
+ * Fetches OHLCV candle snapshot from Hyperliquid API.
+ */
+async function fetchCandleSnapshot(coin = "BTC", interval = "5m", count = 300) {
+  try {
+    const now = Date.now();
+    const startTime = now - (count * 5 * 60 * 1000);
+    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+      type: "candleSnapshot",
+      req: {
+        coin,
+        interval,
+        startTime,
+        endTime: now
+      }
+    });
+    return response.data || [];
+  } catch (error) {
+    console.error(`[Hyperliquid] Error fetching candleSnapshot for ${coin} (${interval}):`, error.message);
+    return [];
+  }
+}
+
+
+/**
  * Places an L1 Order signed using the delegated Agent Key.
  */
 async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isBuy, limitPx, sz, orderType = { limit: { tif: "Gtc" } }, reduceOnly = false }) {
@@ -146,5 +170,7 @@ module.exports = {
   fetchUserClearinghouseState,
   fetchSpotClearinghouseState,
   fetchAllMids,
+  fetchCandleSnapshot,
   placeAgentOrder
 };
+
