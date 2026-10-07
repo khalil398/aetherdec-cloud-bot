@@ -129,70 +129,95 @@ async function executeBotTick(uid, db, config, botSecret) {
     }, 0.0);
   }
 
-  // Check Spot Balances
+  // Map all spot balances for multi-pair tracking
+  const spotBalances = new Map();
   let usdcBalance = 0.0;
-  let tokenBalance = 0.0;
   if (spotClearinghouse && spotClearinghouse.balances) {
     spotClearinghouse.balances.forEach(b => {
-      if (b.coin === "USDC") usdcBalance = parseFloat(b.total || 0) - parseFloat(b.hold || 0);
-      if (b.coin === targetCoin) tokenBalance = parseFloat(b.total || 0) - parseFloat(b.hold || 0);
+      const avail = parseFloat(b.total || 0) - parseFloat(b.hold || 0);
+      spotBalances.set(b.coin, avail);
+      if (b.coin === "USDC") usdcBalance = avail;
     });
   }
 
   const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
-
-  // 2. Fetch 5m Candle Snapshot & Evaluate Indicators
-  const candles5m = await fetchCandleSnapshot(targetCoin, "5m", 300);
-  const signalResult = await evaluateEmaRibbonStrategy(targetCoin, candles5m);
-  const { isUptrend, isBuySignal, isSellSignal, metrics } = signalResult;
-
   const isEmaStrategyActive = (config.strategy === "5m EMA High/Low" || config.strategy === "Trend Following" || !config.strategy);
 
-  console.log(`[${uid}] 📊 5m Indicators (${targetCoin}): Price=$${currentPrice}, EMA200=${metrics.ema200?.toFixed(2)}, EMA8_low=${metrics.ema8_low?.toFixed(2)}, EMA34_high=${metrics.ema34_high?.toFixed(2)}`);
-  console.log(`[${uid}] 🚦 Signals (Mode '${config.strategy}'): Uptrend=${isUptrend}, BUY=${isBuySignal}, SELL=${isSellSignal}`);
+  // Multi-Pair Universe Scanner
+  const MULTI_PAIR_UNIVERSE = ["BTC", "ETH", "SOL", "HYPE", "PURR", "HFUN", "SUI", "PEPE", "DOGE", "AVAX", "LINK", "XRP"];
+  const scanQueue = [targetCoin, ...MULTI_PAIR_UNIVERSE.filter(c => c !== targetCoin)];
 
-  // 3. Trade Execution Logic
+
+  let lastBuySignalCoin = null;
+  let lastSellSignalCoin = null;
+  let primaryMetrics = {};
+
   if (isEmaStrategyActive) {
-    if (isBuySignal && usdcBalance > 5.0 && config.active) {
-      console.log(`[${uid}] 🚀 SPOT BUY SIGNAL TRIGGERED! Executing Spot Buy for ${targetCoin} with $${usdcBalance.toFixed(2)} USDC...`);
-      try {
-        const allocPct = (config.allocation_pct || 100) / 100.0;
-        const buyAmountUsdc = usdcBalance * allocPct;
-        const sizeToBuy = (buyAmountUsdc / currentPrice).toFixed(4);
+    for (const coin of scanQueue) {
+      const coinPrice = parseFloat(allMids[coin] || 0);
+      if (coinPrice <= 0) continue;
 
-        const spotAssetIndex = targetCoin === "BTC" ? 10200 : 10000;
-        await placeAgentOrder({
-          agentPrivateKey,
-          masterAddress,
-          assetIndex: spotAssetIndex,
-          isBuy: true,
-          limitPx: (currentPrice * 1.01).toFixed(2),
-          sz: sizeToBuy
-        });
-      } catch (err) {
-        console.error(`[${uid}] Spot Buy Execution Failed:`, err.message);
+      const candles5m = await fetchCandleSnapshot(coin, "5m", 260);
+      const signalResult = await evaluateEmaRibbonStrategy(coin, candles5m);
+      const { isUptrend, isBuySignal, isSellSignal, metrics } = signalResult;
+
+      if (coin === targetCoin) {
+        primaryMetrics = metrics;
       }
-    } else if (isSellSignal && tokenBalance > 0.0001 && config.active) {
-      console.log(`[${uid}] 🔻 SPOT SELL SIGNAL TRIGGERED! Selling 100% of ${tokenBalance} ${targetCoin} back to USDC...`);
-      try {
-        const spotAssetIndex = targetCoin === "BTC" ? 10200 : 10000;
-        await placeAgentOrder({
-          agentPrivateKey,
-          masterAddress,
-          assetIndex: spotAssetIndex,
-          isBuy: false,
-          limitPx: (currentPrice * 0.99).toFixed(2),
-          sz: tokenBalance.toFixed(4)
-        });
-      } catch (err) {
-        console.error(`[${uid}] Spot Sell Execution Failed:`, err.message);
+
+      console.log(`[${uid}] 🔍 5m Scanner (${coin}): Price=$${coinPrice}, Uptrend=${isUptrend}, BUY=${isBuySignal}, SELL=${isSellSignal}`);
+
+      const heldBalance = spotBalances.get(coin) || 0.0;
+
+      // 1. SELL Signal Check for held tokens
+      if (isSellSignal && heldBalance > 0.0001 && config.active) {
+        lastSellSignalCoin = coin;
+        console.log(`[${uid}] 🔻 MULTI-PAIR SCANNER: SELL SIGNAL on ${coin}! Selling 100% of ${heldBalance} ${coin}...`);
+        try {
+          const assetIdx = coin === "BTC" ? 10200 : coin === "ETH" ? 10201 : coin === "SOL" ? 10202 : coin === "HYPE" ? 10150 : 10000;
+          await placeAgentOrder({
+            agentPrivateKey,
+            masterAddress,
+            assetIndex: assetIdx,
+            isBuy: false,
+            limitPx: (coinPrice * 0.99).toFixed(2),
+            sz: heldBalance.toFixed(4)
+          });
+        } catch (err) {
+          console.error(`[${uid}] Spot Sell Execution Failed for ${coin}:`, err.message);
+        }
+      }
+      // 2. BUY Signal Check if USDC available
+      else if (isBuySignal && usdcBalance > 5.0 && heldBalance <= 0.0001 && config.active) {
+        lastBuySignalCoin = coin;
+        console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: BUY SIGNAL on ${coin}! Executing Spot Buy with $${usdcBalance.toFixed(2)} USDC...`);
+        try {
+          const allocPct = (config.allocation_pct || 100) / 100.0;
+          const buyAmountUsdc = usdcBalance * allocPct;
+          const sizeToBuy = (buyAmountUsdc / coinPrice).toFixed(4);
+
+          const assetIdx = coin === "BTC" ? 10200 : coin === "ETH" ? 10201 : coin === "SOL" ? 10202 : coin === "HYPE" ? 10150 : 10000;
+          await placeAgentOrder({
+            agentPrivateKey,
+            masterAddress,
+            assetIndex: assetIdx,
+            isBuy: true,
+            limitPx: (coinPrice * 1.01).toFixed(2),
+            sz: sizeToBuy
+          });
+          // Avoid over-buying multiple coins in a single tick
+          usdcBalance -= buyAmountUsdc;
+        } catch (err) {
+          console.error(`[${uid}] Spot Buy Execution Failed for ${coin}:`, err.message);
+        }
       }
     }
   } else if (config.strategy === "Smart DCA / Dip Buyer") {
-    console.log(`[${uid}] 💡 Smart DCA: Monitoring 24h market dips for ${targetCoin}`);
+    console.log(`[${uid}] 💡 Smart DCA: Monitoring 24h market dips across multi-pair universe`);
   } else if (config.strategy === "Grid Trading") {
-    console.log(`[${uid}] 🕸️ Grid Trading: Monitoring grid levels for ${targetCoin}`);
+    console.log(`[${uid}] 🕸️ Grid Trading: Monitoring grid levels across multi-pair universe`);
   }
+
 
 
   // 4. Write Telemetry Stats back to Firestore users/{uid}/bot/bot_status
