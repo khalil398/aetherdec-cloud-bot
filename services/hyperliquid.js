@@ -52,6 +52,62 @@ async function fetchAllMids() {
 }
 
 /**
+ * Fetches all dynamic spot market metadata from Hyperliquid API.
+ */
+async function fetchSpotMetaAndCtxs() {
+  try {
+    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+      type: "spotMetaAndAssetCtxs"
+    });
+    const rootData = response.data;
+    const spotMarkets = [];
+
+    if (Array.isArray(rootData) && rootData.length >= 2) {
+      const meta = rootData[0];
+      const ctxs = rootData[1];
+      const tokens = meta.tokens || [];
+      const universe = meta.universe || [];
+
+      const tokenMap = new Map();
+      tokens.forEach((tok, i) => {
+        tokenMap.set(tok.index !== undefined ? tok.index : i, tok.name);
+      });
+
+      universe.forEach((u, i) => {
+        const idx = u.index !== undefined ? u.index : i;
+        const tokenPair = u.tokens || [];
+        const t0Name = tokenMap.get(tokenPair[0]) || "";
+        const t1Name = tokenMap.get(tokenPair[1]) || "USDC";
+
+        const rawName = u.name || "";
+        const displayName = (rawName.startsWith("@") || !rawName)
+          ? (t0Name ? `${t0Name}/${t1Name}` : `SPOT-${idx}`)
+          : rawName;
+
+        const baseCoin = t0Name || displayName.split("/")[0];
+
+        if (baseCoin && !baseCoin.startsWith("@") && !baseCoin.startsWith("SPOT-")) {
+          const markPx = ctxs[idx] ? parseFloat(ctxs[idx].markPx || 0) : 0;
+          spotMarkets.push({
+            universeIndex: idx,
+            l1AssetIndex: 10000 + idx,
+            displayName,
+            coin: baseCoin,
+            quote: t1Name,
+            markPrice: markPx
+          });
+        }
+      });
+    }
+    return spotMarkets;
+  } catch (error) {
+    console.error("[Hyperliquid] Error fetching spotMetaAndAssetCtxs:", error.message);
+    return [];
+  }
+}
+
+
+/**
  * Fetches OHLCV candle snapshot from Hyperliquid API.
  */
 async function fetchCandleSnapshot(coin = "BTC", interval = "5m", count = 300) {
@@ -170,7 +226,9 @@ module.exports = {
   fetchUserClearinghouseState,
   fetchSpotClearinghouseState,
   fetchAllMids,
+  fetchSpotMetaAndCtxs,
   fetchCandleSnapshot,
   placeAgentOrder
 };
+
 
