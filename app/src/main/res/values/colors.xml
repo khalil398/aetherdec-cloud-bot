@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand & Semantic -->
+    <color name="brand_green">#00C087</color>
+    <color name="brand_green_dim">#1A00C087</color>
+    <color name="brand_red">#FF3B69</color>
+    <color name="brand_red_dim">#1AFF3B69</color>
+
+    <!-- Surfaces (Dark Trading Theme) -->
+    <color name="bg_root">#0B0E14</color>
+    <color name="bg_panel">#131722</color>
+    <color name="bg_panel_alt">#1A1F2E</color>
+    <color name="bg_elevated">#1E2330</color>
+    <color name="bg_input">#0F1320</color>
+    <color name="divider">#2A2F3D</color>
+
+    <!-- Text -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#9CA3AF</color>
+    <color name="text_tertiary">#6B7280</color>
+    <color name="text_disabled">#4B5563</color>
+
+    <!-- Neutrals -->
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="transparent">#00000000</color>
+</resources>

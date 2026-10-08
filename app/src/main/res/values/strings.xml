@@ -1,0 +1,101 @@
+<resources>
+    <string name="app_name">AetherDex</string>
+
+    <!-- Header -->
+    <string name="brand_name">AetherDex</string>
+    <string name="connect_wallet">Connect Wallet</string>
+    <string name="wallet_connected">Wallet Connected</string>
+
+    <!-- Ticker -->
+    <string name="pair_btc_usdc">BTC / USDC</string>
+    <string name="price_placeholder">$67,482.30</string>
+    <string name="change_24h">+2.41%</string>
+    <string name="high_24h">24h High</string>
+    <string name="low_24h">24h Low</string>
+    <string name="vol_24h">24h Vol</string>
+
+    <!-- Chart -->
+    <string name="chart_title">BTC/USDC · 1H</string>
+    <string name="interval_1h">1H</string>
+    <string name="interval_4h">4H</string>
+    <string name="interval_1d">1D</string>
+    <string name="interval_1w">1W</string>
+    <string name="interval_1m">1M</string>
+    <string name="interval_5m">5M</string>
+    <string name="interval_15m">15M</string>
+    <string name="chart_loading">Chart loading…</string>
+
+    <!-- Order Form -->
+    <string name="order_title">Order</string>
+    <string name="side_long">Long</string>
+    <string name="side_short">Short</string>
+    <string name="type_market">Market</string>
+    <string name="type_limit">Limit</string>
+    <string name="leverage_label">Leverage</string>
+    <string name="leverage_value">10x</string>
+    <string name="amount_label">Amount (USDC)</string>
+    <string name="amount_hint">0.00</string>
+    <string name="tp_label">Take Profit</string>
+    <string name="sl_label">Stop Loss</string>
+    <string name="open_position">Open Position</string>
+
+    <!-- Positions -->
+    <string name="positions_title">Active Positions</string>
+    <string name="pos_pnl">PnL</string>
+    <string name="pos_size">Size</string>
+    <string name="pos_entry">Entry</string>
+    <string name="pos_close">Close</string>
+
+    <!-- Tax Hub -->
+    <string name="tax_title">Tax &amp; Compliance Hub</string>
+    <string name="tax_subtitle">Export your trading activity for reporting.</string>
+    <string name="tax_csv">Export CSV</string>
+    <string name="tax_pdf">German Tax PDF</string>
+
+    <!-- Bottom Nav -->
+    <string name="nav_trade">Trade</string>
+    <string name="nav_chart">Chart</string>
+    <string name="nav_bot_chart">Bot Chart</string>
+    <string name="nav_wallet">Wallet</string>
+    <string name="nav_positions">Positions</string>
+    <string name="nav_history">History</string>
+    <string name="nav_tax">Tax</string>
+
+    <!-- A11y / Generic -->
+    <string name="cd_chart">Candlestick chart placeholder</string>
+    <string name="cd_close_position">Close position</string>
+    <string name="msg_wallet_connected">Wallet connected (mock)</string>
+    <string name="msg_position_opened">Position opened (mock)</string>
+    <string name="msg_position_closed">Position closed (mock)</string>
+    <string name="msg_export_csv">CSV export started (mock)</string>
+    <string name="msg_export_pdf">German Tax PDF export started (mock)</string>
+
+    <!-- Wallet picker bottom sheet -->
+    <string name="wallet_sheet_title">Connect a wallet</string>
+    <string name="wallet_sheet_subtitle">Choose how you want to connect. You\'ll be asked to approve the connection in the wallet app.</string>
+    <string name="wallet_metamask">MetaMask</string>
+    <string name="wallet_trust">Trust Wallet</string>
+    <string name="wallet_installed">Installed</string>
+    <string name="wallet_not_installed">Not installed</string>
+    <string name="wallet_open_play_store">Open Play Store</string>
+    <string name="wallet_awaiting_approval">Awaiting wallet approval…</string>
+    <string name="wallet_missing_project_id">Missing Reown Project ID. Create one at cloud.reown.com, paste it into WalletConnectionManager.WC_PROJECT_ID, then rebuild.</string>
+    <string name="wallet_relay_error">WalletConnect relay failed. Check internet and WC_PROJECT_ID.</string>
+    <string name="wallet_connected_demo">Connected (demo): %1$s</string>
+    <string name="wallet_cancelled">Connection cancelled</string>
+    <string name="wallet_already_connected">Already connected: %1$s</string>
+    <string name="wallet_account_title">Connected wallet</string>
+    <string name="wallet_disconnect">Disconnect</string>
+    <string name="wallet_cancel">Cancel</string>
+    <string name="cd_wallet_icon">Wallet icon</string>
+    <string name="cd_fullscreen_toggle">Toggle fullscreen chart</string>
+
+    <!-- Settings -->
+    <string name="nav_settings">Settings</string>
+    <string name="settings_title">Settings &amp; Backup</string>
+    <string name="settings_subtitle">Save or restore your TradingView layouts and app data.</string>
+    <string name="settings_export_title">Export Data (Backup)</string>
+    <string name="settings_export_desc">Save all TradingView charts, login session, drawings, and app data to a ZIP file.</string>
+    <string name="settings_import_title">Import Data (Restore)</string>
+    <string name="settings_import_desc">Restore TradingView layout and app settings from a previously saved ZIP file.</string>
+</resources>
