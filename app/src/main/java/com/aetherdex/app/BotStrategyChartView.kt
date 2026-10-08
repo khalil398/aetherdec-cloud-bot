@@ -59,6 +59,12 @@ class BotStrategyChartView @JvmOverloads constructor(
     private var touchY = 0f
     private var selectedCandleIndex = -1
 
+    // Layout Margins
+    private val paddingRightPx = 140f
+    private val paddingTopPx = 70f
+    private val paddingBottomPx = 60f
+    private val paddingLeftPx = 10f
+
     // Colors
     private val colorBg = Color.parseColor("#0B0E14")
     private val colorCardBg = Color.parseColor("#151921")
@@ -73,7 +79,7 @@ class BotStrategyChartView @JvmOverloads constructor(
     private val colorEma233 = Color.parseColor("#FF9500")
     private val colorTextSec = Color.parseColor("#8A96A8")
 
-    // Pre-allocated Paints to eliminate GC pressure
+    // Pre-allocated Paints
     private val paintGrid = Paint().apply {
         color = colorGrid
         strokeWidth = 1f
@@ -200,12 +206,9 @@ class BotStrategyChartView @JvmOverloads constructor(
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 val scaleFactor = detector.scaleFactor
                 if (scaleFactor > 0f) {
-                    // Zoom X: adjust visible candle count
                     val newCount = (visibleCandleCount / scaleFactor).toInt()
-                    visibleCandleCount = newCount.coerceIn(15, 300)
-
-                    // Zoom Y: adjust price scaling
-                    priceZoomFactor = (priceZoomFactor * scaleFactor).coerceIn(0.4f, 8.0f)
+                    visibleCandleCount = newCount.coerceIn(15, 400)
+                    priceZoomFactor = (priceZoomFactor * scaleFactor).coerceIn(0.2f, 15.0f)
                     invalidate()
                 }
                 return true
@@ -222,23 +225,53 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val n = candles.size
                 if (n == 0) return false
 
-                // Horizontal drag: scroll across candles
-                val chartWidth = width.toFloat() - paddingRight - paddingLeft
+                val startX = e1?.x ?: e2.x
+                val startY = e1?.y ?: e2.y
+
+                val rightAxisLeft = width.toFloat() - paddingRightPx
+                val bottomAxisTop = height.toFloat() - paddingBottomPx
+
+                // 1. Right Price Scale (Y-Axis) Dragging
+                if (startX >= rightAxisLeft) {
+                    // Drag UP (distanceY > 0): Stretch vertical height of candlesticks (zoom in vertically)
+                    // Drag DOWN (distanceY < 0): Compress vertical height of candlesticks (zoom out vertically)
+                    val scaleDelta = 1.0f + (distanceY / 220f)
+                    priceZoomFactor = (priceZoomFactor * scaleDelta).coerceIn(0.2f, 15.0f)
+                    invalidate()
+                    return true
+                }
+
+                // 2. Bottom Time Scale (X-Axis) Dragging
+                if (startY >= bottomAxisTop) {
+                    // Drag LEFT (distanceX > 0): Zoom in horizontally (fewer visible candles)
+                    // Drag RIGHT (distanceX < 0): Zoom out horizontally (more visible candles)
+                    val candleDelta = (distanceX / 12f).toInt()
+                    if (candleDelta != 0) {
+                        visibleCandleCount = (visibleCandleCount - candleDelta).coerceIn(15, 400)
+                        invalidate()
+                    }
+                    return true
+                }
+
+                // 3. Main Chart Canvas Dragging
+                // Horizontal Drag: Drag RIGHT moves chart right to reveal past candles (scrollOffsetIndex increases)
+                // Drag LEFT moves chart left to pull newer candles (scrollOffsetIndex decreases)
+                val chartWidth = rightAxisLeft - paddingLeftPx
                 val candleWidth = chartWidth / visibleCandleCount
                 val deltaCandles = (distanceX / candleWidth).toInt()
 
                 if (deltaCandles != 0) {
-                    scrollOffsetIndex = (scrollOffsetIndex + deltaCandles).coerceIn(0, max(0, n - visibleCandleCount))
+                    val maxScroll = max(0, n - visibleCandleCount)
+                    scrollOffsetIndex = (scrollOffsetIndex + deltaCandles).coerceIn(0, maxScroll)
                 }
 
-                // Vertical price drag
+                // Vertical Price Pan
                 priceCenterOffset += distanceY * 0.05f
                 invalidate()
                 return true
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                // Double tap reset zoom, scroll, and price offset
                 resetView()
                 return true
             }
@@ -308,26 +341,28 @@ class BotStrategyChartView @JvmOverloads constructor(
 
         signalSeries = IntArray(n)
         for (i in 1 until n) {
-            val isTrendUp = (ema8HighSeries[i] > ema200Series[i] && ema8LowSeries[i] > ema200Series[i] &&
-                             ema8HighSeries[i] > ema233Series[i] && ema8LowSeries[i] > ema233Series[i] &&
-                             ema34HighSeries[i] > ema200Series[i] && ema34LowSeries[i] > ema200Series[i])
+            val c = candles[i]
+            val prevE8Low = ema8LowSeries[i - 1]
+            val prevE34High = ema34HighSeries[i - 1]
+            val currE8Low = ema8LowSeries[i]
+            val currE34High = ema34HighSeries[i]
 
-            val prevEma8Low = ema8LowSeries[i - 1]
-            val prevEma34High = ema34HighSeries[i - 1]
-            val currEma8Low = ema8LowSeries[i]
-            val currEma34High = ema34HighSeries[i]
+            val prevE8High = ema8HighSeries[i - 1]
+            val prevE34Low = ema34LowSeries[i - 1]
+            val currE8High = ema8HighSeries[i]
+            val currE34Low = ema34LowSeries[i]
 
-            val prevEma8High = ema8HighSeries[i - 1]
-            val prevEma34Low = ema34LowSeries[i - 1]
-            val currEma8High = ema8HighSeries[i]
-            val currEma34Low = ema34LowSeries[i]
+            // Trend filter: candle price or EMA 8 channel is above EMA 200 & EMA 233
+            val minTrendEma = min(ema200Series[i], ema233Series[i])
+            val isAboveTrend = c.close >= minTrendEma || currE8Low >= minTrendEma || currE8High >= minTrendEma
 
-            // BUY Golden Cross
-            if (isTrendUp && prevEma8Low <= prevEma34High && currEma8Low > currEma34High) {
+            // Golden Cross (BUY) Trigger Condition
+            val isGoldenCross = (prevE8Low <= prevE34High || prevE8High <= prevE34Low) && (currE8Low > currE34High || currE8High > currE34Low)
+            if (isGoldenCross && isAboveTrend) {
                 signalSeries[i] = 1
             }
-            // SELL Death Cross
-            else if (prevEma8High >= prevEma34Low && currEma8High < currEma34Low) {
+            // Death Cross (SELL) Trigger Condition
+            else if ((prevE8High >= prevE34Low || prevE8Low >= prevE34High) && (currE8High < currE34Low || currE8Low < currE34Low)) {
                 signalSeries[i] = -1
             }
         }
@@ -362,15 +397,10 @@ class BotStrategyChartView @JvmOverloads constructor(
 
         val totalCandles = candles.size
         if (totalCandles == 0) {
-            val emptyMsg = "Fetching 5m Bot Strategy Candles..."
+            val emptyMsg = "Fetching 30m Bot Strategy Candles..."
             canvas.drawText(emptyMsg, width / 4f, height / 2f, paintTextSec)
             return
         }
-
-        val paddingRightPx = 140f
-        val paddingTopPx = 70f
-        val paddingBottomPx = 60f
-        val paddingLeftPx = 10f
 
         val chartWidth = width.toFloat() - paddingLeftPx - paddingRightPx
         val chartHeight = height.toFloat() - paddingTopPx - paddingBottomPx
@@ -406,8 +436,14 @@ class BotStrategyChartView @JvmOverloads constructor(
             maxPrice *= 1.01
         }
 
-        val priceRange = (maxPrice - minPrice) / priceZoomFactor
-        val midPrice = (maxPrice + minPrice) / 2.0 + priceCenterOffset
+        // Add 4% vertical auto-fit padding so candles are perfectly framed
+        val rawSpan = maxPrice - minPrice
+        val paddingSpan = rawSpan * 0.04
+        val fittedMinPrice = minPrice - paddingSpan
+        val fittedMaxPrice = maxPrice + paddingSpan
+
+        val priceRange = (fittedMaxPrice - fittedMinPrice) / priceZoomFactor
+        val midPrice = (fittedMaxPrice + fittedMinPrice) / 2.0 + priceCenterOffset
         val currentMinPrice = midPrice - (priceRange / 2.0)
         val currentMaxPrice = midPrice + (priceRange / 2.0)
 
@@ -559,17 +595,17 @@ class BotStrategyChartView @JvmOverloads constructor(
             if (sig == 1) { // BUY Signal
                 val badgeY = yLow + 24f
                 canvas.drawLine(cx, yLow, cx, badgeY, paintWickBull)
-                val rect = RectF(cx - 36f, badgeY, cx + 36f, badgeY + 28f)
+                val rect = RectF(cx - 38f, badgeY, cx + 38f, badgeY + 28f)
                 canvas.drawRoundRect(rect, 8f, 8f, paintBadgeBuy)
                 val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.BLACK }
-                canvas.drawText("▲ BUY", cx - 26f, badgeY + 20f, paintSignalText)
+                canvas.drawText("▲ BUY", cx - 28f, badgeY + 20f, paintSignalText)
             } else if (sig == -1) { // SELL Signal
                 val badgeY = yHigh - 32f
                 canvas.drawLine(cx, yHigh, cx, badgeY + 28f, paintWickBear)
-                val rect = RectF(cx - 38f, badgeY, cx + 38f, badgeY + 28f)
+                val rect = RectF(cx - 40f, badgeY, cx + 40f, badgeY + 28f)
                 canvas.drawRoundRect(rect, 8f, 8f, paintBadgeSell)
                 val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.WHITE }
-                canvas.drawText("▼ SELL", cx - 28f, badgeY + 20f, paintSignalText)
+                canvas.drawText("▼ SELL", cx - 30f, badgeY + 20f, paintSignalText)
             }
         }
 
@@ -610,14 +646,14 @@ class BotStrategyChartView @JvmOverloads constructor(
 
             if (hoverIndex in candles.indices) {
                 val hc = candles[hoverIndex]
-                val sdf = SimpleDateFormat("HH:mm (5m)", Locale.US)
-                val timeStr = if (hc.timestamp > 0) sdf.format(Date(hc.timestamp)) else "5m Candle"
+                val sdf = SimpleDateFormat("MM-dd HH:mm (30m)", Locale.US)
+                val timeStr = if (hc.timestamp > 0) sdf.format(Date(hc.timestamp)) else "30m Candle"
 
                 val hoverPrice = currentMaxPrice - ((clampedY - paddingTopPx) / chartHeight) * (currentMaxPrice - currentMinPrice)
                 val priceHoverStr = String.format(Locale.US, "%.2f", hoverPrice)
 
                 // Render Hover Callout Box
-                val boxWidth = 320f
+                val boxWidth = 340f
                 val boxHeight = 110f
                 val boxX = (clampedX + 20f).coerceAtMost(width.toFloat() - boxWidth - 10f)
                 val boxY = (clampedY - boxHeight - 20f).coerceAtLeast(paddingTopPx + 10f)

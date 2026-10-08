@@ -117,7 +117,7 @@ class BotStrategyChartFragment : Fragment() {
         }
 
         val tvTitleBadge = TextView(context).apply {
-            text = "🤖 BOT 5M STRATEGY"
+            text = "🤖 BOT 30M STRATEGY"
             textSize = 12f
             setTypeface(null, Typeface.BOLD)
             setTextColor(green)
@@ -158,7 +158,7 @@ class BotStrategyChartFragment : Fragment() {
                 marginEnd = dp(6)
             }
             setOnClickListener {
-                fetch5mCandleHistory()
+                fetch30mCandleHistory()
                 connectBinanceKlineWebSocket(currentPair)
             }
         }
@@ -210,7 +210,7 @@ class BotStrategyChartFragment : Fragment() {
                     val selected = tradingPairs[position]
                     if (selected != currentPair) {
                         currentPair = selected
-                        fetch5mCandleHistory()
+                        fetch30mCandleHistory()
                         connectBinanceKlineWebSocket(currentPair)
                     }
                 }
@@ -257,7 +257,7 @@ class BotStrategyChartFragment : Fragment() {
         }
         rootLayout.addView(botChartView)
 
-        fetch5mCandleHistory()
+        fetch30mCandleHistory()
         connectBinanceKlineWebSocket(currentPair)
 
         return rootLayout
@@ -281,11 +281,11 @@ class BotStrategyChartFragment : Fragment() {
         super.onDestroyView()
     }
 
-    private fun fetch5mCandleHistory() {
+    private fun fetch30mCandleHistory() {
         progressBar.visibility = View.VISIBLE
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val urlStr = "https://api.binance.com/api/v3/klines?symbol=$currentPair&interval=5m&limit=300"
+                val urlStr = "https://api.binance.com/api/v3/klines?symbol=$currentPair&interval=30m&limit=300"
                 val url = URL(urlStr)
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "GET"
@@ -331,7 +331,7 @@ class BotStrategyChartFragment : Fragment() {
     private fun connectBinanceKlineWebSocket(symbol: String) {
         disconnectWebSocket()
         val streamSymbol = symbol.lowercase(Locale.US)
-        val url = "wss://stream.binance.com:9443/ws/${streamSymbol}@kline_5m"
+        val url = "wss://stream.binance.com:9443/ws/${streamSymbol}@kline_30m"
 
         val request = Request.Builder().url(url).build()
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
