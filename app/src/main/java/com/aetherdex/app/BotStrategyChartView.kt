@@ -53,7 +53,7 @@ class BotStrategyChartView @JvmOverloads constructor(
     private var signalSeries: IntArray = IntArray(0)
 
     // View State & Touch Control Parameters
-    private var visibleCandleCount = 50
+    private var visibleCandleCountFloat: Float = 50f
     private var scrollOffsetFloat = 0f
     private var priceZoomFactor = 1.0f
     private var priceCenterOffset = 0.0f
@@ -215,10 +215,11 @@ class BotStrategyChartView @JvmOverloads constructor(
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 val scaleFactor = detector.scaleFactor
                 if (scaleFactor > 0f) {
-                    // Zoom In (ScaleFactor > 1.0): Decrease visible candles -> bigger candles
-                    // Zoom Out (ScaleFactor < 1.0): Increase visible candles -> smaller candles
-                    val newCount = (visibleCandleCount / scaleFactor).toInt()
-                    visibleCandleCount = newCount.coerceIn(20, 250)
+                    // Direct Candle-Width scaling without Canvas matrix transform:
+                    // Pinch In (scaleFactor < 1.0): Increase visibleCandleCountFloat -> decrease candleWidth (more candles on screen)
+                    // Pinch Out (scaleFactor > 1.0): Decrease visibleCandleCountFloat -> increase candleWidth (fewer, bigger candles)
+                    val newCount = visibleCandleCountFloat / scaleFactor
+                    visibleCandleCountFloat = newCount.coerceIn(12f, 300f)
 
                     // Vertical Price Zooming with TradingView boundaries
                     priceZoomFactor = (priceZoomFactor * scaleFactor).coerceIn(0.4f, 6.0f)
@@ -259,20 +260,20 @@ class BotStrategyChartView @JvmOverloads constructor(
                 // 2. Bottom Time Scale (X-Axis) Dragging
                 if (startY >= bottomAxisTop) {
                     val candleDelta = distanceX / 10f
-                    visibleCandleCount = (visibleCandleCount - candleDelta.toInt()).coerceIn(20, 250)
+                    visibleCandleCountFloat = (visibleCandleCountFloat - candleDelta).coerceIn(12f, 300f)
                     invalidate()
                     return true
                 }
 
                 // 3. Main Chart Canvas Dragging (Multi-directional X and Y free panning)
-                val candleWidth = chartWidth / visibleCandleCount
+                val candleWidth = max(3f, chartWidth / visibleCandleCountFloat)
 
                 if (candleWidth > 0f) {
                     // Drag RIGHT (distanceX < 0): finger moves right -> scrollOffsetFloat INCREASES (older historical candles)
                     // Drag LEFT (distanceX > 0): finger moves left -> scrollOffsetFloat DECREASES (recent candles)
                     val deltaOffset = -distanceX / candleWidth
                     val minScroll = -6f // Right-margin padding space (6 empty candles to right of latest)
-                    val maxScroll = max(0f, (n - 15).toFloat())
+                    val maxScroll = max(0f, (n - 12).toFloat())
                     scrollOffsetFloat = (scrollOffsetFloat + deltaOffset).coerceIn(minScroll, maxScroll)
                 }
 
@@ -336,11 +337,11 @@ class BotStrategyChartView @JvmOverloads constructor(
             lastFlingX = currX
 
             val chartWidth = width.toFloat() - paddingLeftPx - paddingRightPx
-            val candleWidth = chartWidth / visibleCandleCount
+            val candleWidth = max(3f, chartWidth / visibleCandleCountFloat)
             if (candleWidth > 0f) {
                 val deltaOffset = dx / candleWidth
                 val minScroll = -6f
-                val maxScroll = max(0f, (candles.size - 15).toFloat())
+                val maxScroll = max(0f, (candles.size - 12).toFloat())
                 scrollOffsetFloat = (scrollOffsetFloat + deltaOffset).coerceIn(minScroll, maxScroll)
             }
             postInvalidateOnAnimation()
@@ -349,7 +350,7 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     fun resetView() {
         scroller.forceFinished(true)
-        visibleCandleCount = 50
+        visibleCandleCountFloat = 50f
         scrollOffsetFloat = 0f
         priceZoomFactor = 1.0f
         priceCenterOffset = 0.0f
@@ -475,7 +476,7 @@ class BotStrategyChartView @JvmOverloads constructor(
 
         // Compute visible range with right-margin float support
         val floatEndIndex = (totalCandles - 1).toFloat() - scrollOffsetFloat
-        val floatStartIndex = floatEndIndex - visibleCandleCount + 1
+        val floatStartIndex = floatEndIndex - visibleCandleCountFloat + 1f
 
         val startIndex = max(0, floatStartIndex.toInt())
         val endIndex = min(totalCandles - 1, floatEndIndex.toInt())
@@ -516,7 +517,7 @@ class BotStrategyChartView @JvmOverloads constructor(
         val currentMinPrice = midPrice - (priceRange / 2.0)
         val currentMaxPrice = midPrice + (priceRange / 2.0)
 
-        val candleWidth = chartWidth / visibleCandleCount
+        val candleWidth = max(3f, chartWidth / visibleCandleCountFloat)
         val getX = { index: Int -> paddingLeftPx + (index - floatStartIndex) * candleWidth + candleWidth / 2f }
         val getY = { price: Double ->
             val ratio = (price - currentMinPrice) / (currentMaxPrice - currentMinPrice)
