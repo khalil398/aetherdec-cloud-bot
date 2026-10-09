@@ -57,6 +57,11 @@ class BotStrategyChartView @JvmOverloads constructor(
     private var scrollOffsetFloat = 0f
     private var priceZoomFactor = 1.0f
     private var priceCenterOffset = 0.0f
+    private var lastPricePerPixel = 0f
+
+    // Touch gesture flags
+    private var isPinching = false
+    private var skipScrollAfterPinch = false
 
     // Crosshair state
     private var isCrosshairActive = false
@@ -212,20 +217,53 @@ class BotStrategyChartView @JvmOverloads constructor(
         setLayerType(LAYER_TYPE_HARDWARE, null)
 
         scaleGestureDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                isPinching = true
+                skipScrollAfterPinch = true
+                scroller.forceFinished(true)
+                return true
+            }
+
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 val scaleFactor = detector.scaleFactor
-                if (scaleFactor > 0f) {
-                    // Direct Candle-Width scaling without Canvas matrix transform:
-                    // Pinch In (scaleFactor < 1.0): Increase visibleCandleCountFloat -> decrease candleWidth (more candles on screen)
-                    // Pinch Out (scaleFactor > 1.0): Decrease visibleCandleCountFloat -> increase candleWidth (fewer, bigger candles)
-                    val newCount = visibleCandleCountFloat / scaleFactor
-                    visibleCandleCountFloat = newCount.coerceIn(12f, 300f)
+                if (scaleFactor > 0f && !scaleFactor.isNaN() && !scaleFactor.isInfinite()) {
+                    val focusX = detector.focusX
+                    val rightAxisLeft = width.toFloat() - paddingRightPx
+                    val chartWidth = rightAxisLeft - paddingLeftPx
 
-                    // Vertical Price Zooming with TradingView boundaries
-                    priceZoomFactor = (priceZoomFactor * scaleFactor).coerceIn(0.4f, 6.0f)
-                    invalidate()
+                    if (chartWidth > 0f && candles.isNotEmpty()) {
+                        val totalCandles = candles.size
+                        val relativeFocusX = (focusX - paddingLeftPx).coerceIn(0f, chartWidth)
+
+                        // 1. Identify exact candle index beneath focusX before scale update
+                        val oldCandleWidth = max(3f, chartWidth / visibleCandleCountFloat)
+                        val floatEndIndexOld = (totalCandles - 1).toFloat() - scrollOffsetFloat
+                        val floatStartIndexOld = floatEndIndexOld - visibleCandleCountFloat + 1f
+                        val focusCandleIndex = floatStartIndexOld + (relativeFocusX - oldCandleWidth / 2f) / oldCandleWidth
+
+                        // 2. Smoothly update visible candle count
+                        // Pinch Out (scaleFactor > 1.0): Decrease visible count -> bigger candles
+                        // Pinch In (scaleFactor < 1.0): Increase visible count -> smaller candles
+                        val newCount = (visibleCandleCountFloat / scaleFactor).coerceIn(12f, 300f)
+
+                        // 3. Adjust scrollOffsetFloat so focusCandleIndex remains anchored at exact focusX
+                        val newCandleWidth = max(3f, chartWidth / newCount)
+                        val floatStartIndexNew = focusCandleIndex - (relativeFocusX - newCandleWidth / 2f) / newCandleWidth
+                        val floatEndIndexNew = floatStartIndexNew + newCount - 1f
+                        val newScrollOffset = (totalCandles - 1).toFloat() - floatEndIndexNew
+
+                        val minScroll = -6f
+                        val maxScroll = max(0f, (totalCandles - 12).toFloat())
+                        scrollOffsetFloat = newScrollOffset.coerceIn(minScroll, maxScroll)
+                        visibleCandleCountFloat = newCount
+                        invalidate()
+                    }
                 }
                 return true
+            }
+
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                // Pinch gesture completed
             }
         })
 
@@ -237,7 +275,7 @@ class BotStrategyChartView @JvmOverloads constructor(
                 distanceY: Float
             ): Boolean {
                 val n = candles.size
-                if (n == 0) return false
+                if (n == 0 || scaleGestureDetector.isInProgress || isPinching || skipScrollAfterPinch) return false
 
                 scroller.forceFinished(true)
 
@@ -269,8 +307,6 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val candleWidth = max(3f, chartWidth / visibleCandleCountFloat)
 
                 if (candleWidth > 0f) {
-                    // Drag RIGHT (distanceX < 0): finger moves right -> scrollOffsetFloat INCREASES (older historical candles)
-                    // Drag LEFT (distanceX > 0): finger moves left -> scrollOffsetFloat DECREASES (recent candles)
                     val deltaOffset = -distanceX / candleWidth
                     val minScroll = -6f // Right-margin padding space (6 empty candles to right of latest)
                     val maxScroll = max(0f, (n - 12).toFloat())
@@ -279,7 +315,8 @@ class BotStrategyChartView @JvmOverloads constructor(
 
                 // Smooth 1:1 Vertical Price Pan (moves price scale up/down with 1:1 pixel accuracy)
                 if (chartHeight > 0f) {
-                    priceCenterOffset += distanceY * 0.05f
+                    val priceShift = distanceY * (if (lastPricePerPixel > 0f) lastPricePerPixel else 0.05f)
+                    priceCenterOffset += priceShift
                 }
 
                 invalidate()
@@ -293,7 +330,7 @@ class BotStrategyChartView @JvmOverloads constructor(
                 velocityY: Float
             ): Boolean {
                 val n = candles.size
-                if (n == 0) return false
+                if (n == 0 || scaleGestureDetector.isInProgress || isPinching || skipScrollAfterPinch) return false
 
                 scroller.forceFinished(true)
                 lastFlingX = 0
@@ -361,19 +398,43 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        var handled = scaleGestureDetector.onTouchEvent(event)
-        handled = gestureDetector.onTouchEvent(event) || handled
+        val action = event.actionMasked
 
-        if (event.actionMasked == MotionEvent.ACTION_MOVE && isCrosshairActive) {
+        when (action) {
+            MotionEvent.ACTION_DOWN -> {
+                isPinching = false
+                skipScrollAfterPinch = false
+                scroller.forceFinished(true)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                isPinching = true
+                skipScrollAfterPinch = true
+                scroller.forceFinished(true)
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                skipScrollAfterPinch = true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                isPinching = false
+            }
+        }
+
+        var handled = scaleGestureDetector.onTouchEvent(event)
+
+        if (!scaleGestureDetector.isInProgress && !isPinching && !skipScrollAfterPinch && event.pointerCount == 1) {
+            handled = gestureDetector.onTouchEvent(event) || handled
+        }
+
+        if (action == MotionEvent.ACTION_MOVE && isCrosshairActive && event.pointerCount == 1) {
             touchX = event.x
             touchY = event.y
             invalidate()
             handled = true
         }
 
-        if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_MOVE) {
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE || action == MotionEvent.ACTION_POINTER_DOWN) {
             parent?.requestDisallowInterceptTouchEvent(true)
-        } else if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
             parent?.requestDisallowInterceptTouchEvent(false)
         }
 
@@ -516,6 +577,9 @@ class BotStrategyChartView @JvmOverloads constructor(
         val midPrice = (fittedMaxPrice + fittedMinPrice) / 2.0 + priceCenterOffset
         val currentMinPrice = midPrice - (priceRange / 2.0)
         val currentMaxPrice = midPrice + (priceRange / 2.0)
+
+        // Store price scale ratio for 1:1 vertical panning
+        lastPricePerPixel = ((currentMaxPrice - currentMinPrice) / chartHeight).toFloat()
 
         val candleWidth = max(3f, chartWidth / visibleCandleCountFloat)
         val getX = { index: Int -> paddingLeftPx + (index - floatStartIndex) * candleWidth + candleWidth / 2f }
