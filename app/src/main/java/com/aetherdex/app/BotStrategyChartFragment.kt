@@ -25,14 +25,31 @@ import java.util.Locale
 
 class BotStrategyChartFragment : Fragment() {
 
-    private val tradingPairs = listOf("BTCUSDC", "ETHUSDC", "SOLUSDC", "BNBUSDC", "XRPUSDC", "DOGEUSDC")
+    private val tradingPairs = listOf(
+        "BTCUSDC", "ETHUSDC", "SOLUSDC", "BNBUSDC", "XRPUSDC", "DOGEUSDC",
+        "AVAXUSDC", "LINKUSDC", "SUIUSDC", "NEARUSDC", "APTUSDC", "OPUSDC",
+        "ARBUSDC", "INJUSDC", "TIAUSDC", "RENDERUSDC", "FETUSDC", "PEPEUSDC", "WIFUSDC"
+    )
     private val pairDisplayNames = mapOf(
         "BTCUSDC" to "BTC / USDC",
         "ETHUSDC" to "ETH / USDC",
         "SOLUSDC" to "SOL / USDC",
         "BNBUSDC" to "BNB / USDC",
         "XRPUSDC" to "XRP / USDC",
-        "DOGEUSDC" to "DOGE / USDC"
+        "DOGEUSDC" to "DOGE / USDC",
+        "AVAXUSDC" to "AVAX / USDC",
+        "LINKUSDC" to "LINK / USDC",
+        "SUIUSDC" to "SUI / USDC",
+        "NEARUSDC" to "NEAR / USDC",
+        "APTUSDC" to "APT / USDC",
+        "OPUSDC" to "OP / USDC",
+        "ARBUSDC" to "ARB / USDC",
+        "INJUSDC" to "INJ / USDC",
+        "TIAUSDC" to "TIA / USDC",
+        "RENDERUSDC" to "RENDER / USDC",
+        "FETUSDC" to "FET / USDC",
+        "PEPEUSDC" to "PEPE / USDC",
+        "WIFUSDC" to "WIF / USDC"
     )
 
     private var currentPair = "BTCUSDC"

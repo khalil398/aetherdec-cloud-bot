@@ -31,7 +31,7 @@ function calculateEMA(values, period) {
 }
 
 /**
- * Evaluates High/Low EMA Channel Strategy on 5-minute timeframe.
+ * Evaluates High/Low EMA Channel Strategy on 30-minute timeframe.
  * 
  * Pine Script Equivalent:
  * ema200 = ta.ema(close, 200)
@@ -41,7 +41,7 @@ function calculateEMA(values, period) {
  */
 async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
   if (!candles || candles.length < 240) {
-    console.warn(`[Strategy] Insufficient 5m candles for ${coin} (${candles?.length || 0}/240 required)`);
+    console.warn(`[Strategy] Insufficient 30m candles for ${coin} (${candles?.length || 0}/240 required)`);
     return { isUptrend: false, isBuySignal: false, isSellSignal: false, metrics: {} };
   }
 
@@ -106,7 +106,7 @@ async function executeBotTick(uid, db, config, botSecret) {
     return;
   }
 
-  console.log(`[${uid}] ⚡ Running 5m Multi-Pair EMA Scanner Engine '${config.strategy}' (Allocation: ${config.allocation_pct}%)...`);
+  console.log(`[${uid}] ⚡ Running 30m Multi-Pair EMA Scanner Engine '${config.strategy}' (Allocation: ${config.allocation_pct}%)...`);
 
   // 1. Fetch Spot Clearinghouse, Dynamic Spot Meta & All Mid Prices
   const spotClearinghouse = await fetchSpotClearinghouseState(masterAddress);
@@ -164,20 +164,20 @@ async function executeBotTick(uid, db, config, botSecret) {
   const scanQueue = Array.from(new Set([targetCoin, ...availableCoins]));
 
   const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
-  const isEmaStrategyActive = (config.strategy === "5m EMA High/Low" || config.strategy === "Trend Following" || !config.strategy);
+  const isEmaStrategyActive = (config.strategy === "30m EMA High/Low" || config.strategy === "5m EMA High/Low" || config.strategy === "Trend Following" || !config.strategy);
 
   if (isEmaStrategyActive) {
-    console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Spot pairs simultaneously in parallel...`);
+    console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Spot pairs simultaneously in parallel (30m Timeframe)...`);
 
-    // Simultaneous Parallel 5m Candle Snapshot Queries across all spot pairs
+    // Simultaneous Parallel 30m Candle Snapshot Queries across all spot pairs
     const scanResults = await Promise.all(
       scanQueue.map(async (coin) => {
         try {
           const coinPrice = parseFloat(allMids[coin] || 0);
           if (coinPrice <= 0) return null;
 
-          const candles5m = await fetchCandleSnapshot(coin, "5m", 260);
-          const signalResult = await evaluateEmaRibbonStrategy(coin, candles5m);
+          const candles30m = await fetchCandleSnapshot(coin, "30m", 260);
+          const signalResult = await evaluateEmaRibbonStrategy(coin, candles30m);
           return { coin, coinPrice, ...signalResult };
         } catch (e) {
           return null;
@@ -210,12 +210,12 @@ async function executeBotTick(uid, db, config, botSecret) {
       }
     }
 
-    // 2. Automatically execute Spot BUY on whichever coin generates a valid 5m EMA Golden Cross signal FIRST
+    // 2. Automatically execute Spot BUY on whichever coin generates a valid 30m EMA Golden Cross signal FIRST
     const firstBuySignal = validResults.find(r => r.isBuySignal && (spotBalances.get(r.coin) || 0) <= 0.0001);
 
     if (firstBuySignal && usdcBalance > 5.0 && config.active) {
       const { coin, coinPrice } = firstBuySignal;
-      console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: GOLDEN CROSS BUY SIGNAL DETECTED on ${coin}! Executing Spot Buy with $${usdcBalance.toFixed(2)} USDC...`);
+      console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: 30M GOLDEN CROSS BUY SIGNAL DETECTED on ${coin}! Executing Spot Buy with $${usdcBalance.toFixed(2)} USDC...`);
       try {
         const allocPct = (config.allocation_pct || 100) / 100.0;
         const buyAmountUsdc = usdcBalance * allocPct;
@@ -247,7 +247,7 @@ async function executeBotTick(uid, db, config, botSecret) {
     pnl_pct: pnlPct,
     active_trades: activeTradesCount,
     strategy: config.strategy,
-    timeframe: "5m",
+    timeframe: "30m",
     scanned_markets_count: availableCoins.length,
     updated_at: Date.now()
   }, { merge: true });

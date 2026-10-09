@@ -3926,7 +3926,7 @@ class MainActivity : AppCompatActivity(),
             when (botStrategy) {
                 "Grid Trading" -> chipStrategyGrid.isChecked = true
                 "Trend Following" -> chipStrategyTrend.isChecked = true
-                "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
+                "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
                 else -> chipStrategyDca.isChecked = true
             }
         }
@@ -3971,7 +3971,7 @@ class MainActivity : AppCompatActivity(),
                 botStrategy = when (id) {
                     R.id.chipStrategyGrid -> "Grid Trading"
                     R.id.chipStrategyTrend -> "Trend Following"
-                    R.id.chipStrategyEmaChannel -> "5m EMA High/Low"
+                    R.id.chipStrategyEmaChannel -> "30m EMA High/Low"
                     else -> "Smart DCA / Dip Buyer"
                 }
                 saveBotPrefs()
