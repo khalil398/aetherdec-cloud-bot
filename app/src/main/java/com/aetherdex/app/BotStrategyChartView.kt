@@ -13,6 +13,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 class BotStrategyChartView @JvmOverloads constructor(
     context: Context,
@@ -52,7 +53,7 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     // View State & Touch Control Parameters
     private var visibleCandleCount = 50
-    private var scrollOffsetIndex = 0
+    private var scrollOffsetFloat = 0f
     private var priceZoomFactor = 1.0f
     private var priceCenterOffset = 0.0f
 
@@ -246,9 +247,7 @@ class BotStrategyChartView @JvmOverloads constructor(
 
                 // 1. Right Price Scale (Y-Axis) Dragging
                 if (startX >= rightAxisLeft) {
-                    // Drag UP (distanceY > 0): Stretch vertical height of candlesticks
-                    // Drag DOWN (distanceY < 0): Compress vertical height of candlesticks
-                    val scaleDelta = 1.0f + (distanceY / 220f)
+                    val scaleDelta = 1.0f + (distanceY / 200f)
                     priceZoomFactor = (priceZoomFactor * scaleDelta).coerceIn(0.2f, 15.0f)
                     invalidate()
                     return true
@@ -256,26 +255,22 @@ class BotStrategyChartView @JvmOverloads constructor(
 
                 // 2. Bottom Time Scale (X-Axis) Dragging
                 if (startY >= bottomAxisTop) {
-                    // Drag LEFT (distanceX > 0): Zoom in horizontally (fewer visible candles)
-                    // Drag RIGHT (distanceX < 0): Zoom out horizontally (more visible candles)
-                    val candleDelta = (distanceX / 12f).toInt()
-                    if (candleDelta != 0) {
-                        visibleCandleCount = (visibleCandleCount - candleDelta).coerceIn(15, 400)
-                        invalidate()
-                    }
+                    val candleDelta = distanceX / 10f
+                    visibleCandleCount = (visibleCandleCount - candleDelta.toInt()).coerceIn(15, 400)
+                    invalidate()
                     return true
                 }
 
-                // 3. Main Chart Canvas Dragging
-                // Drag RIGHT (distanceX < 0): move viewport right to expose older historical candles on left (scrollOffsetIndex INCREASES)
-                // Drag LEFT (distanceX > 0): move viewport left to pull recent candles on right (scrollOffsetIndex DECREASES)
+                // 3. Main Chart Canvas Dragging (Ultra-Smooth Sub-Pixel Scroll)
                 val chartWidth = rightAxisLeft - paddingLeftPx
                 val candleWidth = chartWidth / visibleCandleCount
 
-                val deltaCandles = (-distanceX / candleWidth).toInt()
-                if (deltaCandles != 0) {
-                    val maxScroll = max(0, n - visibleCandleCount)
-                    scrollOffsetIndex = (scrollOffsetIndex - deltaCandles).coerceIn(0, maxScroll)
+                if (candleWidth > 0f) {
+                    // Drag RIGHT (distanceX < 0): finger moves right -> scrollOffsetFloat INCREASES (older historical candles on left)
+                    // Drag LEFT (distanceX > 0): finger moves left -> scrollOffsetFloat DECREASES (recent candles on right)
+                    val deltaOffset = -distanceX / candleWidth
+                    val maxScroll = max(0f, (n - visibleCandleCount).toFloat())
+                    scrollOffsetFloat = (scrollOffsetFloat + deltaOffset).coerceIn(0f, maxScroll)
                 }
 
                 // Vertical Price Pan
@@ -298,7 +293,7 @@ class BotStrategyChartView @JvmOverloads constructor(
                 scroller.fling(
                     0, 0,
                     velocityX.toInt(), 0,
-                    -10000, 10000,
+                    -20000, 20000,
                     0, 0
                 )
                 postInvalidateOnAnimation()
@@ -337,11 +332,9 @@ class BotStrategyChartView @JvmOverloads constructor(
             val chartWidth = width.toFloat() - paddingLeftPx - paddingRightPx
             val candleWidth = chartWidth / visibleCandleCount
             if (candleWidth > 0f) {
-                val deltaCandles = (dx / candleWidth).toInt()
-                if (deltaCandles != 0) {
-                    val maxScroll = max(0, candles.size - visibleCandleCount)
-                    scrollOffsetIndex = (scrollOffsetIndex - deltaCandles).coerceIn(0, maxScroll)
-                }
+                val deltaOffset = dx / candleWidth
+                val maxScroll = max(0f, (candles.size - visibleCandleCount).toFloat())
+                scrollOffsetFloat = (scrollOffsetFloat + deltaOffset).coerceIn(0f, maxScroll)
             }
             postInvalidateOnAnimation()
         }
@@ -350,7 +343,7 @@ class BotStrategyChartView @JvmOverloads constructor(
     fun resetView() {
         scroller.forceFinished(true)
         visibleCandleCount = 50
-        scrollOffsetIndex = 0
+        scrollOffsetFloat = 0f
         priceZoomFactor = 1.0f
         priceCenterOffset = 0.0f
         isCrosshairActive = false
@@ -395,32 +388,45 @@ class BotStrategyChartView @JvmOverloads constructor(
         ema233Series = calculateEMA(closes, 233)
 
         signalSeries = IntArray(n)
-        var activeState = BotState.NEUTRAL
+        var currentPositionState = BotState.NEUTRAL
 
         for (i in 1 until n) {
             val c = candles[i]
-            val e8High = ema8HighSeries[i]
-            val e8Low = ema8LowSeries[i]
-            val e34High = ema34HighSeries[i]
-            val e34Low = ema34LowSeries[i]
+            val e8H = ema8HighSeries[i]
+            val e8L = ema8LowSeries[i]
+            val e34H = ema34HighSeries[i]
+            val e34L = ema34LowSeries[i]
             val e200 = ema200Series[i]
             val e233 = ema233Series[i]
 
-            val minTrend = min(e200, e233)
-            val isAboveTrend = c.close >= minTrend || e8Low >= minTrend
+            val prevE8H = ema8HighSeries[i - 1]
+            val prevE8L = ema8LowSeries[i - 1]
+            val prevE34H = ema34HighSeries[i - 1]
+            val prevE34L = ema34LowSeries[i - 1]
 
-            // Crossover Conditions:
-            // BUY: White Channel (EMA 8 High/Low) crosses ABOVE Yellow Channel (EMA 34 Low/High)
-            val isBuyCross = (e8High > e34Low || e8Low > e34High)
-            // SELL: White Channel (EMA 8 Low/High) crosses BELOW Yellow Channel (EMA 34 High/Low)
-            val isSellCross = (e8Low < e34High || e8High < e34Low)
+            // White Channel is ABOVE Yellow Channel (EMA 8 Low > EMA 34 High or EMA 8 High > EMA 34 High)
+            val isWhiteAboveYellow = (e8L > e34H || e8H > e34H)
+            val wasWhiteBelowYellow = (prevE8L <= prevE34H || prevE8H <= prevE34H)
 
-            if (activeState != BotState.IN_BUY && isBuyCross && isAboveTrend) {
-                signalSeries[i] = 1
-                activeState = BotState.IN_BUY
-            } else if (activeState != BotState.IN_SELL && isSellCross) {
-                signalSeries[i] = -1
-                activeState = BotState.IN_SELL
+            // White Channel is BELOW Yellow Channel (EMA 8 High < EMA 34 Low or EMA 8 Low < EMA 34 Low)
+            val isWhiteBelowYellow = (e8H < e34L || e8L < e34L)
+            val wasWhiteAboveYellow = (prevE8H >= prevE34L || prevE8L >= prevE34L)
+
+            // Bullish Trend Condition: Candle Close is ABOVE EMA 200 & EMA 233
+            val isBullishTrend = c.close > e200 && c.close > e233
+
+            // TRUE CROSSOVER ABOVE: White Channel breaks ABOVE Yellow Channel
+            val isGoldenCross = wasWhiteBelowYellow && isWhiteAboveYellow
+
+            // TRUE CROSSOVER BELOW: White Channel breaks BELOW Yellow Channel
+            val isDeathCross = wasWhiteAboveYellow && isWhiteBelowYellow
+
+            if (isGoldenCross && isBullishTrend && currentPositionState != BotState.IN_BUY) {
+                signalSeries[i] = 1 // Single ▲ BUY badge on exact crossover candle
+                currentPositionState = BotState.IN_BUY
+            } else if (isDeathCross && currentPositionState != BotState.IN_SELL) {
+                signalSeries[i] = -1 // Single ▼ SELL badge on exact crossover candle
+                currentPositionState = BotState.IN_SELL
             }
         }
     }
@@ -464,7 +470,8 @@ class BotStrategyChartView @JvmOverloads constructor(
 
         if (chartWidth <= 0 || chartHeight <= 0) return
 
-        // Compute visible range
+        // Compute visible range with smooth sub-pixel scrollOffsetFloat
+        val scrollOffsetIndex = scrollOffsetFloat.roundToInt()
         val endIndex = totalCandles - 1 - scrollOffsetIndex
         val startIndex = max(0, endIndex - visibleCandleCount + 1)
         val count = endIndex - startIndex + 1
@@ -647,7 +654,7 @@ class BotStrategyChartView @JvmOverloads constructor(
             val bodyHeight = max(2f, bottomBody - topBody)
             canvas.drawRect(cx - halfBody, topBody, cx + halfBody, topBody + bodyHeight, paintBody)
 
-            // Draw Signal Markers (BUY / SELL)
+            // Draw Signal Markers (BUY / SELL - Single badge per crossover state)
             val sig = if (i < signalSeries.size) signalSeries[i] else 0
             if (sig == 1) { // BUY Signal
                 val badgeY = yLow + 24f
