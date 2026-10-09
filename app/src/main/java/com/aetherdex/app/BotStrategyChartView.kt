@@ -6,14 +6,15 @@ import android.graphics.*
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
-import android.view.ScaleGestureDetector
 import android.view.View
 import android.widget.OverScroller
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 class BotStrategyChartView @JvmOverloads constructor(
     context: Context,
@@ -59,16 +60,16 @@ class BotStrategyChartView @JvmOverloads constructor(
     private var priceCenterOffset = 0.0f
     private var lastPricePerPixel = 0f
 
-    // Pinch Gesture Baseline State (Captured at gesture start in onScaleBegin)
-    private var baseSpan = 0f
-    private var baseFocusX = 0f
-    private var baseVisibleCount = 50f
-    private var baseScrollOffset = 0f
-    private var baseFocusCandleIndex = 0f
-
-    // Touch gesture flags
-    private var isPinching = false
-    private var skipScrollAfterPinch = false
+    // ── Raw two-pointer pinch-zoom state ──────────────────────────────────────
+    // Captured once when the second finger touches down. All subsequent frames
+    // compute a CUMULATIVE ratio (currentDist / startDist) against this baseline,
+    // so there is zero frame-to-frame compounding error.
+    private var pinchActive = false
+    private var pinchStartDist = 0f            // pixel distance between fingers at gesture start
+    private var pinchStartVisibleCount = 50f   // visibleCandleCountFloat snapshot at gesture start
+    private var pinchFocusCandleIndex = 0f     // time-index of the midpoint candle at gesture start
+    private var pinchStartFocusX = 0f          // screen-x of the midpoint at gesture start
+    private var skipScrollAfterPinch = false   // swallow single-finger scroll after pinch lifts
 
     // Crosshair state
     private var isCrosshairActive = false
@@ -217,85 +218,12 @@ class BotStrategyChartView @JvmOverloads constructor(
     private var lastFlingX = 0
 
     // Touch gesture detectors
-    private val scaleGestureDetector: ScaleGestureDetector
+    // NOTE: ScaleGestureDetector removed — we drive pinch-zoom directly from raw
+    // pointer events so there is no Android-framework jitter / compounding drift.
     private val gestureDetector: GestureDetector
 
     init {
         setLayerType(LAYER_TYPE_HARDWARE, null)
-
-        scaleGestureDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
-                val rightAxisLeft = width.toFloat() - paddingRightPx
-                val chartWidth = rightAxisLeft - paddingLeftPx
-                val totalCandles = candles.size
-
-                if (chartWidth > 0f && totalCandles > 0) {
-                    isPinching = true
-                    skipScrollAfterPinch = true
-                    scroller.forceFinished(true)
-
-                    baseSpan = max(1f, detector.currentSpan)
-                    baseFocusX = detector.focusX
-                    baseVisibleCount = visibleCandleCountFloat
-                    baseScrollOffset = scrollOffsetFloat
-
-                    val baseCandleWidth = max(3f, chartWidth / baseVisibleCount)
-                    val floatEndIndexBase = (totalCandles - 1).toFloat() - baseScrollOffset
-                    val floatStartIndexBase = floatEndIndexBase - baseVisibleCount + 1f
-
-                    val relativeFocusX = (baseFocusX - paddingLeftPx).coerceIn(0f, chartWidth)
-                    baseFocusCandleIndex = floatStartIndexBase + (relativeFocusX - baseCandleWidth / 2f) / baseCandleWidth
-                    return true
-                }
-                return false
-            }
-
-            override fun onScale(detector: ScaleGestureDetector): Boolean {
-                if (!isPinching || baseSpan <= 0f) return false
-
-                val currentSpan = detector.currentSpan
-                if (currentSpan <= 0f || currentSpan.isNaN() || currentSpan.isInfinite()) return false
-
-                val rightAxisLeft = width.toFloat() - paddingRightPx
-                val chartWidth = rightAxisLeft - paddingLeftPx
-                val totalCandles = candles.size
-
-                if (chartWidth > 0f && totalCandles > 0) {
-                    // Cumulative scale factor relative to gesture start distance
-                    val cumulativeScale = currentSpan / baseSpan
-                    if (cumulativeScale <= 0f || cumulativeScale.isNaN() || cumulativeScale.isInfinite()) return false
-
-                    // 1. Time-scale expansion/compression: visible candle count scales inversely with finger span
-                    val newVisibleCount = (baseVisibleCount / cumulativeScale).coerceIn(12f, 300f)
-
-                    // 2. Compute updated candle width
-                    val newCandleWidth = max(3f, chartWidth / newVisibleCount)
-
-                    // 3. Keep baseFocusCandleIndex anchored precisely under current focusX (supports 2-finger pan + zoom)
-                    val currentFocusX = detector.focusX
-                    val relativeFocusX = (currentFocusX - paddingLeftPx).coerceIn(0f, chartWidth)
-
-                    val floatStartIndexNew = baseFocusCandleIndex - (relativeFocusX - newCandleWidth / 2f) / newCandleWidth
-                    val floatEndIndexNew = floatStartIndexNew + newVisibleCount - 1f
-                    val newScrollOffset = (totalCandles - 1).toFloat() - floatEndIndexNew
-
-                    val minScroll = -6f
-                    val maxScroll = max(0f, (totalCandles - 12).toFloat())
-
-                    scrollOffsetFloat = newScrollOffset.coerceIn(minScroll, maxScroll)
-                    visibleCandleCountFloat = newVisibleCount
-
-                    invalidate()
-                    return true
-                }
-                return false
-            }
-
-            override fun onScaleEnd(detector: ScaleGestureDetector) {
-                isPinching = false
-                skipScrollAfterPinch = true
-            }
-        })
 
         gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
             override fun onScroll(
@@ -305,7 +233,7 @@ class BotStrategyChartView @JvmOverloads constructor(
                 distanceY: Float
             ): Boolean {
                 val n = candles.size
-                if (n == 0 || scaleGestureDetector.isInProgress || isPinching || skipScrollAfterPinch) return false
+                if (n == 0 || pinchActive || skipScrollAfterPinch) return false
 
                 scroller.forceFinished(true)
 
@@ -360,7 +288,7 @@ class BotStrategyChartView @JvmOverloads constructor(
                 velocityY: Float
             ): Boolean {
                 val n = candles.size
-                if (n == 0 || scaleGestureDetector.isInProgress || isPinching || skipScrollAfterPinch) return false
+                if (n == 0 || pinchActive || skipScrollAfterPinch) return false
 
                 scroller.forceFinished(true)
                 lastFlingX = 0
@@ -426,42 +354,137 @@ class BotStrategyChartView @JvmOverloads constructor(
         invalidate()
     }
 
+    // ── Raw two-pointer pinch zoom helper ────────────────────────────────────
+    // Returns the Euclidean distance in pixels between pointer 0 and pointer 1.
+    private fun twoPointerDist(event: MotionEvent): Float {
+        if (event.pointerCount < 2) return 0f
+        val dx = event.getX(0) - event.getX(1)
+        val dy = event.getY(0) - event.getY(1)
+        return sqrt(dx * dx + dy * dy)
+    }
+
+    // Returns the screen-x midpoint between pointer 0 and pointer 1.
+    private fun twoPointerMidX(event: MotionEvent): Float {
+        if (event.pointerCount < 2) return event.x
+        return (event.getX(0) + event.getX(1)) / 2f
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val action = event.actionMasked
+        var handled = false
 
         when (action) {
+
+            // ── Single finger down: clear pinch state, resume panning ──────
             MotionEvent.ACTION_DOWN -> {
-                isPinching = false
+                pinchActive = false
                 skipScrollAfterPinch = false
                 scroller.forceFinished(true)
+                handled = gestureDetector.onTouchEvent(event)
             }
+
+            // ── Second finger down: snapshot the pinch baseline ────────────
             MotionEvent.ACTION_POINTER_DOWN -> {
-                isPinching = true
-                skipScrollAfterPinch = true
                 scroller.forceFinished(true)
+                val dist = twoPointerDist(event)
+                if (dist > 10f && candles.isNotEmpty()) {
+                    pinchActive = true
+                    skipScrollAfterPinch = true
+                    pinchStartDist = dist
+                    pinchStartVisibleCount = visibleCandleCountFloat
+                    pinchStartFocusX = twoPointerMidX(event)
+
+                    // Compute which candle index sits under the midpoint right now
+                    val rightAxisLeft = width.toFloat() - paddingRightPx
+                    val chartWidth = rightAxisLeft - paddingLeftPx
+                    if (chartWidth > 0f) {
+                        val cw = max(3f, chartWidth / visibleCandleCountFloat)
+                        val floatEnd = (candles.size - 1).toFloat() - scrollOffsetFloat
+                        val floatStart = floatEnd - visibleCandleCountFloat + 1f
+                        val relFocusX = (pinchStartFocusX - paddingLeftPx).coerceIn(0f, chartWidth)
+                        // Centre of candle i is at: paddingLeftPx + (i - floatStart)*cw + cw/2
+                        // Solving for i: i = floatStart + relFocusX / cw
+                        pinchFocusCandleIndex = floatStart + relFocusX / cw
+                    }
+                }
+                handled = true
             }
+
+            // ── Two fingers moving: apply cumulative zoom ─────────────────
+            MotionEvent.ACTION_MOVE -> {
+                if (pinchActive && event.pointerCount >= 2) {
+                    val currentDist = twoPointerDist(event)
+                    if (currentDist > 0f && pinchStartDist > 0f) {
+
+                        // CUMULATIVE ratio — always compared against gesture-start baseline.
+                        // No frame-to-frame multiplication: zero drift.
+                        val ratio = currentDist / pinchStartDist
+                        if (ratio > 0f && !ratio.isNaN() && !ratio.isInfinite()) {
+
+                            val rightAxisLeft = width.toFloat() - paddingRightPx
+                            val chartWidth = rightAxisLeft - paddingLeftPx
+                            val totalCandles = candles.size
+
+                            if (chartWidth > 0f && totalCandles > 0) {
+                                // More fingers apart  → ratio > 1 → fewer visible candles → wider candles
+                                // More fingers together → ratio < 1 → more visible candles → narrower candles
+                                val newVisibleCount = (pinchStartVisibleCount / ratio).coerceIn(12f, 300f)
+                                val newCandleWidth = max(3f, chartWidth / newVisibleCount)
+
+                                // Current focus midpoint (fingers may drift horizontally — that's fine,
+                                // we re-anchor each frame to the live midpoint so zoom + 2-finger pan work together)
+                                val currentMidX = twoPointerMidX(event)
+                                val relMidX = (currentMidX - paddingLeftPx).coerceIn(0f, chartWidth)
+
+                                // Anchor: pinchFocusCandleIndex must remain at screen-x = relMidX
+                                // Centre of candle i → x = paddingLeftPx + (i - floatStart)*cw + cw/2
+                                // So: relMidX = (pinchFocusCandleIndex - floatStart)*cw + cw/2
+                                // → floatStart = pinchFocusCandleIndex - (relMidX - cw/2) / cw
+                                val floatStartNew = pinchFocusCandleIndex - (relMidX - newCandleWidth / 2f) / newCandleWidth
+                                val floatEndNew = floatStartNew + newVisibleCount - 1f
+                                val newScrollOffset = (totalCandles - 1).toFloat() - floatEndNew
+
+                                val minScroll = -6f
+                                val maxScroll = max(0f, (totalCandles - 12).toFloat())
+                                scrollOffsetFloat = newScrollOffset.coerceIn(minScroll, maxScroll)
+                                visibleCandleCountFloat = newVisibleCount
+                                invalidate()
+                            }
+                        }
+                    }
+                    handled = true
+                } else if (!pinchActive) {
+                    // Single-finger pan
+                    handled = gestureDetector.onTouchEvent(event)
+                    if (isCrosshairActive && event.pointerCount == 1) {
+                        touchX = event.x
+                        touchY = event.y
+                        invalidate()
+                        handled = true
+                    }
+                }
+            }
+
+            // ── A finger lifts: decide if pinch continues or ends ─────────
             MotionEvent.ACTION_POINTER_UP -> {
-                isPinching = false
-                skipScrollAfterPinch = true
+                pinchActive = false
+                skipScrollAfterPinch = true   // swallow the next single-finger pan that follows
+                handled = true
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                isPinching = false
+
+            // ── Last finger up / cancel ───────────────────────────────────
+            MotionEvent.ACTION_UP -> {
+                pinchActive = false
+                handled = gestureDetector.onTouchEvent(event)
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                pinchActive = false
                 skipScrollAfterPinch = false
+                handled = gestureDetector.onTouchEvent(event)
             }
-        }
 
-        var handled = scaleGestureDetector.onTouchEvent(event)
-
-        if (!scaleGestureDetector.isInProgress && !isPinching && !skipScrollAfterPinch && event.pointerCount == 1) {
-            handled = gestureDetector.onTouchEvent(event) || handled
-        }
-
-        if (action == MotionEvent.ACTION_MOVE && isCrosshairActive && event.pointerCount == 1) {
-            touchX = event.x
-            touchY = event.y
-            invalidate()
-            handled = true
+            else -> handled = gestureDetector.onTouchEvent(event)
         }
 
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE || action == MotionEvent.ACTION_POINTER_DOWN) {
