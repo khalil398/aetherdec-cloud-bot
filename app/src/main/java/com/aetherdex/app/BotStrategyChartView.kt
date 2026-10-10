@@ -112,6 +112,7 @@ class BotStrategyChartView @JvmOverloads constructor(
     private val colorEma200 = Color.parseColor("#FF3B30")
     private val colorEma233 = Color.parseColor("#FF9500")
     private val colorTextSec = Color.parseColor("#8A96A8")
+    private val colorCyan = Color.parseColor("#00E5FF")
 
     // Pre-allocated Paints
     private val paintGrid = Paint().apply {
@@ -207,6 +208,19 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     private val paintBadgeSell = Paint().apply {
         color = colorBearish
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val paintSignalLine = Paint().apply {
+        color = colorCyan
+        strokeWidth = 2.5f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintPriceBadge = Paint().apply {
+        color = colorCyan
         style = Paint.Style.FILL
         isAntiAlias = true
     }
@@ -481,18 +495,20 @@ class BotStrategyChartView @JvmOverloads constructor(
             val isWhiteBelowYellow = (e8H < e34L && e8L < e34L)
 
             if (isWhiteAboveYellow) {
+                // A new ▲ BUY signal can ONLY trigger if unlocked by a previous ▼ SELL (or initial)
                 if (currentPositionState != BotState.IN_BUY) {
-                    signalSeries[i] = 1 // Render a single ▲ BUY badge ONCE on exact candle where this transition occurs
+                    signalSeries[i] = 1 // Render a single ▲ BUY badge ONCE
                     currentPositionState = BotState.IN_BUY
                 }
             } else if (isWhiteBelowYellow) {
+                // A new ▼ SELL signal can ONLY trigger if unlocked by a previous ▲ BUY (or initial)
                 if (currentPositionState != BotState.IN_SELL) {
-                    signalSeries[i] = -1 // Render a single ▼ SELL badge ONCE on exact candle where this transition occurs
+                    signalSeries[i] = -1 // Render a single ▼ SELL badge ONCE
                     currentPositionState = BotState.IN_SELL
                 }
-            } else {
-                currentPositionState = BotState.NEUTRAL
             }
+            // State is strictly preserved when lines enter, dip into, or stay in the Yellow Channel
+            // (no reset to NEUTRAL, guaranteeing no duplicate signals until opposite breakout)
         }
     }
 
@@ -734,14 +750,14 @@ class BotStrategyChartView @JvmOverloads constructor(
             val sig = if (i < signalSeries.size) signalSeries[i] else 0
             if (sig == 1) { // BUY Signal
                 val badgeY = yLow + 24f
-                canvas.drawLine(cx, yLow, cx, badgeY, paintWickBull)
+                canvas.drawLine(cx, yLow, cx, badgeY, paintSignalLine)
                 val rect = RectF(cx - 38f, badgeY, cx + 38f, badgeY + 28f)
                 canvas.drawRoundRect(rect, 8f, 8f, paintBadgeBuy)
                 val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.BLACK }
                 canvas.drawText("▲ BUY", cx - 28f, badgeY + 20f, paintSignalText)
             } else if (sig == -1) { // SELL Signal
                 val badgeY = yHigh - 32f
-                canvas.drawLine(cx, yHigh, cx, badgeY + 28f, paintWickBear)
+                canvas.drawLine(cx, yHigh, cx, badgeY + 28f, paintSignalLine)
                 val rect = RectF(cx - 40f, badgeY, cx + 40f, badgeY + 28f)
                 canvas.drawRoundRect(rect, 8f, 8f, paintBadgeSell)
                 val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.WHITE }
@@ -753,23 +769,21 @@ class BotStrategyChartView @JvmOverloads constructor(
         if (candles.isNotEmpty()) {
             val lastCandle = candles.last()
             val yLast = getY(lastCandle.close)
-            val lastIsBull = lastCandle.close >= lastCandle.open
-            val paintLine = if (lastIsBull) paintWickBull else paintWickBear
-            val paintBg = if (lastIsBull) paintBadgeBuy else paintBadgeSell
 
             val lastIndex = totalCandles - 1
             val lastCandleX = getX(lastIndex)
             val startX = lastCandleX.coerceIn(paddingLeftPx, paddingLeftPx + chartWidth)
 
-            canvas.drawLine(startX, yLast, paddingLeftPx + chartWidth, yLast, paintLine)
+            // Right-aligned Cyan/Blue line extending strictly from latest candle to price axis
+            canvas.drawLine(startX, yLast, paddingLeftPx + chartWidth, yLast, paintSignalLine)
 
             val priceStr = String.format(Locale.US, "%.2f", lastCandle.close)
             val rectTag = RectF(paddingLeftPx + chartWidth + 4f, yLast - 18f, width.toFloat() - 6f, yLast + 18f)
-            canvas.drawRoundRect(rectTag, 6f, 6f, paintBg)
+            canvas.drawRoundRect(rectTag, 6f, 6f, paintPriceBadge)
 
             val paintTagText = Paint(paintText).apply {
                 textSize = 20f
-                color = if (lastIsBull) Color.BLACK else Color.WHITE
+                color = Color.BLACK
             }
             canvas.drawText(priceStr, paddingLeftPx + chartWidth + 12f, yLast + 6f, paintTagText)
         }
