@@ -26,11 +26,23 @@ import java.util.Locale
 class BotStrategyChartFragment : Fragment() {
 
     private val tradingPairs = listOf(
-        "BTCUSDC", "ETHUSDC", "SOLUSDC", "BNBUSDC", "XRPUSDC", "DOGEUSDC",
-        "AVAXUSDC", "LINKUSDC", "SUIUSDC", "NEARUSDC", "APTUSDC", "OPUSDC",
-        "ARBUSDC", "INJUSDC", "TIAUSDC", "RENDERUSDC", "FETUSDC", "PEPEUSDC", "WIFUSDC"
+        "PURRUSDC", "HFUNUSDC", "LICKUSDC", "MANLETUSDC", "JEFFUSDC", "SIXUSDC",
+        "WAGMIUSDC", "CAPPYUSDC", "POINTSUSDC", "HYPEUSDC", "BTCUSDC", "ETHUSDC",
+        "SOLUSDC", "BNBUSDC", "XRPUSDC", "DOGEUSDC", "AVAXUSDC", "LINKUSDC",
+        "SUIUSDC", "NEARUSDC", "APTUSDC", "OPUSDC", "ARBUSDC", "INJUSDC",
+        "TIAUSDC", "RENDERUSDC", "FETUSDC", "PEPEUSDC", "WIFUSDC"
     )
     private val pairDisplayNames = mapOf(
+        "PURRUSDC" to "PURR / USDC",
+        "HFUNUSDC" to "HFUN / USDC",
+        "LICKUSDC" to "LICK / USDC",
+        "MANLETUSDC" to "MANLET / USDC",
+        "JEFFUSDC" to "JEFF / USDC",
+        "SIXUSDC" to "SIX / USDC",
+        "WAGMIUSDC" to "WAGMI / USDC",
+        "CAPPYUSDC" to "CAPPY / USDC",
+        "POINTSUSDC" to "POINTS / USDC",
+        "HYPEUSDC" to "HYPE / USDC",
         "BTCUSDC" to "BTC / USDC",
         "ETHUSDC" to "ETH / USDC",
         "SOLUSDC" to "SOL / USDC",

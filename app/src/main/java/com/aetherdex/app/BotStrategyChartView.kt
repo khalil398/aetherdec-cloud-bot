@@ -275,11 +275,17 @@ class BotStrategyChartView @JvmOverloads constructor(
             }
 
             override fun onSingleTapUp(e: MotionEvent): Boolean {
-                touchX = e.x
-                touchY = e.y
-                isCrosshairActive = !isCrosshairActive
-                invalidate()
-                return true
+                if (isCrosshairActive) {
+                    isCrosshairActive = false
+                    invalidate()
+                    return true
+                } else {
+                    touchX = e.x
+                    touchY = e.y
+                    isCrosshairActive = true
+                    invalidate()
+                    return true
+                }
             }
 
             override fun onLongPress(e: MotionEvent) {
@@ -295,7 +301,7 @@ class BotStrategyChartView @JvmOverloads constructor(
                 velocityX: Float,
                 velocityY: Float
             ): Boolean {
-                if (candles.isEmpty() || scaleGestureDetector.isInProgress) return false
+                if (candles.isEmpty() || scaleGestureDetector.isInProgress || isCrosshairActive) return false
                 scroller.forceFinished(true)
                 lastFlingX = 0
                 scroller.fling(
@@ -346,6 +352,15 @@ class BotStrategyChartView @JvmOverloads constructor(
         if (candles.isEmpty()) return super.onTouchEvent(event)
 
         gestureDetector.onTouchEvent(event)
+
+        if (isCrosshairActive) {
+            touchX = event.x
+            touchY = event.y
+            invalidate()
+            parent?.requestDisallowInterceptTouchEvent(true)
+            return true
+        }
+
         scaleGestureDetector.onTouchEvent(event)
 
         if (scaleGestureDetector.isInProgress) {
@@ -404,11 +419,6 @@ class BotStrategyChartView @JvmOverloads constructor(
                     val effectiveRange = if (lastPriceRange > 0.0) lastPriceRange * yScaleMultiplier else 100.0
                     val priceShift = (dy / chartHeight) * effectiveRange
                     verticalPriceOffset += priceShift
-
-                    if (isCrosshairActive && event.pointerCount == 1) {
-                        touchX = event.x
-                        touchY = event.y
-                    }
                     invalidate()
                 }
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -744,7 +754,11 @@ class BotStrategyChartView @JvmOverloads constructor(
             val paintLine = if (lastIsBull) paintWickBull else paintWickBear
             val paintBg = if (lastIsBull) paintBadgeBuy else paintBadgeSell
 
-            canvas.drawLine(paddingLeftPx, yLast, paddingLeftPx + chartWidth, yLast, paintLine)
+            val lastIndex = totalCandles - 1
+            val lastCandleX = getX(lastIndex)
+            val startX = lastCandleX.coerceIn(paddingLeftPx, paddingLeftPx + chartWidth)
+
+            canvas.drawLine(startX, yLast, paddingLeftPx + chartWidth, yLast, paintLine)
 
             val priceStr = String.format(Locale.US, "%.2f", lastCandle.close)
             val rectTag = RectF(paddingLeftPx + chartWidth + 4f, yLast - 18f, width.toFloat() - 6f, yLast + 18f)
@@ -799,7 +813,8 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val e8H = if (hoverIndex < ema8HighSeries.size) ema8HighSeries[hoverIndex] else 0.0
                 val e34H = if (hoverIndex < ema34HighSeries.size) ema34HighSeries[hoverIndex] else 0.0
                 val emaText = String.format(Locale.US, "EMA8:%.2f | EMA34:%.2f", e8H, e34H)
-                canvas.drawText(emaText, boxX + 14f, boxY + 92f, paintTextSec)
+                val paintEmaLegend = Paint(paintTextSec).apply { color = colorYellowChannel; textSize = 18f }
+                canvas.drawText(emaText, boxX + 14f, boxY + 90f, paintEmaLegend)
             }
         }
     }
