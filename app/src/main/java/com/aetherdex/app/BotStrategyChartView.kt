@@ -454,41 +454,44 @@ class BotStrategyChartView @JvmOverloads constructor(
 
         signalSeries = IntArray(n)
         var currentPositionState = BotState.NEUTRAL
+        if (n > 0) {
+            val e8H0 = ema8HighSeries[0]
+            val e8L0 = ema8LowSeries[0]
+            val e34H0 = ema34HighSeries[0]
+            val e34L0 = ema34LowSeries[0]
+            if (e8L0 > e34H0 && e8H0 > e34H0) {
+                currentPositionState = BotState.IN_BUY
+            } else if (e8H0 < e34L0 && e8L0 < e34L0) {
+                currentPositionState = BotState.IN_SELL
+            }
+        }
 
         for (i in 1 until n) {
-            val c = candles[i]
             val e8H = ema8HighSeries[i]
             val e8L = ema8LowSeries[i]
             val e34H = ema34HighSeries[i]
             val e34L = ema34LowSeries[i]
-            val e200 = ema200Series[i]
-            val e233 = ema233Series[i]
 
-            // Full channel breakout conditions:
-            // BUY: BOTH EMA 8 High and EMA 8 Low break completely ABOVE EMA 34 High and EMA 34 Low
-            val isFullWhiteAbove = (e8L > e34H && e8H > e34L)
-            // SELL: BOTH EMA 8 High and EMA 8 Low break completely BELOW EMA 34 High and EMA 34 Low
-            val isFullWhiteBelow = (e8H < e34L && e8L < e34H)
+            // BUY Signal (▲ BUY): ENTIRE White Channel completely exits/crosses ABOVE ENTIRE Yellow Channel
+            // Condition: EMA_8_Low > EMA_34_High AND EMA_8_High > EMA_34_High
+            val isWhiteAboveYellow = (e8L > e34H && e8H > e34H)
 
-            // Bullish Trend Condition: Candle Close is ABOVE min(EMA 200, EMA 233)
-            val isBullishTrend = (c.close >= min(e200, e233))
+            // SELL Signal (▼ SELL): ENTIRE White Channel completely exits/crosses BELOW ENTIRE Yellow Channel
+            // Condition: EMA_8_High < EMA_34_Low AND EMA_8_Low < EMA_34_Low
+            val isWhiteBelowYellow = (e8H < e34L && e8L < e34L)
 
-            val isValidBuySetup = isFullWhiteAbove && isBullishTrend
-
-            if (isValidBuySetup) {
+            if (isWhiteAboveYellow) {
                 if (currentPositionState != BotState.IN_BUY) {
-                    signalSeries[i] = 1 // Green ▲ BUY badge ONCE on exact breakout transition candle
+                    signalSeries[i] = 1 // Render a single ▲ BUY badge ONCE on exact candle where this transition occurs
                     currentPositionState = BotState.IN_BUY
                 }
-            } else if (isFullWhiteBelow) {
+            } else if (isWhiteBelowYellow) {
                 if (currentPositionState != BotState.IN_SELL) {
-                    signalSeries[i] = -1 // Red ▼ SELL badge ONCE on exact breakdown transition candle
+                    signalSeries[i] = -1 // Render a single ▼ SELL badge ONCE on exact candle where this transition occurs
                     currentPositionState = BotState.IN_SELL
                 }
             } else {
-                if (!isFullWhiteAbove) {
-                    currentPositionState = BotState.NEUTRAL
-                }
+                currentPositionState = BotState.NEUTRAL
             }
         }
     }
