@@ -335,6 +335,29 @@ class MainActivity : AppCompatActivity(),
             }
         }
 
+        // Shared spot selection synchronization with Bot Strategy Chart
+        SharedSpotSelectionState.addListener { symbol, source ->
+            if (source !== this) {
+                runOnUiThread {
+                    val clean = HyperliquidOrderManager.cleanSymbolString(symbol)
+                    currentRawSymbol = clean
+                    currentDisplaySymbol = symbol
+                    saveDemoTradingState()
+                    if (::actvSymbol.isInitialized) {
+                        actvSymbol.setText(symbol, false)
+                    }
+                    if (::webViewChart.isInitialized) {
+                        val fullChartUrl = getTradingViewUrlForSymbol(clean)
+                        webViewChart.loadUrl(fullChartUrl)
+                    }
+                    switchLivePriceSymbol(currentRawSymbol)
+                    if (isSpotMode) {
+                        updateSideColorsForSpot()
+                        updateSpotBalanceUi()
+                    }
+                }
+            }
+        }
 
         observeWalletEvents()
         WalletConnectionManager.attachNavHost(this)
@@ -3036,6 +3059,9 @@ class MainActivity : AppCompatActivity(),
                     settingsSection.visibility = View.GONE
                     historySection.visibility = View.GONE
                     taxSection.visibility = View.GONE
+                    if (currentDisplaySymbol.isNotBlank()) {
+                        SharedSpotSelectionState.setSymbol(currentDisplaySymbol)
+                    }
                     ensureBotChartFragmentLoaded()
                 }
                 3 -> { // Wallet
@@ -3894,6 +3920,7 @@ class MainActivity : AppCompatActivity(),
 
             currentRawSymbol = newRaw
             currentDisplaySymbol = selectedDisplay
+            SharedSpotSelectionState.setSymbol(selectedDisplay, source = this)
             saveDemoTradingState()
 
             if (::webViewChart.isInitialized) {
@@ -4468,10 +4495,13 @@ class MainActivity : AppCompatActivity(),
         if (rawSymbol == currentRawSymbol) {
             currentBtcPrice = newPrice
             if (::tvLivePriceHeader.isInitialized) {
-                val formattedPrice = if (newPrice >= 10.0) {
-                    String.format(java.util.Locale.US, "$%,.2f", newPrice)
-                } else {
-                    String.format(java.util.Locale.US, "$%,.4f", newPrice)
+                val formattedPrice = when {
+                    newPrice >= 10.0 -> String.format(java.util.Locale.US, "$%,.2f", newPrice)
+                    newPrice >= 1.0 -> String.format(java.util.Locale.US, "$%,.4f", newPrice)
+                    newPrice >= 0.01 -> String.format(java.util.Locale.US, "$%,.5f", newPrice)
+                    newPrice >= 0.0001 -> String.format(java.util.Locale.US, "$%,.6f", newPrice)
+                    newPrice > 0.0 -> String.format(java.util.Locale.US, "$%,.8f", newPrice)
+                    else -> "$0.00"
                 }
                 tvLivePriceHeader.text = formattedPrice
             }
@@ -4479,7 +4509,7 @@ class MainActivity : AppCompatActivity(),
             updateTpSlEstUi()
 
             if (!isMarketOrder && etEntryPrice.text.isNullOrEmpty()) {
-                etEntryPrice.setText(String.format(java.util.Locale.US, "%.2f", newPrice))
+                etEntryPrice.setText(if (newPrice >= 1.0) String.format(java.util.Locale.US, "%.2f", newPrice) else String.format(java.util.Locale.US, "%.6f", newPrice))
             }
         }
 
@@ -4712,9 +4742,25 @@ class MainActivity : AppCompatActivity(),
                         }
 
                         val cleanCurrent = HyperliquidOrderManager.cleanSymbolString(currentRawSymbol)
-                        val curPx = allMids[cleanCurrent] ?: allMids[currentRawSymbol]
+                        val spotInfo = HyperliquidOrderManager.getSpotAssetInfo(cleanCurrent) ?: HyperliquidOrderManager.getSpotAssetInfo(currentDisplaySymbol)
+                        val curPx = allMids[cleanCurrent]
+                            ?: allMids[currentRawSymbol]
+                            ?: (if (spotInfo != null) allMids["@${spotInfo.universeIndex}"] else null)
+                            ?: (if (cleanCurrent.equals("PURR", ignoreCase = true)) allMids["PURR"] else null)
                         if (curPx != null && curPx > 0) {
                             onLivePriceUpdated(currentRawSymbol, curPx)
+                        }
+
+                        // Map spot prices into symbolPrices
+                        val allSpots = HyperliquidOrderManager.getAllSpotAssetInfos()
+                        for (sInfo in allSpots) {
+                            val sPx = allMids["@${sInfo.universeIndex}"]
+                                ?: (if (sInfo.baseToken.equals("PURR", ignoreCase = true)) allMids["PURR"] else null)
+                            if (sPx != null && sPx > 0) {
+                                symbolPrices[sInfo.baseToken] = sPx
+                                symbolPrices["${sInfo.baseToken}USDC"] = sPx
+                                symbolPrices[sInfo.displaySymbol] = sPx
+                            }
                         }
                     }
                 }

@@ -225,16 +225,34 @@ object HyperliquidOrderManager {
         }
         val purr = SpotAssetInfo(0, 10000, "PURR/USDC", "PURR", "USDC", 0, 5)
         val hfun = SpotAssetInfo(1, 10001, "HFUN/USDC", "HFUN", "USDC", 2, 8)
+        val lick = SpotAssetInfo(2, 10002, "LICK/USDC", "LICK", "USDC", 0, 8)
+        val manlet = SpotAssetInfo(3, 10003, "MANLET/USDC", "MANLET", "USDC", 0, 8)
+        val jeff = SpotAssetInfo(4, 10004, "JEFF/USDC", "JEFF", "USDC", 2, 8)
+        val six = SpotAssetInfo(5, 10005, "SIX/USDC", "SIX", "USDC", 2, 8)
+        val wagmi = SpotAssetInfo(6, 10006, "WAGMI/USDC", "WAGMI", "USDC", 0, 8)
+        val cappy = SpotAssetInfo(7, 10007, "CAPPY/USDC", "CAPPY", "USDC", 0, 8)
+        val points = SpotAssetInfo(8, 10008, "POINTS/USDC", "POINTS", "USDC", 0, 8)
+        val schizo = SpotAssetInfo(23, 10023, "SCHIZO/USDC", "SCHIZO", "USDC", 0, 8)
+        val sell = SpotAssetInfo(24, 10024, "SELL/USDC", "SELL", "USDC", 0, 8)
+        val bigben = SpotAssetInfo(25, 10025, "BIGBEN/USDC", "BIGBEN", "USDC", 0, 8)
+        val catnip = SpotAssetInfo(26, 10026, "CATNIP/USDC", "CATNIP", "USDC", 0, 8)
+        val hboost = SpotAssetInfo(27, 10027, "HBOOST/USDC", "HBOOST", "USDC", 0, 8)
+        val sucky = SpotAssetInfo(28, 10028, "SUCKY/USDC", "SUCKY", "USDC", 0, 8)
+        val gup = SpotAssetInfo(29, 10029, "GUP/USDC", "GUP", "USDC", 0, 8)
+        val farmed = SpotAssetInfo(30, 10030, "FARMED/USDC", "FARMED", "USDC", 0, 8)
         val hype = SpotAssetInfo(150, 10150, "HYPE/USDC", "HYPE", "USDC", 2, 8)
         val btc = SpotAssetInfo(200, 10200, "BTC/USDC", "BTC", "USDC", 5, 8)
         val eth = SpotAssetInfo(201, 10201, "ETH/USDC", "ETH", "USDC", 4, 8)
         val sol = SpotAssetInfo(202, 10202, "SOL/USDC", "SOL", "USDC", 2, 8)
-        return listOf(purr, hfun, hype, btc, eth, sol)
+        return listOf(purr, hfun, lick, manlet, jeff, six, wagmi, cappy, points, schizo, sell, bigben, catnip, hboost, sucky, gup, farmed, hype, btc, eth, sol)
     }
 
     fun getSpotAssetInfo(symbol: String): SpotAssetInfo? {
         val clean = cleanSymbolString(symbol)
-        return dynamicSpotAssetMap[clean]
+        dynamicSpotAssetMap[clean]?.let { return it }
+        return getAllSpotAssetInfos().firstOrNull {
+            cleanSymbolString(it.name).equals(clean, true) || cleanSymbolString(it.baseToken).equals(clean, true)
+        }
     }
 
     fun getSpotAssetIndex(symbol: String): Int {

@@ -35,6 +35,20 @@ class BotStrategyChartView @JvmOverloads constructor(
     enum class BotState { NEUTRAL, IN_BUY, IN_SELL }
     private enum class ChannelState { UNKNOWN, BELOW_OR_INSIDE, FULLY_ABOVE }
 
+    companion object {
+        fun formatPriceValue(value: Double): String {
+            val absV = abs(value)
+            return when {
+                absV >= 1000.0 -> String.format(Locale.US, "%,.2f", value)
+                absV >= 1.0 -> String.format(Locale.US, "%.4f", value)
+                absV >= 0.01 -> String.format(Locale.US, "%.5f", value)
+                absV >= 0.0001 -> String.format(Locale.US, "%.6f", value)
+                absV > 0.0 -> String.format(Locale.US, "%.8f", value)
+                else -> "0.00"
+            }
+        }
+    }
+
     // Candle data
     var candles: List<Candle> = emptyList()
         set(value) {
@@ -614,7 +628,7 @@ class BotStrategyChartView @JvmOverloads constructor(
             canvas.drawLine(paddingLeftPx, py, paddingLeftPx + chartWidth, py, paintGrid)
 
             val pValue = currentMaxPrice - (g.toDouble() / gridLines) * priceRange
-            val pText = String.format(Locale.US, "%.2f", pValue)
+            val pText = formatPriceValue(pValue)
             canvas.drawText(pText, paddingLeftPx + chartWidth + 12f, py + 8f, paintTextSec)
         }
 
@@ -777,7 +791,7 @@ class BotStrategyChartView @JvmOverloads constructor(
             // Right-aligned Cyan/Blue line extending strictly from latest candle to price axis
             canvas.drawLine(startX, yLast, paddingLeftPx + chartWidth, yLast, paintSignalLine)
 
-            val priceStr = String.format(Locale.US, "%.2f", lastCandle.close)
+            val priceStr = formatPriceValue(lastCandle.close)
             val rectTag = RectF(paddingLeftPx + chartWidth + 4f, yLast - 18f, width.toFloat() - 6f, yLast + 18f)
             canvas.drawRoundRect(rectTag, 6f, 6f, paintPriceBadge)
 
@@ -808,10 +822,10 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val timeStr = if (hc.timestamp > 0) sdf.format(Date(hc.timestamp)) else "30m Candle"
 
                 val hoverPrice = currentMaxPrice - ((clampedY - paddingTopPx) / chartHeight) * priceRange
-                val priceHoverStr = String.format(Locale.US, "%.2f", hoverPrice)
+                val priceHoverStr = formatPriceValue(hoverPrice)
 
                 // Render Hover Callout Box
-                val boxWidth = 340f
+                val boxWidth = 380f
                 val boxHeight = 110f
                 val boxX = (clampedX + 20f).coerceAtMost(width.toFloat() - boxWidth - 10f)
                 val boxY = (clampedY - boxHeight - 20f).coerceAtLeast(paddingTopPx + 10f)
@@ -824,12 +838,12 @@ class BotStrategyChartView @JvmOverloads constructor(
                 canvas.drawRoundRect(boxRect, 10f, 10f, paintBoxBorder)
 
                 canvas.drawText("$timeStr | $$priceHoverStr", boxX + 14f, boxY + 30f, paintText)
-                val ohlcText = String.format(Locale.US, "O:%.2f H:%.2f L:%.2f C:%.2f", hc.open, hc.high, hc.low, hc.close)
+                val ohlcText = "O:${formatPriceValue(hc.open)} H:${formatPriceValue(hc.high)} L:${formatPriceValue(hc.low)} C:${formatPriceValue(hc.close)}"
                 canvas.drawText(ohlcText, boxX + 14f, boxY + 62f, paintTextSec)
 
                 val e8H = if (hoverIndex < ema8HighSeries.size) ema8HighSeries[hoverIndex] else 0.0
                 val e34H = if (hoverIndex < ema34HighSeries.size) ema34HighSeries[hoverIndex] else 0.0
-                val emaText = String.format(Locale.US, "EMA8:%.2f | EMA34:%.2f", e8H, e34H)
+                val emaText = "EMA8:${formatPriceValue(e8H)} | EMA34:${formatPriceValue(e34H)}"
                 val paintEmaLegend = Paint(paintTextSec).apply { color = colorYellowChannel; textSize = 18f }
                 canvas.drawText(emaText, boxX + 14f, boxY + 90f, paintEmaLegend)
             }
