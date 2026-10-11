@@ -31,11 +31,11 @@ import java.util.concurrent.TimeUnit
 class BotStrategyChartFragment : Fragment() {
 
     private val defaultSpotPairs = listOf(
+        "BTC/USDC", "ETH/USDC", "SOL/USDC", "HYPE/USDC",
         "PURR/USDC", "HFUN/USDC", "LICK/USDC", "MANLET/USDC", "JEFF/USDC", "SIX/USDC",
         "WAGMI/USDC", "CAPPY/USDC", "POINTS/USDC", "SCHIZO/USDC", "SELL/USDC", "BIGBEN/USDC",
         "CATNIP/USDC", "HBOOST/USDC", "SUCKY/USDC", "GUP/USDC", "FARMED/USDC", "TRUMP/USDC",
-        "GMEOW/USDC", "PEPE/USDC", "XULIAN/USDC", "RUG/USDC", "ILIENS/USDC", "HYPE/USDC",
-        "BTC/USDC", "ETH/USDC", "SOL/USDC"
+        "GMEOW/USDC", "PEPE/USDC", "XULIAN/USDC", "RUG/USDC", "ILIENS/USDC"
     )
 
     private val FALLBACK_SPOT_INDICES = mapOf(
@@ -439,6 +439,9 @@ class BotStrategyChartFragment : Fragment() {
 
     private fun getHyperliquidCoin(symbol: String): String {
         val clean = HyperliquidOrderManager.cleanSymbolString(symbol).uppercase(Locale.US)
+        if (clean in listOf("BTC", "ETH", "SOL", "HYPE")) {
+            return clean
+        }
         if (clean == "PURR") return "PURR"
 
         val spotInfo = HyperliquidOrderManager.getSpotAssetInfo(clean)
@@ -450,10 +453,6 @@ class BotStrategyChartFragment : Fragment() {
         val fallbackIdx = FALLBACK_SPOT_INDICES[clean]
         if (fallbackIdx != null) {
             return if (fallbackIdx == 0) "PURR" else "@$fallbackIdx"
-        }
-
-        if (clean in listOf("BTC", "ETH", "SOL", "HYPE")) {
-            return clean
         }
 
         return clean

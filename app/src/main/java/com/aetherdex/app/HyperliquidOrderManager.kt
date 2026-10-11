@@ -164,18 +164,32 @@ object HyperliquidOrderManager {
                     }
 
                     if (newList.isNotEmpty()) {
+                        val fullList = mutableListOf<SpotAssetInfo>()
+                        val majors = getCoreMajorSpotAssets()
+                        fullList.addAll(majors)
+                        for (m in majors) {
+                            dynamicSpotAssetMap[cleanSymbolString(m.name)] = m
+                            dynamicSpotAssetMap[cleanSymbolString(m.baseToken)] = m
+                        }
+
+                        for (item in newList) {
+                            if (!fullList.any { it.baseToken.equals(item.baseToken, ignoreCase = true) }) {
+                                fullList.add(item)
+                            }
+                        }
+
                         dynamicSpotAssetList.clear()
-                        dynamicSpotAssetList.addAll(newList)
+                        dynamicSpotAssetList.addAll(fullList)
                         isSpotMetadataLoaded = true
-                        Log.i(TAG, "Successfully loaded ${newList.size} Spot pairs from Hyperliquid L1")
-                        return@withContext newList
+                        Log.i(TAG, "Successfully loaded ${fullList.size} Spot pairs (with BTC, ETH, SOL) from Hyperliquid L1")
+                        return@withContext fullList
                     }
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to fetch Hyperliquid Spot market metadata", e)
         }
-        return@withContext dynamicSpotAssetList.toList()
+        return@withContext getAllSpotAssetInfos()
     }
 
     suspend fun fetchSpotClearinghouseState(userAddress: String): Map<String, SpotBalanceInfo> = withContext(Dispatchers.IO) {
@@ -219,32 +233,51 @@ object HyperliquidOrderManager {
         return@withContext result
     }
 
+    fun getCoreMajorSpotAssets(): List<SpotAssetInfo> {
+        val btcMark = getAssetInfo("BTC")?.markPrice ?: 0.0
+        val ethMark = getAssetInfo("ETH")?.markPrice ?: 0.0
+        val solMark = getAssetInfo("SOL")?.markPrice ?: 0.0
+        val hypeMark = getAssetInfo("HYPE")?.markPrice ?: 0.0
+
+        val btc = SpotAssetInfo(200, 10200, "BTC/USDC", "BTC", "USDC", 5, 8, markPrice = btcMark)
+        val eth = SpotAssetInfo(201, 10201, "ETH/USDC", "ETH", "USDC", 4, 8, markPrice = ethMark)
+        val sol = SpotAssetInfo(202, 10202, "SOL/USDC", "SOL", "USDC", 2, 8, markPrice = solMark)
+        val hype = SpotAssetInfo(150, 10150, "HYPE/USDC", "HYPE", "USDC", 2, 8, markPrice = hypeMark)
+        return listOf(btc, eth, sol, hype)
+    }
+
     fun getAllSpotAssetInfos(): List<SpotAssetInfo> {
-        if (dynamicSpotAssetList.isNotEmpty()) {
-            return dynamicSpotAssetList.toList()
+        val majors = getCoreMajorSpotAssets()
+        val result = mutableListOf<SpotAssetInfo>()
+        result.addAll(majors)
+
+        val fallbackItems = listOf(
+            SpotAssetInfo(0, 10000, "PURR/USDC", "PURR", "USDC", 0, 5),
+            SpotAssetInfo(1, 10001, "HFUN/USDC", "HFUN", "USDC", 2, 8),
+            SpotAssetInfo(2, 10002, "LICK/USDC", "LICK", "USDC", 0, 8),
+            SpotAssetInfo(3, 10003, "MANLET/USDC", "MANLET", "USDC", 0, 8),
+            SpotAssetInfo(4, 10004, "JEFF/USDC", "JEFF", "USDC", 2, 8),
+            SpotAssetInfo(5, 10005, "SIX/USDC", "SIX", "USDC", 2, 8),
+            SpotAssetInfo(6, 10006, "WAGMI/USDC", "WAGMI", "USDC", 0, 8),
+            SpotAssetInfo(7, 10007, "CAPPY/USDC", "CAPPY", "USDC", 0, 8),
+            SpotAssetInfo(8, 10008, "POINTS/USDC", "POINTS", "USDC", 0, 8),
+            SpotAssetInfo(23, 10023, "SCHIZO/USDC", "SCHIZO", "USDC", 0, 8),
+            SpotAssetInfo(24, 10024, "SELL/USDC", "SELL", "USDC", 0, 8),
+            SpotAssetInfo(25, 10025, "BIGBEN/USDC", "BIGBEN", "USDC", 0, 8),
+            SpotAssetInfo(26, 10026, "CATNIP/USDC", "CATNIP", "USDC", 0, 8),
+            SpotAssetInfo(27, 10027, "HBOOST/USDC", "HBOOST", "USDC", 0, 8),
+            SpotAssetInfo(28, 10028, "SUCKY/USDC", "SUCKY", "USDC", 0, 8),
+            SpotAssetInfo(29, 10029, "GUP/USDC", "GUP", "USDC", 0, 8),
+            SpotAssetInfo(30, 10030, "FARMED/USDC", "FARMED", "USDC", 0, 8)
+        )
+
+        val sourceList = if (dynamicSpotAssetList.isNotEmpty()) dynamicSpotAssetList else fallbackItems
+        for (spot in sourceList) {
+            if (!result.any { it.baseToken.equals(spot.baseToken, ignoreCase = true) }) {
+                result.add(spot)
+            }
         }
-        val purr = SpotAssetInfo(0, 10000, "PURR/USDC", "PURR", "USDC", 0, 5)
-        val hfun = SpotAssetInfo(1, 10001, "HFUN/USDC", "HFUN", "USDC", 2, 8)
-        val lick = SpotAssetInfo(2, 10002, "LICK/USDC", "LICK", "USDC", 0, 8)
-        val manlet = SpotAssetInfo(3, 10003, "MANLET/USDC", "MANLET", "USDC", 0, 8)
-        val jeff = SpotAssetInfo(4, 10004, "JEFF/USDC", "JEFF", "USDC", 2, 8)
-        val six = SpotAssetInfo(5, 10005, "SIX/USDC", "SIX", "USDC", 2, 8)
-        val wagmi = SpotAssetInfo(6, 10006, "WAGMI/USDC", "WAGMI", "USDC", 0, 8)
-        val cappy = SpotAssetInfo(7, 10007, "CAPPY/USDC", "CAPPY", "USDC", 0, 8)
-        val points = SpotAssetInfo(8, 10008, "POINTS/USDC", "POINTS", "USDC", 0, 8)
-        val schizo = SpotAssetInfo(23, 10023, "SCHIZO/USDC", "SCHIZO", "USDC", 0, 8)
-        val sell = SpotAssetInfo(24, 10024, "SELL/USDC", "SELL", "USDC", 0, 8)
-        val bigben = SpotAssetInfo(25, 10025, "BIGBEN/USDC", "BIGBEN", "USDC", 0, 8)
-        val catnip = SpotAssetInfo(26, 10026, "CATNIP/USDC", "CATNIP", "USDC", 0, 8)
-        val hboost = SpotAssetInfo(27, 10027, "HBOOST/USDC", "HBOOST", "USDC", 0, 8)
-        val sucky = SpotAssetInfo(28, 10028, "SUCKY/USDC", "SUCKY", "USDC", 0, 8)
-        val gup = SpotAssetInfo(29, 10029, "GUP/USDC", "GUP", "USDC", 0, 8)
-        val farmed = SpotAssetInfo(30, 10030, "FARMED/USDC", "FARMED", "USDC", 0, 8)
-        val hype = SpotAssetInfo(150, 10150, "HYPE/USDC", "HYPE", "USDC", 2, 8)
-        val btc = SpotAssetInfo(200, 10200, "BTC/USDC", "BTC", "USDC", 5, 8)
-        val eth = SpotAssetInfo(201, 10201, "ETH/USDC", "ETH", "USDC", 4, 8)
-        val sol = SpotAssetInfo(202, 10202, "SOL/USDC", "SOL", "USDC", 2, 8)
-        return listOf(purr, hfun, lick, manlet, jeff, six, wagmi, cappy, points, schizo, sell, bigben, catnip, hboost, sucky, gup, farmed, hype, btc, eth, sol)
+        return result
     }
 
     fun getSpotAssetInfo(symbol: String): SpotAssetInfo? {
@@ -262,6 +295,9 @@ object HyperliquidOrderManager {
         if (clean == "PURR") return 10000
         if (clean == "HFUN") return 10001
         if (clean == "HYPE") return 10150
+        if (clean == "BTC") return 10200
+        if (clean == "ETH") return 10201
+        if (clean == "SOL") return 10202
         return 10000
     }
 

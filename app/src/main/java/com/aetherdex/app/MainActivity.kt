@@ -4781,7 +4781,8 @@ class MainActivity : AppCompatActivity(),
                         // Map spot prices into symbolPrices
                         val allSpots = HyperliquidOrderManager.getAllSpotAssetInfos()
                         for (sInfo in allSpots) {
-                            val sPx = allMids["@${sInfo.universeIndex}"]
+                            val sPx = allMids[sInfo.baseToken]
+                                ?: allMids["@${sInfo.universeIndex}"]
                                 ?: (if (sInfo.baseToken.equals("PURR", ignoreCase = true)) allMids["PURR"] else null)
                             if (sPx != null && sPx > 0) {
                                 symbolPrices[sInfo.baseToken] = sPx
@@ -8019,16 +8020,26 @@ class SpotDropdownAdapter(
         tvLeverageBadge?.text = "SPOT"
         tvLeverageBadge?.setBackgroundResource(R.drawable.bg_chip_selected_green)
 
-        if (item.markPrice > 0.0) {
-            tvPrice?.text = if (item.markPrice >= 10.0) {
-                String.format(Locale.US, "$%,.2f", item.markPrice)
-            } else if (item.markPrice >= 1.0) {
-                String.format(Locale.US, "$%,.4f", item.markPrice)
+        val effectivePrice = if (item.markPrice > 0.0) {
+            item.markPrice
+        } else {
+            HyperliquidOrderManager.getAssetInfo(item.baseToken)?.markPrice ?: 0.0
+        }
+
+        if (effectivePrice > 0.0) {
+            tvPrice?.text = if (effectivePrice >= 10.0) {
+                String.format(Locale.US, "$%,.2f", effectivePrice)
+            } else if (effectivePrice >= 1.0) {
+                String.format(Locale.US, "$%,.4f", effectivePrice)
             } else {
-                String.format(Locale.US, "$%,.6f", item.markPrice)
+                String.format(Locale.US, "$%,.6f", effectivePrice)
             }
 
-            val pct = item.change24hPercent
+            val pct = if (item.change24hPercent != 0.0) {
+                item.change24hPercent
+            } else {
+                HyperliquidOrderManager.getAssetInfo(item.baseToken)?.change24hPercent ?: 0.0
+            }
             val sign = if (pct >= 0) "+" else ""
             tv24hChange?.text = String.format(Locale.US, "%s%.2f%%", sign, pct)
             val changeColor = if (pct >= 0) {
@@ -8055,13 +8066,31 @@ class SpotDropdownAdapter(
                     results.values = allAssets
                     results.count = allAssets.size
                 } else {
-                    val query = constraint.toString().trim().lowercase()
-                    val filtered = allAssets.filter {
-                        it.name.lowercase().contains(query) ||
-                        it.displaySymbol.lowercase().contains(query)
+                    val query = constraint.toString().trim().lowercase(Locale.US)
+                    val priorityMatches = mutableListOf<HyperliquidOrderManager.SpotAssetInfo>()
+                    val regularMatches = mutableListOf<HyperliquidOrderManager.SpotAssetInfo>()
+
+                    for (item in allAssets) {
+                        val sym = item.displaySymbol.lowercase(Locale.US)
+                        val base = item.baseToken.lowercase(Locale.US)
+                        val name = item.name.lowercase(Locale.US)
+
+                        val isBtcMatch = (query == "btc" || query == "bitcoin") && (base == "btc" || base == "ubtc" || name.contains("btc"))
+                        val isEthMatch = (query == "eth" || query == "ethereum" || query == "ether") && (base == "eth" || base == "ueth" || name.contains("eth"))
+                        val isSolMatch = (query == "sol" || query == "solana") && (base == "sol" || base == "usol" || name.contains("sol"))
+
+                        if (base == query || sym.startsWith(query) || isBtcMatch || isEthMatch || isSolMatch) {
+                            priorityMatches.add(item)
+                        } else if (sym.contains(query) || base.contains(query) || name.contains(query)) {
+                            regularMatches.add(item)
+                        }
                     }
-                    results.values = filtered
-                    results.count = filtered.size
+
+                    val combined = ArrayList<HyperliquidOrderManager.SpotAssetInfo>(priorityMatches.size + regularMatches.size)
+                    combined.addAll(priorityMatches)
+                    combined.addAll(regularMatches)
+                    results.values = combined
+                    results.count = combined.size
                 }
                 return results
             }

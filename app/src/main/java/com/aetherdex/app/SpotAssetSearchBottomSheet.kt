@@ -242,9 +242,15 @@ object SpotAssetSearchBottomSheet {
                     )
                 }
 
-                if (item.markPrice > 0.0) {
+                val effectivePrice = if (item.markPrice > 0.0) {
+                    item.markPrice
+                } else {
+                    HyperliquidOrderManager.getAssetInfo(item.baseToken)?.markPrice ?: 0.0
+                }
+
+                if (effectivePrice > 0.0) {
                     val tvPrice = TextView(context).apply {
-                        text = "$" + BotStrategyChartView.formatPriceValue(item.markPrice)
+                        text = "$" + BotStrategyChartView.formatPriceValue(effectivePrice)
                         textSize = 13f
                         setTypeface(null, Typeface.BOLD)
                         setTextColor(Color.WHITE)
@@ -252,7 +258,11 @@ object SpotAssetSearchBottomSheet {
                     }
                     rightCol.addView(tvPrice)
 
-                    val pct = item.change24hPercent
+                    val pct = if (item.change24hPercent != 0.0) {
+                        item.change24hPercent
+                    } else {
+                        HyperliquidOrderManager.getAssetInfo(item.baseToken)?.change24hPercent ?: 0.0
+                    }
                     val sign = if (pct >= 0) "+" else ""
                     val tvChange = TextView(context).apply {
                         text = String.format(Locale.US, "%s%.2f%%", sign, pct)
@@ -310,14 +320,27 @@ object SpotAssetSearchBottomSheet {
                 if (q.isEmpty()) {
                     displayedList.addAll(allAssets)
                 } else {
+                    val priorityMatches = mutableListOf<HyperliquidOrderManager.SpotAssetInfo>()
+                    val regularMatches = mutableListOf<HyperliquidOrderManager.SpotAssetInfo>()
+
                     for (item in allAssets) {
-                        if (item.displaySymbol.lowercase(Locale.US).contains(q) ||
-                            item.baseToken.lowercase(Locale.US).contains(q) ||
-                            item.name.lowercase(Locale.US).contains(q)
-                        ) {
-                            displayedList.add(item)
+                        val sym = item.displaySymbol.lowercase(Locale.US)
+                        val base = item.baseToken.lowercase(Locale.US)
+                        val name = item.name.lowercase(Locale.US)
+
+                        val isBtcMatch = (q == "btc" || q == "bitcoin") && (base == "btc" || base == "ubtc" || name.contains("btc"))
+                        val isEthMatch = (q == "eth" || q == "ethereum" || q == "ether") && (base == "eth" || base == "ueth" || name.contains("eth"))
+                        val isSolMatch = (q == "sol" || q == "solana") && (base == "sol" || base == "usol" || name.contains("sol"))
+
+                        if (base == q || sym.startsWith(q) || isBtcMatch || isEthMatch || isSolMatch) {
+                            priorityMatches.add(item)
+                        } else if (sym.contains(q) || base.contains(q) || name.contains(q)) {
+                            regularMatches.add(item)
                         }
                     }
+
+                    displayedList.addAll(priorityMatches)
+                    displayedList.addAll(regularMatches)
                 }
                 adapter.notifyDataSetChanged()
             }
