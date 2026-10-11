@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.*
@@ -29,7 +30,6 @@ import java.util.concurrent.TimeUnit
 
 class BotStrategyChartFragment : Fragment() {
 
-    // Comprehensive initial list of active Hyperliquid Spot assets
     private val defaultSpotPairs = listOf(
         "PURR/USDC", "HFUN/USDC", "LICK/USDC", "MANLET/USDC", "JEFF/USDC", "SIX/USDC",
         "WAGMI/USDC", "CAPPY/USDC", "POINTS/USDC", "SCHIZO/USDC", "SELL/USDC", "BIGBEN/USDC",
@@ -46,21 +46,20 @@ class BotStrategyChartFragment : Fragment() {
         "GUP" to 29, "FARMED" to 30
     )
 
-    private val spotPairsList = mutableListOf<String>()
     private var currentPair = "PURR/USDC"
     private var isFullscreenMode = false
-    private var isProgrammaticSpinnerSelection = false
 
     private lateinit var rootLayout: LinearLayout
+    private lateinit var tvSelectedAsset: TextView
     private lateinit var tvHeaderPrice: TextView
-    private lateinit var tvSignalStatus: TextView
-    private lateinit var spinnerPairs: Spinner
-    private lateinit var spinnerAdapter: ArrayAdapter<String>
+    private lateinit var btnStrategyInfo: ImageView
     private lateinit var btnToggleFullscreen: ImageView
     private lateinit var btnResetChart: ImageView
     private lateinit var btnRefresh: ImageView
     private lateinit var progressBar: ProgressBar
     private lateinit var botChartView: BotStrategyChartView
+
+    private var strategyInfoPopup: PopupWindow? = null
 
     var onFullscreenToggleListener: ((Boolean) -> Unit)? = null
 
@@ -106,92 +105,116 @@ class BotStrategyChartFragment : Fragment() {
             )
         }
 
-        // Initialize symbol list with comprehensive fallback
-        spotPairsList.clear()
-        spotPairsList.addAll(defaultSpotPairs)
-
         // Sync initial pair from SharedSpotSelectionState
         currentPair = SharedSpotSelectionState.currentDisplaySymbol
-        if (!spotPairsList.any { it.equals(currentPair, ignoreCase = true) }) {
-            spotPairsList.add(0, currentPair)
-        }
 
-        // ── Top Header Control & Indicator Legend Bar ───────────────────────
+        // ── Streamlined Compact Top Header Bar (Single Row, Max Vertical Canvas) ──
         val headerCard = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             background = GradientDrawable().apply {
                 setColor(bgCard)
-                cornerRadius = density * 14f
+                cornerRadius = density * 12f
             }
-            val p = dp(12)
-            setPadding(p, p, p, p)
+            val hp = dp(10)
+            val vp = dp(8)
+            setPadding(hp, vp, hp, vp)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply {
-                setMargins(dp(12), dp(12), dp(12), dp(8))
+                setMargins(dp(10), dp(10), dp(10), dp(6))
             }
         }
 
-        // ── Row 1: Pair Dropdown, Live Price, Signal Status & Actions ──────
-        val topRow = LinearLayout(context).apply {
+        // ── 1. Asset Dropdown Selector (Relocated to left header space) ──
+        val layoutAssetSelector = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(bgChip)
+                cornerRadius = density * 8f
+                setStroke(dp(1), Color.parseColor("#2A3241"))
+            }
+            val pX = dp(10)
+            val pY = dp(6)
+            setPadding(pX, pY, pX, pY)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            setOnClickListener {
+                showAssetSearchDialog()
+            }
+        }
+
+        tvSelectedAsset = TextView(context).apply {
+            text = "$currentPair  ▾"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.WHITE)
+        }
+        layoutAssetSelector.addView(tvSelectedAsset)
+        headerCard.addView(layoutAssetSelector)
+
+        // ── 2. Streamlined Compact Live Price (Centered in header bar) ──
+        tvHeaderPrice = TextView(context).apply {
+            text = "Loading..."
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(textPrim)
+            gravity = Gravity.CENTER
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(8)
+                marginEnd = dp(8)
+            }
+        }
+        headerCard.addView(tvHeaderPrice)
+
+        // ── 3. Right Action Controls: Info (Popup), Reset, Refresh, Fullscreen ──
+        val rightActions = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         }
 
-        val pairCol = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        // Strategy Detail & Legend Info Button (ℹ️)
+        btnStrategyInfo = ImageView(context).apply {
+            setImageResource(android.R.drawable.ic_dialog_info)
+            setColorFilter(green)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = roundedBg(bgChip, 8f)
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply {
+                marginEnd = dp(6)
+            }
+            setOnClickListener {
+                toggleStrategyInfoPopup(btnStrategyInfo)
+            }
         }
+        rightActions.addView(btnStrategyInfo)
 
-        val titleRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-
-        val tvTitleBadge = TextView(context).apply {
-            text = "🤖 BOT 30M STRATEGY"
-            textSize = 12f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(green)
-            setPadding(dp(6), dp(2), dp(6), dp(2))
-            background = roundedBg(Color.parseColor("#1000E676"), 6f)
-        }
-        titleRow.addView(tvTitleBadge)
-
-        tvHeaderPrice = TextView(context).apply {
-            text = "Loading..."
-            textSize = 20f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(textPrim)
-        }
-
-        pairCol.addView(titleRow)
-        pairCol.addView(tvHeaderPrice)
-        topRow.addView(pairCol)
-
-        // Action Buttons: Reset, Refresh, Landscape Fullscreen
         btnResetChart = ImageView(context).apply {
             setImageResource(android.R.drawable.ic_menu_rotate)
             setColorFilter(textSec)
             setPadding(dp(6), dp(6), dp(6), dp(6))
             background = roundedBg(bgChip, 8f)
-            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply {
                 marginEnd = dp(6)
             }
             setOnClickListener { botChartView.resetView() }
         }
+        rightActions.addView(btnResetChart)
 
         btnRefresh = ImageView(context).apply {
             setImageResource(android.R.drawable.ic_popup_sync)
             setColorFilter(textSec)
             setPadding(dp(6), dp(6), dp(6), dp(6))
             background = roundedBg(bgChip, 8f)
-            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34)).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply {
                 marginEnd = dp(6)
             }
             setOnClickListener {
@@ -201,98 +224,21 @@ class BotStrategyChartFragment : Fragment() {
                 startPollingLoop(currentPair, hlCoin)
             }
         }
+        rightActions.addView(btnRefresh)
 
         btnToggleFullscreen = ImageView(context).apply {
             setImageResource(android.R.drawable.ic_menu_crop)
             setColorFilter(textSec)
             setPadding(dp(6), dp(6), dp(6), dp(6))
             background = roundedBg(bgChip, 8f)
-            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34))
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32))
             setOnClickListener {
                 toggleFullscreenLandscape()
             }
         }
+        rightActions.addView(btnToggleFullscreen)
 
-        topRow.addView(btnResetChart)
-        topRow.addView(btnRefresh)
-        topRow.addView(btnToggleFullscreen)
-        headerCard.addView(topRow)
-
-        // ── Row 2: Pair Selector & Indicator Legend ─────────────────────────
-        val legendRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = dp(8)
-            }
-        }
-
-        spinnerAdapter = object : ArrayAdapter<String>(
-            context,
-            android.R.layout.simple_spinner_dropdown_item,
-            spotPairsList
-        ) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val tv = super.getView(position, convertView, parent) as TextView
-                tv.setTextColor(Color.WHITE)
-                tv.setTypeface(null, Typeface.BOLD)
-                tv.textSize = 13f
-                return tv
-            }
-
-            override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val tv = super.getDropDownView(position, convertView, parent) as TextView
-                tv.setBackgroundColor(Color.parseColor("#151921"))
-                tv.setTextColor(Color.WHITE)
-                tv.setTypeface(null, Typeface.BOLD)
-                tv.textSize = 14f
-                val pad = dp(10)
-                tv.setPadding(pad, pad, pad, pad)
-                return tv
-            }
-        }
-
-        spinnerPairs = Spinner(context).apply {
-            adapter = spinnerAdapter
-            background = roundedBg(bgChip, 8f)
-            setPadding(dp(10), dp(6), dp(10), dp(6))
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            val initialIndex = spotPairsList.indexOfFirst { it.equals(currentPair, ignoreCase = true) }
-            if (initialIndex >= 0) {
-                setSelection(initialIndex)
-            }
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    if (isProgrammaticSpinnerSelection) return
-                    val selected = spotPairsList.getOrNull(position) ?: return
-                    if (!selected.equals(currentPair, ignoreCase = true)) {
-                        selectSymbol(selected, notifySharedState = true)
-                    }
-                }
-                override fun onNothingSelected(parent: AdapterView<*>?) {}
-            }
-        }
-        legendRow.addView(spinnerPairs)
-
-        tvSignalStatus = TextView(context).apply {
-            text = "EMA8 (White) | EMA34 (Yellow) | EMA 200/233 (Red)"
-            textSize = 10f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(textSec)
-            gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(8)
-            }
-        }
-        legendRow.addView(tvSignalStatus)
-
-        headerCard.addView(legendRow)
+        headerCard.addView(rightActions)
         rootLayout.addView(headerCard)
 
         // Loading ProgressBar
@@ -303,7 +249,7 @@ class BotStrategyChartFragment : Fragment() {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(3)
             ).apply {
-                setMargins(dp(12), 0, dp(12), dp(4))
+                setMargins(dp(10), 0, dp(10), dp(4))
             }
         }
         rootLayout.addView(progressBar)
@@ -321,8 +267,8 @@ class BotStrategyChartFragment : Fragment() {
         // Register shared selection state listener
         SharedSpotSelectionState.addListener(sharedSelectionListener)
 
-        // Populate full dynamic spot list from Hyperliquid L1 metadata
-        populateDynamicSpotAssetList()
+        // Pre-fetch spot metadata if not yet loaded
+        ensureSpotMetadataLoaded()
 
         // Fetch initial data & start live ticker loops
         val hlCoin = getHyperliquidCoin(currentPair)
@@ -333,42 +279,141 @@ class BotStrategyChartFragment : Fragment() {
         return rootLayout
     }
 
-    private fun populateDynamicSpotAssetList() {
-        val existingSpots = HyperliquidOrderManager.getAllSpotAssetInfos()
-        if (existingSpots.isNotEmpty()) {
-            mergeSpotAssetInfos(existingSpots)
-        }
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            val freshSpots = HyperliquidOrderManager.fetchSpotMarketMetadata()
-            if (freshSpots.isNotEmpty()) {
-                withContext(Dispatchers.Main) {
-                    if (isAdded) {
-                        mergeSpotAssetInfos(freshSpots)
-                    }
-                }
+    private fun ensureSpotMetadataLoaded() {
+        if (!HyperliquidOrderManager.isSpotMetadataLoaded) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                HyperliquidOrderManager.fetchSpotMarketMetadata()
             }
         }
     }
 
-    private fun mergeSpotAssetInfos(spots: List<HyperliquidOrderManager.SpotAssetInfo>) {
-        val newSymbols = spots.map { it.displaySymbol }
-        var changed = false
-        for (sym in newSymbols) {
-            if (!spotPairsList.any { it.equals(sym, ignoreCase = true) }) {
-                spotPairsList.add(sym)
-                changed = true
+    private fun showAssetSearchDialog() {
+        val ctx = context ?: return
+        SpotAssetSearchBottomSheet.show(ctx, currentPair) { selectedSymbol ->
+            selectSymbol(selectedSymbol, notifySharedState = true)
+        }
+    }
+
+    private fun toggleStrategyInfoPopup(anchor: View) {
+        if (strategyInfoPopup?.isShowing == true) {
+            strategyInfoPopup?.dismiss()
+            strategyInfoPopup = null
+            return
+        }
+
+        val context = anchor.context
+        val density = resources.displayMetrics.density
+        val dp = { v: Int -> (v * density).toInt() }
+
+        val popupCard = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#151921"))
+                cornerRadius = density * 12f
+                setStroke(dp(1), Color.parseColor("#2A3241"))
+            }
+            elevation = density * 16f
+            val pad = dp(14)
+            setPadding(pad, pad, pad, pad)
+            layoutParams = ViewGroup.LayoutParams(dp(280), ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+
+        // Title Row
+        val titleRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = dp(4)
             }
         }
-        if (changed) {
-            spinnerAdapter.notifyDataSetChanged()
-            val pos = spotPairsList.indexOfFirst { it.equals(currentPair, ignoreCase = true) }
-            if (pos >= 0 && spinnerPairs.selectedItemPosition != pos) {
-                isProgrammaticSpinnerSelection = true
-                spinnerPairs.setSelection(pos)
-                isProgrammaticSpinnerSelection = false
+
+        val tvTitle = TextView(context).apply {
+            text = "🤖 BOT 30M STRATEGY"
+            textSize = 13f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00E676"))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        titleRow.addView(tvTitle)
+        popupCard.addView(titleRow)
+
+        val tvDesc = TextView(context).apply {
+            text = "Dual EMA channel breakout engine on 30m candles with strict breakout crossover verification."
+            textSize = 11f
+            setTextColor(Color.parseColor("#8A96A8"))
+            setPadding(0, 0, 0, dp(8))
+        }
+        popupCard.addView(tvDesc)
+
+        // Divider
+        val divider = View(context).apply {
+            setBackgroundColor(Color.parseColor("#2A3241"))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                bottomMargin = dp(6)
             }
         }
+        popupCard.addView(divider)
+
+        // Color Legend Items
+        fun addLegendRow(dotColor: Int, label: String, description: String) {
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(4), 0, dp(4))
+            }
+            val dot = View(context).apply {
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(dotColor)
+                }
+                layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply {
+                    marginEnd = dp(8)
+                }
+            }
+            row.addView(dot)
+
+            val tvLbl = TextView(context).apply {
+                text = label
+                textSize = 12f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.WHITE)
+                layoutParams = LinearLayout.LayoutParams(dp(90), LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+            row.addView(tvLbl)
+
+            val tvDet = TextView(context).apply {
+                text = description
+                textSize = 11f
+                setTextColor(Color.parseColor("#8A96A8"))
+            }
+            row.addView(tvDet)
+
+            popupCard.addView(row)
+        }
+
+        addLegendRow(Color.WHITE, "EMA 8", "White High/Low Channel")
+        addLegendRow(Color.parseColor("#FFD600"), "EMA 34", "Yellow High/Low Channel")
+        addLegendRow(Color.parseColor("#FF3D00"), "EMA 200/233", "Baseline Trend Filter")
+        addLegendRow(Color.parseColor("#00E676"), "▲ BUY", "Breakout above Yellow")
+        addLegendRow(Color.parseColor("#FF1744"), "▼ SELL", "Breakout below Yellow")
+        addLegendRow(Color.parseColor("#00E5FF"), "Cyan Line", "Live Price / Level")
+
+        val popup = PopupWindow(
+            popupCard,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            isOutsideTouchable = true
+            isFocusable = true
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        }
+
+        strategyInfoPopup = popup
+        popup.showAsDropDown(anchor, -dp(240), dp(6))
     }
 
     fun selectSymbol(symbol: String, notifySharedState: Boolean = false) {
@@ -382,18 +427,7 @@ class BotStrategyChartFragment : Fragment() {
             SharedSpotSelectionState.setSymbol(normalized, source = this)
         }
 
-        if (!spotPairsList.any { it.equals(normalized, ignoreCase = true) }) {
-            spotPairsList.add(0, normalized)
-            spinnerAdapter.notifyDataSetChanged()
-        }
-
-        val pos = spotPairsList.indexOfFirst { it.equals(normalized, ignoreCase = true) }
-        if (pos >= 0 && spinnerPairs.selectedItemPosition != pos) {
-            isProgrammaticSpinnerSelection = true
-            spinnerPairs.setSelection(pos)
-            isProgrammaticSpinnerSelection = false
-        }
-
+        tvSelectedAsset.text = "$normalized  ▾"
         tvHeaderPrice.text = "Loading..."
         val hlCoin = getHyperliquidCoin(normalized)
 
@@ -727,6 +761,8 @@ class BotStrategyChartFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        strategyInfoPopup?.dismiss()
+        strategyInfoPopup = null
         SharedSpotSelectionState.removeListener(sharedSelectionListener)
         fetchJob?.cancel()
         pollingJob?.cancel()

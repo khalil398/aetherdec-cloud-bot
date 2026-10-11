@@ -3910,7 +3910,11 @@ class MainActivity : AppCompatActivity(),
         actvSymbol.setText(currentDisplaySymbol, false)
 
         actvSymbol.setOnClickListener {
-            actvSymbol.showDropDown()
+            showSpotAssetSearchDialog()
+        }
+
+        findViewById<View>(R.id.tilSymbolSelector)?.setOnClickListener {
+            showSpotAssetSearchDialog()
         }
 
         actvSymbol.setOnItemClickListener { parent, _, position, _ ->
@@ -3920,6 +3924,29 @@ class MainActivity : AppCompatActivity(),
 
             currentRawSymbol = newRaw
             currentDisplaySymbol = selectedDisplay
+            SharedSpotSelectionState.setSymbol(selectedDisplay, source = this)
+            saveDemoTradingState()
+
+            if (::webViewChart.isInitialized) {
+                val fullChartUrl = getTradingViewUrlForSymbol(newRaw)
+                webViewChart.loadUrl(fullChartUrl)
+            }
+
+            switchLivePriceSymbol(currentRawSymbol)
+            updateSideColorsForSpot()
+            updateSpotBalanceUi()
+            snackString("Spot Pair Selected: $currentDisplaySymbol")
+        }
+    }
+
+    private fun showSpotAssetSearchDialog() {
+        SpotAssetSearchBottomSheet.show(this, currentDisplaySymbol) { selectedDisplay ->
+            val newRaw = HyperliquidOrderManager.cleanSymbolString(selectedDisplay)
+            currentRawSymbol = newRaw
+            currentDisplaySymbol = selectedDisplay
+            if (::actvSymbol.isInitialized) {
+                actvSymbol.setText(selectedDisplay, false)
+            }
             SharedSpotSelectionState.setSymbol(selectedDisplay, source = this)
             saveDemoTradingState()
 
