@@ -1,6 +1,7 @@
 package com.aetherdex.app
 
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
@@ -11,6 +12,7 @@ import android.view.*
 import android.view.inputmethod.EditorInfo
 import android.widget.*
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.switchmaterial.SwitchMaterial
 import java.util.Locale
 
 /**
@@ -232,6 +234,67 @@ object SpotAssetSearchBottomSheet {
                 leftCol.addView(tvBase)
                 row.addView(leftCol)
 
+                // Middle column: Clean Toggle Switch for Asset-Level Bot Trading Permission
+                val midCol = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        marginStart = dp(10)
+                        marginEnd = dp(14)
+                    }
+                }
+
+                val isBotEnabled = BotAssetPermissionManager.isAssetEnabled(context, item.baseToken)
+
+                val switchBot = SwitchMaterial(context).apply {
+                    isFocusable = false
+                    isClickable = true
+                    setOnCheckedChangeListener(null)
+                    isChecked = isBotEnabled
+
+                    val states = arrayOf(
+                        intArrayOf(android.R.attr.state_checked),
+                        intArrayOf(-android.R.attr.state_checked)
+                    )
+                    val thumbColors = intArrayOf(
+                        Color.parseColor("#00E676"),
+                        Color.parseColor("#8A96A8")
+                    )
+                    val trackColors = intArrayOf(
+                        Color.parseColor("#4D00E676"),
+                        Color.parseColor("#2A3241")
+                    )
+                    thumbTintList = ColorStateList(states, thumbColors)
+                    trackTintList = ColorStateList(states, trackColors)
+                }
+
+                val tvBotLabel = TextView(context).apply {
+                    text = if (isBotEnabled) "BOT ON" else "BOT OFF"
+                    textSize = 9f
+                    setTypeface(null, Typeface.BOLD)
+                    setTextColor(if (isBotEnabled) Color.parseColor("#00E676") else Color.parseColor("#606E82"))
+                    gravity = Gravity.CENTER_HORIZONTAL
+                }
+
+                switchBot.setOnCheckedChangeListener { _, checked ->
+                    BotAssetPermissionManager.setAssetEnabled(context, item.baseToken, checked)
+                    tvBotLabel.text = if (checked) "BOT ON" else "BOT OFF"
+                    tvBotLabel.setTextColor(if (checked) Color.parseColor("#00E676") else Color.parseColor("#606E82"))
+                    val toastMsg = if (checked) {
+                        "🤖 Bot Auto-Trade ENABLED for ${item.baseToken}"
+                    } else {
+                        "🔒 Bot Auto-Trade DISABLED for ${item.baseToken}"
+                    }
+                    Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                }
+
+                midCol.addView(switchBot)
+                midCol.addView(tvBotLabel)
+                row.addView(midCol)
+
                 // Right column: Price + 24h Change
                 val rightCol = LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
@@ -294,6 +357,11 @@ object SpotAssetSearchBottomSheet {
                     }
                 } else {
                     row.background = null
+                }
+
+                row.setOnClickListener {
+                    onAssetSelected(item.displaySymbol)
+                    dialog.dismiss()
                 }
 
                 return row

@@ -151,7 +151,6 @@ object FirebaseSyncManager {
     }
 
     fun syncBotConfigToFirestore(
-
         context: Context,
         active: Boolean,
         strategy: String,
@@ -165,10 +164,12 @@ object FirebaseSyncManager {
 
         ensureFirebaseAuth {
             val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
+            val enabledAssetsList = BotAssetPermissionManager.getEnabledAssets(context).toList()
             val payload = hashMapOf<String, Any>(
                 "active" to active,
                 "strategy" to strategy,
                 "allocation_pct" to allocationPct,
+                "enabled_assets" to enabledAssetsList,
                 "updated_at" to System.currentTimeMillis()
             )
 
@@ -179,7 +180,7 @@ object FirebaseSyncManager {
                 .document("bot_config")
                 .set(payload, SetOptions.merge())
                 .addOnSuccessListener {
-                    Log.i(TAG, "Synced bot_config to Firestore (users/$docId/bot/bot_config): active=$active")
+                    Log.i(TAG, "Synced bot_config to Firestore (users/$docId/bot/bot_config): active=$active, enabled_assets=${enabledAssetsList.size}")
                 }
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Failed to sync bot_config to Firestore", e)
@@ -193,6 +194,40 @@ object FirebaseSyncManager {
                 .set(payload, SetOptions.merge())
 
             // Tertiary: Merge bot_config map field on main user document
+            firestore.collection("users")
+                .document(docId)
+                .set(hashMapOf("bot_config" to payload), SetOptions.merge())
+        }
+    }
+
+    fun syncEnabledAssetsToFirestore(
+        context: Context,
+        enabledAssets: List<String>,
+        accountId: String = ""
+    ) {
+        if (!isOnline(context)) return
+        ensureFirebaseAuth {
+            val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
+            val payload = hashMapOf<String, Any>(
+                "enabled_assets" to enabledAssets,
+                "updated_at" to System.currentTimeMillis()
+            )
+
+            firestore.collection("users")
+                .document(docId)
+                .collection("bot")
+                .document("bot_config")
+                .set(payload, SetOptions.merge())
+                .addOnSuccessListener {
+                    Log.i(TAG, "Synced enabled_assets (${enabledAssets.size}) to Firestore (users/$docId/bot/bot_config)")
+                }
+
+            firestore.collection("users")
+                .document(docId)
+                .collection("bot_config")
+                .document("config")
+                .set(payload, SetOptions.merge())
+
             firestore.collection("users")
                 .document(docId)
                 .set(hashMapOf("bot_config" to payload), SetOptions.merge())

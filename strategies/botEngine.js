@@ -335,8 +335,35 @@ async function executeBotTick(uid, db, config, botSecret) {
       }
     }
 
+    // Asset-Level Trading Permission: Check user-enabled assets
+    const rawEnabled = config.enabled_assets;
+    const enabledAssets = Array.isArray(rawEnabled)
+      ? rawEnabled.map(a => a.toString().toUpperCase().trim())
+      : (typeof rawEnabled === "string" && rawEnabled.length > 0 ? [rawEnabled.toUpperCase().trim()] : []);
+
+    const isAssetAuthorizedForBuy = (coin) => {
+      if (!enabledAssets || enabledAssets.length === 0) return false;
+      const cleanCoin = coin.toUpperCase().trim();
+      return enabledAssets.some(enabled => (
+        enabled === cleanCoin ||
+        enabled === `${cleanCoin}/USDC` ||
+        cleanCoin === enabled.replace("/USDC", "")
+      ));
+    };
+
+    if (enabledAssets.length === 0) {
+      console.log(`[${uid}] 🔒 AI Bot auto-buy is PAUSED: 0 assets toggled ON in user settings. (Toggle assets ON in Spot Asset modal to authorize auto-trading).`);
+    } else {
+      console.log(`[${uid}] 🎯 Authorized Auto-Buy Assets (${enabledAssets.length}): ${enabledAssets.join(", ")}`);
+    }
+
     // 2. Automatically execute Spot BUY on whichever coin generates a valid 30m EMA Golden Cross signal FIRST
-    const firstBuySignal = validResults.find(r => r.isBuySignal && (spotBalances.get(r.coin) || 0) <= 0.0001);
+    // STRICT RULE: Only evaluate and execute auto-buy trades for assets that are explicitly TOGGLED ON by user!
+    const firstBuySignal = validResults.find(r => 
+      r.isBuySignal && 
+      isAssetAuthorizedForBuy(r.coin) && 
+      (spotBalances.get(r.coin) || 0) <= 0.0001
+    );
 
     if (firstBuySignal && usdcBalance > 5.0 && config.active) {
       const { coin, coinPrice, breakoutCandleOffset } = firstBuySignal;
