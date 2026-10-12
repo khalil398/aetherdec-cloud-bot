@@ -96,11 +96,16 @@ async function fetchSpotMetaAndCtxs() {
 
         if (baseCoin && !baseCoin.startsWith("@") && !baseCoin.startsWith("SPOT-")) {
           const markPx = ctxs[idx] ? parseFloat(ctxs[idx].markPx || 0) : 0;
+          const exchangeSymbol = (idx === 0 || baseCoin === "PURR")
+            ? "PURR"
+            : (rawName.startsWith("@") ? rawName : `@${idx}`);
+
           spotMarkets.push({
             universeIndex: idx,
             l1AssetIndex: 10000 + idx,
             displayName,
             coin: baseCoin,
+            exchangeCoin: exchangeSymbol,
             quote: t1Name,
             markPrice: markPx,
             szDecimals: szDecimals

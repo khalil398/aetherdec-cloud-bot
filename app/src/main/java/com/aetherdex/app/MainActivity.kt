@@ -3898,8 +3898,17 @@ class MainActivity : AppCompatActivity(),
 
     private fun setupSpotSymbolDropdown() {
         val spotAssets = HyperliquidOrderManager.getAllSpotAssetInfos()
-        val adapter = SpotDropdownAdapter(this, spotAssets)
-        actvSymbol.setAdapter(adapter)
+
+        // 1. Remove legacy popup adapter to prevent duplicate/overlapping dropdown popup
+        actvSymbol.setAdapter(null)
+        actvSymbol.onItemClickListener = null
+        actvSymbol.dismissDropDown()
+
+        // 2. Disable soft keyboard and text editing so it behaves strictly as a modal trigger
+        actvSymbol.keyListener = null
+        actvSymbol.isFocusable = false
+        actvSymbol.isCursorVisible = false
+        actvSymbol.isClickable = true
 
         if (!spotAssets.any { it.displaySymbol == currentDisplaySymbol }) {
             val defaultSpot = spotAssets.firstOrNull()?.displaySymbol ?: "PURR/USDC"
@@ -3909,33 +3918,30 @@ class MainActivity : AppCompatActivity(),
 
         actvSymbol.setText(currentDisplaySymbol, false)
 
+        // 3. Ensure tapping anywhere on the field exclusively opens SpotAssetSearchBottomSheet
         actvSymbol.setOnClickListener {
+            actvSymbol.dismissDropDown()
             showSpotAssetSearchDialog()
         }
 
-        findViewById<View>(R.id.tilSymbolSelector)?.setOnClickListener {
-            showSpotAssetSearchDialog()
-        }
-
-        actvSymbol.setOnItemClickListener { parent, _, position, _ ->
-            val selectedSpot = parent.getItemAtPosition(position) as? HyperliquidOrderManager.SpotAssetInfo
-            val selectedDisplay = selectedSpot?.displaySymbol ?: actvSymbol.text.toString()
-            val newRaw = HyperliquidOrderManager.cleanSymbolString(selectedDisplay)
-
-            currentRawSymbol = newRaw
-            currentDisplaySymbol = selectedDisplay
-            SharedSpotSelectionState.setSymbol(selectedDisplay, source = this)
-            saveDemoTradingState()
-
-            if (::webViewChart.isInitialized) {
-                val fullChartUrl = getTradingViewUrlForSymbol(newRaw)
-                webViewChart.loadUrl(fullChartUrl)
+        actvSymbol.setOnTouchListener { _, event ->
+            if (event.action == android.view.MotionEvent.ACTION_UP) {
+                actvSymbol.dismissDropDown()
+                showSpotAssetSearchDialog()
+                true
+            } else {
+                false
             }
+        }
 
-            switchLivePriceSymbol(currentRawSymbol)
-            updateSideColorsForSpot()
-            updateSpotBalanceUi()
-            snackString("Spot Pair Selected: $currentDisplaySymbol")
+        val tilSymbol = findViewById<com.google.android.material.textfield.TextInputLayout>(R.id.tilSymbolSelector)
+        tilSymbol?.setOnClickListener {
+            actvSymbol.dismissDropDown()
+            showSpotAssetSearchDialog()
+        }
+        tilSymbol?.setEndIconOnClickListener {
+            actvSymbol.dismissDropDown()
+            showSpotAssetSearchDialog()
         }
     }
 

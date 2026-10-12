@@ -251,6 +251,7 @@ async function executeBotTick(uid, db, config, botSecret) {
 
   const assetIndexMap = new Map();
   const szDecimalsMap = new Map();
+  const spotMarketMap = new Map();
   const FALLBACK_UNIVERSE = ["BTC", "ETH", "SOL", "HYPE", "PURR", "HFUN", "SUI", "PEPE", "DOGE", "AVAX", "LINK", "XRP"];
   
   // Populate fallback asset indices and szDecimals
@@ -258,13 +259,31 @@ async function executeBotTick(uid, db, config, botSecret) {
   assetIndexMap.set("PURR", 10000);
   assetIndexMap.set("HFUN", 10001);
   assetIndexMap.set("HYPE", 10150);
-  assetIndexMap.set("BTC", 10200);
-  assetIndexMap.set("ETH", 10201);
-  assetIndexMap.set("SOL", 10202);
+  assetIndexMap.set("UBTC", 10142);
+  assetIndexMap.set("BTC", 10142);
+  assetIndexMap.set("HPENGU", 10184);
+  assetIndexMap.set("UENA", 10206);
+  assetIndexMap.set("ENA", 10206);
+  assetIndexMap.set("UAVAX", 10306);
+  assetIndexMap.set("AVAX", 10306);
 
   if (spotMarkets && spotMarkets.length > 0) {
     spotMarkets.forEach(m => {
       assetIndexMap.set(m.coin, m.l1AssetIndex);
+      spotMarketMap.set(m.coin.toUpperCase(), m);
+      if (m.exchangeCoin) {
+        spotMarketMap.set(m.exchangeCoin.toUpperCase(), m);
+      }
+      // Support matching without 'U' prefix (e.g. BTC -> UBTC, ENA -> UENA, AVAX -> UAVAX)
+      if (m.coin.startsWith("U")) {
+        const stripped = m.coin.substring(1).toUpperCase();
+        if (!spotMarketMap.has(stripped)) {
+          spotMarketMap.set(stripped, m);
+        }
+        if (!assetIndexMap.has(stripped)) {
+          assetIndexMap.set(stripped, m.l1AssetIndex);
+        }
+      }
       if (m.szDecimals !== undefined) {
         szDecimalsMap.set(m.coin, m.szDecimals);
       }
@@ -288,12 +307,14 @@ async function executeBotTick(uid, db, config, botSecret) {
     const scanResults = await Promise.all(
       scanQueue.map(async (coin) => {
         try {
-          const coinPrice = parseFloat(allMids[coin] || 0);
+          const market = spotMarketMap.get(coin.toUpperCase());
+          const querySymbol = market ? market.exchangeCoin : coin;
+          const coinPrice = parseFloat(allMids[querySymbol] || allMids[coin] || (market ? market.markPrice : 0) || 0);
           if (coinPrice <= 0) return null;
 
-          const candles30m = await fetchCandleSnapshot(coin, "30m", 260);
+          const candles30m = await fetchCandleSnapshot(querySymbol, "30m", 260);
           const signalResult = await evaluateEmaRibbonStrategy(coin, candles30m);
-          return { coin, coinPrice, ...signalResult };
+          return { coin, coinPrice, market, ...signalResult };
         } catch (e) {
           return null;
         }
@@ -304,15 +325,21 @@ async function executeBotTick(uid, db, config, botSecret) {
 
     // 1. Process SELL Signals for held token positions
     for (const res of validResults) {
-      const { coin, coinPrice, isSellSignal, exitCandleOffset } = res;
-      const heldBalance = spotBalances.get(coin) || 0.0;
+      const { coin, coinPrice, isSellSignal, exitCandleOffset, market } = res;
+      const heldBalance = spotBalances.get(coin) || 
+        spotBalances.get(`U${coin}`) || 
+        (coin.startsWith("U") ? spotBalances.get(coin.substring(1)) : 0) || 
+        0.0;
 
       if (isSellSignal && heldBalance > 0.0001 && config.active) {
         const offsetDesc = exitCandleOffset === 0 ? "current candle" : `${exitCandleOffset} candle(s) ago`;
         console.log(`[${uid}] 🔻 MULTI-PAIR SCANNER: SELL/EXIT SIGNAL on ${coin} (exit transition: ${offsetDesc})! Selling 100% of held ${heldBalance} ${coin}...`);
         try {
-          const assetIdx = assetIndexMap.get(coin) || (coin === "BTC" ? 10200 : 10000);
-          const szDec = szDecimalsMap.get(coin) !== undefined ? szDecimalsMap.get(coin) : 2;
+          const resolvedMarket = market || spotMarketMap.get(coin.toUpperCase());
+          const assetIdx = resolvedMarket ? resolvedMarket.l1AssetIndex : (assetIndexMap.get(coin) || 10000);
+          const szDec = resolvedMarket?.szDecimals !== undefined 
+            ? resolvedMarket.szDecimals 
+            : (szDecimalsMap.get(coin) !== undefined ? szDecimalsMap.get(coin) : 2);
           const formattedSz = formatSizeForHyperliquid(heldBalance, szDec);
           const limitPx = formatPriceForHyperliquid(coinPrice * 0.99);
 
@@ -325,7 +352,7 @@ async function executeBotTick(uid, db, config, botSecret) {
               limitPx: limitPx,
               sz: formattedSz
             });
-            console.log(`[${uid}] ✅ Spot SELL placed: ${formattedSz} ${coin} @ limit ${limitPx} (szDecimals: ${szDec})`);
+            console.log(`[${uid}] ✅ Spot SELL placed: ${formattedSz} ${coin} (assetIndex: ${assetIdx}) @ limit ${limitPx} (szDecimals: ${szDec})`);
           } else {
             console.warn(`[${uid}] Formatted sell size for ${coin} rounded to zero with szDecimals=${szDec}`);
           }
@@ -343,12 +370,15 @@ async function executeBotTick(uid, db, config, botSecret) {
 
     const isAssetAuthorizedForBuy = (coin) => {
       if (!enabledAssets || enabledAssets.length === 0) return false;
-      const cleanCoin = coin.toUpperCase().trim();
-      return enabledAssets.some(enabled => (
-        enabled === cleanCoin ||
-        enabled === `${cleanCoin}/USDC` ||
-        cleanCoin === enabled.replace("/USDC", "")
-      ));
+      const cleanCoin = coin.toUpperCase().trim().replace("/USDC", "");
+      return enabledAssets.some(enabledRaw => {
+        const enabled = enabledRaw.toUpperCase().trim().replace("/USDC", "");
+        return (
+          enabled === cleanCoin ||
+          enabled === `U${cleanCoin}` ||
+          cleanCoin === `U${enabled}`
+        );
+      });
     };
 
     if (enabledAssets.length === 0) {
@@ -366,19 +396,22 @@ async function executeBotTick(uid, db, config, botSecret) {
     );
 
     if (firstBuySignal && usdcBalance > 5.0 && config.active) {
-      const { coin, coinPrice, breakoutCandleOffset } = firstBuySignal;
+      const { coin, coinPrice, breakoutCandleOffset, market } = firstBuySignal;
       const offsetDesc = breakoutCandleOffset === 0 ? "current candle" : `${breakoutCandleOffset} candle(s) ago`;
       console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: 30M GOLDEN CROSS BUY SIGNAL DETECTED on ${coin} (breakout transition: ${offsetDesc})! Executing Spot Buy with $${usdcBalance.toFixed(2)} USDC...`);
       try {
+        const resolvedMarket = market || spotMarketMap.get(coin.toUpperCase());
         const allocPct = (config.allocation_pct || 100) / 100.0;
         const buyAmountUsdc = usdcBalance * allocPct;
         const rawSize = buyAmountUsdc / coinPrice;
-        const szDec = szDecimalsMap.get(coin) !== undefined ? szDecimalsMap.get(coin) : 2;
+        const szDec = resolvedMarket?.szDecimals !== undefined 
+          ? resolvedMarket.szDecimals 
+          : (szDecimalsMap.get(coin) !== undefined ? szDecimalsMap.get(coin) : 2);
         const formattedSz = formatSizeForHyperliquid(rawSize, szDec);
         const limitPx = formatPriceForHyperliquid(coinPrice * 1.01);
 
         if (parseFloat(formattedSz) > 0) {
-          const assetIdx = assetIndexMap.get(coin) || (coin === "BTC" ? 10200 : 10000);
+          const assetIdx = resolvedMarket ? resolvedMarket.l1AssetIndex : (assetIndexMap.get(coin) || 10000);
           await placeAgentOrder({
             agentPrivateKey,
             masterAddress,
@@ -387,7 +420,7 @@ async function executeBotTick(uid, db, config, botSecret) {
             limitPx: limitPx,
             sz: formattedSz
           });
-          console.log(`[${uid}] ✅ Spot BUY placed: ${formattedSz} ${coin} @ limit ${limitPx} (szDecimals: ${szDec})`);
+          console.log(`[${uid}] ✅ Spot BUY placed: ${formattedSz} ${coin} (assetIndex: ${assetIdx}) @ limit ${limitPx} (szDecimals: ${szDec})`);
         } else {
           console.warn(`[${uid}] Formatted buy size for ${coin} rounded to zero with szDecimals=${szDec} for $${buyAmountUsdc.toFixed(2)} USDC allocation`);
         }

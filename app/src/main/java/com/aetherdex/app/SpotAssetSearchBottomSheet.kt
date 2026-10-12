@@ -21,11 +21,16 @@ import java.util.Locale
  */
 object SpotAssetSearchBottomSheet {
 
+    private var activeDialog: BottomSheetDialog? = null
+
     fun show(
         context: Context,
         currentSymbol: String,
         onAssetSelected: (symbol: String) -> Unit
     ) {
+        if (activeDialog?.isShowing == true) {
+            return
+        }
         val density = context.resources.displayMetrics.density
         val dp = { v: Int -> (v * density).toInt() }
 
@@ -425,6 +430,12 @@ object SpotAssetSearchBottomSheet {
             )
         }
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        dialog.setOnDismissListener {
+            if (activeDialog == dialog) {
+                activeDialog = null
+            }
+        }
+        activeDialog = dialog
         dialog.show()
     }
 }
