@@ -49,13 +49,16 @@ class BotStrategyChartFragment : Fragment() {
     private var currentPair = "PURR/USDC"
     private var isFullscreenMode = false
 
-    private lateinit var rootLayout: LinearLayout
+    private lateinit var rootFrameLayout: FrameLayout
+    private lateinit var chartContentLayout: LinearLayout
+    private lateinit var headerCard: LinearLayout
     private lateinit var tvSelectedAsset: TextView
     private lateinit var tvHeaderPrice: TextView
     private lateinit var btnStrategyInfo: ImageView
     private lateinit var btnToggleFullscreen: ImageView
     private lateinit var btnResetChart: ImageView
     private lateinit var btnRefresh: ImageView
+    private var btnFloatingExitFullscreen: ImageView? = null
     private lateinit var progressBar: ProgressBar
     private lateinit var botChartView: BotStrategyChartView
 
@@ -96,8 +99,7 @@ class BotStrategyChartFragment : Fragment() {
         val textSec = Color.parseColor("#8A96A8")
         val green = Color.parseColor("#00E676")
 
-        rootLayout = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
+        rootFrameLayout = FrameLayout(context).apply {
             setBackgroundColor(bgMain)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -105,11 +107,20 @@ class BotStrategyChartFragment : Fragment() {
             )
         }
 
+        chartContentLayout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bgMain)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+
         // Sync initial pair from SharedSpotSelectionState
         currentPair = SharedSpotSelectionState.currentDisplaySymbol
 
         // ── Streamlined Compact Top Header Bar (Single Row, Max Vertical Canvas) ──
-        val headerCard = LinearLayout(context).apply {
+        headerCard = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = GradientDrawable().apply {
@@ -172,7 +183,7 @@ class BotStrategyChartFragment : Fragment() {
         }
         headerCard.addView(tvHeaderPrice)
 
-        // ── 3. Right Action Controls: Info (Popup), Reset, Refresh, Fullscreen ──
+        // ── 3. Right Action Controls: Info (Popup), Fullscreen, Reset, Refresh ──
         val rightActions = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -197,6 +208,21 @@ class BotStrategyChartFragment : Fragment() {
         }
         rightActions.addView(btnStrategyInfo)
 
+        // Full Screen Button (⛶) next to strategy info icon
+        btnToggleFullscreen = ImageView(context).apply {
+            setImageResource(R.drawable.ic_fullscreen)
+            setColorFilter(textSec)
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            background = roundedBg(bgChip, 8f)
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply {
+                marginEnd = dp(6)
+            }
+            setOnClickListener {
+                toggleFullscreenMode()
+            }
+        }
+        rightActions.addView(btnToggleFullscreen)
+
         btnResetChart = ImageView(context).apply {
             setImageResource(android.R.drawable.ic_menu_rotate)
             setColorFilter(textSec)
@@ -214,9 +240,7 @@ class BotStrategyChartFragment : Fragment() {
             setColorFilter(textSec)
             setPadding(dp(6), dp(6), dp(6), dp(6))
             background = roundedBg(bgChip, 8f)
-            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32)).apply {
-                marginEnd = dp(6)
-            }
+            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32))
             setOnClickListener {
                 fetch30mCandleHistory(currentPair)
                 val hlCoin = getHyperliquidCoin(currentPair)
@@ -226,20 +250,8 @@ class BotStrategyChartFragment : Fragment() {
         }
         rightActions.addView(btnRefresh)
 
-        btnToggleFullscreen = ImageView(context).apply {
-            setImageResource(android.R.drawable.ic_menu_crop)
-            setColorFilter(textSec)
-            setPadding(dp(6), dp(6), dp(6), dp(6))
-            background = roundedBg(bgChip, 8f)
-            layoutParams = LinearLayout.LayoutParams(dp(32), dp(32))
-            setOnClickListener {
-                toggleFullscreenLandscape()
-            }
-        }
-        rightActions.addView(btnToggleFullscreen)
-
         headerCard.addView(rightActions)
-        rootLayout.addView(headerCard)
+        chartContentLayout.addView(headerCard)
 
         // Loading ProgressBar
         progressBar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -252,7 +264,7 @@ class BotStrategyChartFragment : Fragment() {
                 setMargins(dp(10), 0, dp(10), dp(4))
             }
         }
-        rootLayout.addView(progressBar)
+        chartContentLayout.addView(progressBar)
 
         // ── Main Bot Strategy Chart Canvas ─────────────────────────────────
         botChartView = BotStrategyChartView(context).apply {
@@ -262,7 +274,32 @@ class BotStrategyChartFragment : Fragment() {
                 1f
             )
         }
-        rootLayout.addView(botChartView)
+        chartContentLayout.addView(botChartView)
+        rootFrameLayout.addView(chartContentLayout)
+
+        // ── Floating Clean Exit Full Screen Button ─────────────────────────
+        btnFloatingExitFullscreen = ImageView(context).apply {
+            setImageResource(R.drawable.ic_fullscreen_exit)
+            setColorFilter(Color.WHITE)
+            val p = dp(9)
+            setPadding(p, p, p, p)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#E6151921"))
+                setStroke(dp(1), Color.parseColor("#374151"))
+            }
+            elevation = density * 12f
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(dp(44), dp(44)).apply {
+                gravity = Gravity.TOP or Gravity.END
+                topMargin = dp(14)
+                marginEnd = dp(14)
+            }
+            setOnClickListener {
+                exitFullscreenMode()
+            }
+        }
+        rootFrameLayout.addView(btnFloatingExitFullscreen)
 
         // Register shared selection state listener
         SharedSpotSelectionState.addListener(sharedSelectionListener)
@@ -276,7 +313,27 @@ class BotStrategyChartFragment : Fragment() {
         connectHyperliquidWebSocket(currentPair, hlCoin)
         startPollingLoop(currentPair, hlCoin)
 
-        return rootLayout
+        return rootFrameLayout
+    }
+
+    fun isChartFullscreenMode(): Boolean = isFullscreenMode
+
+    fun toggleFullscreenMode() {
+        setFullscreenState(!isFullscreenMode)
+    }
+
+    fun exitFullscreenMode() {
+        if (isFullscreenMode) {
+            setFullscreenState(false)
+        }
+    }
+
+    private fun setFullscreenState(fullscreen: Boolean) {
+        isFullscreenMode = fullscreen
+        headerCard.visibility = if (fullscreen) View.GONE else View.VISIBLE
+        progressBar.visibility = if (fullscreen) View.GONE else (if (fetchJob?.isActive == true) View.VISIBLE else View.GONE)
+        btnFloatingExitFullscreen?.visibility = if (fullscreen) View.VISIBLE else View.GONE
+        onFullscreenToggleListener?.invoke(fullscreen)
     }
 
     private fun ensureSpotMetadataLoaded() {
@@ -315,7 +372,7 @@ class BotStrategyChartFragment : Fragment() {
             elevation = density * 16f
             val pad = dp(14)
             setPadding(pad, pad, pad, pad)
-            layoutParams = ViewGroup.LayoutParams(dp(280), ViewGroup.LayoutParams.WRAP_CONTENT)
+            layoutParams = ViewGroup.LayoutParams(dp(295), ViewGroup.LayoutParams.WRAP_CONTENT)
         }
 
         // Title Row
@@ -401,19 +458,158 @@ class BotStrategyChartFragment : Fragment() {
         addLegendRow(Color.parseColor("#FF1744"), "▼ SELL", "Breakout below Yellow")
         addLegendRow(Color.parseColor("#00E5FF"), "Cyan Line", "Live Price / Level")
 
+        // ── BOT TARGET RADAR (Toggled Assets) Section ──
+        val radarDivider = View(context).apply {
+            setBackgroundColor(Color.parseColor("#2A3241"))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                topMargin = dp(8)
+                bottomMargin = dp(8)
+            }
+        }
+        popupCard.addView(radarDivider)
+
+        val tvRadarTitle = TextView(context).apply {
+            text = "BOT TARGET RADAR (Toggled Assets)"
+            textSize = 12f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#00E676"))
+            setPadding(0, 0, 0, dp(6))
+        }
+        popupCard.addView(tvRadarTitle)
+
+        val radarContainer = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        popupCard.addView(radarContainer)
+
+        var popupRef: PopupWindow? = null
+
+        val renderRadarRows = { items: List<BotRadarManager.RadarItem> ->
+            radarContainer.removeAllViews()
+            if (items.isEmpty()) {
+                val tvEmpty = TextView(context).apply {
+                    text = "No assets enabled for Bot Trading.\nTurn toggle ON in Spot Asset list."
+                    textSize = 11f
+                    setTextColor(Color.parseColor("#8A96A8"))
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(6), 0, dp(4))
+                }
+                radarContainer.addView(tvEmpty)
+            } else {
+                items.forEach { item ->
+                    val row = LinearLayout(context).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        background = GradientDrawable().apply {
+                            setColor(Color.parseColor("#1C222E"))
+                            cornerRadius = density * 6f
+                            setStroke(dp(1), Color.parseColor("#2A3241"))
+                        }
+                        val px = dp(8)
+                        val py = dp(5)
+                        setPadding(px, py, px, py)
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            bottomMargin = dp(4)
+                        }
+                        setOnClickListener {
+                            selectSymbol(item.symbol, notifySharedState = true)
+                            popupRef?.dismiss()
+                        }
+                    }
+
+                    val tvName = TextView(context).apply {
+                        text = item.symbol
+                        textSize = 12f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(Color.WHITE)
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+                    row.addView(tvName)
+
+                    // Color Coding:
+                    // If progress/proximity is >= 50%, Bright Neon Green (#00E676)
+                    // If progress/proximity is < 50%, Vibrant Red (#FF5252)
+                    val colorHex = if (item.proximity >= 50) "#00E676" else "#FF5252"
+                    val tvPercent = TextView(context).apply {
+                        text = if (item.proximity >= 100) "▲ 100%" else "${item.proximity}%"
+                        textSize = 12f
+                        setTypeface(null, Typeface.BOLD)
+                        setTextColor(Color.parseColor(colorHex))
+                    }
+                    row.addView(tvPercent)
+                    radarContainer.addView(row)
+                }
+            }
+        }
+
+        // 1. Calculate current pair proximity from live chart canvas
+        val currentSnap = botChartView.getLatestEmaSnapshot()
+        if (currentSnap != null) {
+            val curProx = BotStrategyChartView.calculateBreakoutProximity(
+                currentSnap.ema8High,
+                currentSnap.ema8Low,
+                currentSnap.ema34High,
+                currentSnap.ema34Low,
+                currentSnap.prevEma8High,
+                currentSnap.prevEma8Low
+            )
+            BotRadarManager.updateScore(currentPair, curProx)
+        }
+
+        // 2. Render initial cached/known states
+        val enabledTokens = BotAssetPermissionManager.getEnabledAssets(context)
+        val initialItems = enabledTokens.map { token ->
+            val clean = HyperliquidOrderManager.cleanSymbolString(token).uppercase(Locale.US)
+            val disp = if (!token.contains("/") && !token.endsWith("USDC", true)) "$clean/USDC" else token
+            BotRadarManager.getScore(clean) ?: BotRadarManager.RadarItem(
+                symbol = disp,
+                cleanToken = clean,
+                proximity = 0,
+                isBreakout = false
+            )
+        }.sortedWith(
+            compareByDescending<BotRadarManager.RadarItem> { it.proximity }
+                .thenBy { it.symbol }
+        )
+        renderRadarRows(initialItems)
+
+        val scrollView = ScrollView(context).apply {
+            isVerticalScrollBarEnabled = false
+            layoutParams = ViewGroup.LayoutParams(dp(295), ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(popupCard)
+        }
+
         val popup = PopupWindow(
-            popupCard,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
+            scrollView,
+            dp(295),
             ViewGroup.LayoutParams.WRAP_CONTENT,
             true
         ).apply {
             isOutsideTouchable = true
             isFocusable = true
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setOnDismissListener {
+                strategyInfoPopup = null
+            }
         }
-
+        popupRef = popup
         strategyInfoPopup = popup
-        popup.showAsDropDown(anchor, -dp(240), dp(6))
+        popup.showAsDropDown(anchor, -dp(245), dp(6))
+
+        // 3. Asynchronously fetch latest 30m candles and compute exact proximity for all toggled assets
+        viewLifecycleOwner.lifecycleScope.launch {
+            val freshScores = BotRadarManager.refreshAllEnabledAssets(context)
+            if (strategyInfoPopup?.isShowing == true && isAdded) {
+                renderRadarRows(freshScores)
+            }
+        }
     }
 
     fun selectSymbol(symbol: String, notifySharedState: Boolean = false) {
@@ -738,16 +934,7 @@ class BotStrategyChartFragment : Fragment() {
     }
 
     private fun toggleFullscreenLandscape() {
-        isFullscreenMode = !isFullscreenMode
-        btnToggleFullscreen.setColorFilter(if (isFullscreenMode) Color.parseColor("#00E676") else Color.parseColor("#8A96A8"))
-
-        val activity = activity ?: return
-        if (isFullscreenMode) {
-            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        } else {
-            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        }
-        onFullscreenToggleListener?.invoke(isFullscreenMode)
+        toggleFullscreenMode()
     }
 
     private fun disconnectWebSocket() {
@@ -762,6 +949,9 @@ class BotStrategyChartFragment : Fragment() {
     override fun onDestroyView() {
         strategyInfoPopup?.dismiss()
         strategyInfoPopup = null
+        if (isFullscreenMode) {
+            onFullscreenToggleListener?.invoke(false)
+        }
         SharedSpotSelectionState.removeListener(sharedSelectionListener)
         fetchJob?.cancel()
         pollingJob?.cancel()

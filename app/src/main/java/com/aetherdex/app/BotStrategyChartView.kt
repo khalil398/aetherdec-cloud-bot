@@ -32,6 +32,15 @@ class BotStrategyChartView @JvmOverloads constructor(
         val timestamp: Long = 0L
     )
 
+    data class EmaSnapshot(
+        val ema8High: Double,
+        val ema8Low: Double,
+        val ema34High: Double,
+        val ema34Low: Double,
+        val prevEma8High: Double = 0.0,
+        val prevEma8Low: Double = 0.0
+    )
+
     enum class BotState { NEUTRAL, IN_BUY, IN_SELL }
     private enum class ChannelState { UNKNOWN, BELOW_OR_INSIDE, FULLY_ABOVE }
 
@@ -46,6 +55,88 @@ class BotStrategyChartView @JvmOverloads constructor(
                 absV > 0.0 -> String.format(Locale.US, "%.8f", value)
                 else -> "0.00"
             }
+        }
+
+        fun calculateBreakoutProximity(
+            ema8High: Double,
+            ema8Low: Double,
+            ema34High: Double,
+            ema34Low: Double,
+            prevEma8High: Double = 0.0,
+            prevEma8Low: Double = 0.0
+        ): Int {
+            // Full breakout above Yellow channel
+            if (ema8Low > ema34High && ema8High > ema34High) {
+                return 100
+            }
+
+            val channelHeight = maxOf(ema34High - ema34Low, 1e-8)
+            val isSlantingDown = (prevEma8High > 0.0 && ema8High < prevEma8High && ema8Low < prevEma8Low)
+
+            // Downtrend / completely below Yellow Channel
+            if (ema8High <= ema34Low) {
+                if (isSlantingDown) {
+                    // Completely oversold/downtrending without upward momentum
+                    return 0
+                }
+                val distBelow = ema34Low - ema8High
+                if (distBelow >= channelHeight) {
+                    return 0
+                }
+                // Curving upwards towards Yellow channel lower boundary
+                val upwardProgress = ((channelHeight - distBelow) / channelHeight) * 25.0
+                return upwardProgress.toInt().coerceIn(0, 24)
+            }
+
+            // Upward Convergence into / through Yellow Channel towards top boundary
+            val pHigh = ((ema8High - ema34Low) / channelHeight).coerceIn(0.0, 1.0)
+            val pLow = ((ema8Low - ema34Low) / channelHeight).coerceIn(0.0, 1.0)
+
+            val proximity = 25.0 + (pHigh * 25.0) + (pLow * 49.0)
+            return proximity.toInt().coerceIn(0, 99)
+        }
+
+        fun calculateEMA(data: DoubleArray, period: Int): DoubleArray {
+            val n = data.size
+            val result = DoubleArray(n)
+            if (n == 0) return result
+
+            val k = 2.0 / (period + 1.0)
+            var sum = 0.0
+            val initialCount = minOf(n, period)
+            for (i in 0 until initialCount) {
+                sum += data[i]
+            }
+            var ema = sum / initialCount
+            for (i in 0 until initialCount) {
+                result[i] = ema
+            }
+
+            for (i in initialCount until n) {
+                ema = (data[i] * k) + (ema * (1.0 - k))
+                result[i] = ema
+            }
+            return result
+        }
+
+        fun computeProximityFromCandles(candles: List<Candle>): Int {
+            if (candles.size < 35) return 0
+            val highs = DoubleArray(candles.size) { candles[it].high }
+            val lows = DoubleArray(candles.size) { candles[it].low }
+            val ema8H = calculateEMA(highs, 8)
+            val ema8L = calculateEMA(lows, 8)
+            val ema34H = calculateEMA(highs, 34)
+            val ema34L = calculateEMA(lows, 34)
+            val lastIdx = candles.size - 1
+            val prevIdx = if (lastIdx > 0) lastIdx - 1 else 0
+            return calculateBreakoutProximity(
+                ema8High = ema8H[lastIdx],
+                ema8Low = ema8L[lastIdx],
+                ema34High = ema34H[lastIdx],
+                ema34Low = ema34L[lastIdx],
+                prevEma8High = ema8H[prevIdx],
+                prevEma8Low = ema8L[prevIdx]
+            )
         }
     }
 
@@ -524,29 +615,38 @@ class BotStrategyChartView @JvmOverloads constructor(
             // State is strictly preserved when lines enter, dip into, or stay in the Yellow Channel
             // (no reset to NEUTRAL, guaranteeing no duplicate signals until opposite breakout)
         }
+
+        val snap = getLatestEmaSnapshot()
+        if (snap != null) {
+            activeProximity = calculateBreakoutProximity(
+                snap.ema8High,
+                snap.ema8Low,
+                snap.ema34High,
+                snap.ema34Low,
+                snap.prevEma8High,
+                snap.prevEma8Low
+            )
+        }
     }
 
-    private fun calculateEMA(data: DoubleArray, period: Int): DoubleArray {
-        val n = data.size
-        val result = DoubleArray(n)
-        if (n == 0) return result
+    var activeProximity: Int = 0
+        private set
 
-        val k = 2.0 / (period + 1.0)
-        var sum = 0.0
-        val initialCount = min(n, period)
-        for (i in 0 until initialCount) {
-            sum += data[i]
+    fun getLatestEmaSnapshot(): EmaSnapshot? {
+        val n = candles.size
+        if (n == 0 || ema8HighSeries.size < n || ema8LowSeries.size < n || ema34HighSeries.size < n || ema34LowSeries.size < n) {
+            return null
         }
-        var ema = sum / initialCount
-        for (i in 0 until initialCount) {
-            result[i] = ema
-        }
-
-        for (i in initialCount until n) {
-            ema = (data[i] * k) + (ema * (1.0 - k))
-            result[i] = ema
-        }
-        return result
+        val idx = n - 1
+        val prevIdx = if (idx > 0) idx - 1 else 0
+        return EmaSnapshot(
+            ema8High = ema8HighSeries[idx],
+            ema8Low = ema8LowSeries[idx],
+            ema34High = ema34HighSeries[idx],
+            ema34Low = ema34LowSeries[idx],
+            prevEma8High = if (idx > 0) ema8HighSeries[prevIdx] else 0.0,
+            prevEma8Low = if (idx > 0) ema8LowSeries[prevIdx] else 0.0
+        )
     }
 
     override fun onDraw(canvas: Canvas) {

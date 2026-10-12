@@ -3520,6 +3520,11 @@ class MainActivity : AppCompatActivity(),
     }
 
     override fun onBackPressed() {
+        val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
+        if (botChartFrag?.isChartFullscreenMode() == true) {
+            botChartFrag.exitFullscreenMode()
+            return
+        }
         val currentOrientation = resources.configuration.orientation
         if (currentOrientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE || isFullscreenMode) {
             if (isFullscreenMode) {

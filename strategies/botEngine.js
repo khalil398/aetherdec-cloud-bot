@@ -77,6 +77,49 @@ function formatPriceForHyperliquid(price) {
 }
 
 /**
+ * Dynamically calculates relative distance between White Channel (EMA 8 High/Low)
+ * and Yellow Channel (EMA 34 High/Low) toward a valid ▲ BUY breakout target (0% - 100%).
+ * 
+ * Rules:
+ * - Downtrend / Below Channel: If the White Channel is slanting downwards or below the Yellow Channel,
+ *   calculates percentage progress toward crossing above the Yellow Channel. Returns 0% if oversold/downtrending without upward momentum.
+ * - Upward Convergence: As the White Channel curls up towards the top boundary of the Yellow Channel,
+ *   calculates proximity percentage (10% to 99% remaining to breakout).
+ * - Full Breakout: When White Channel (both lines) strictly breaks above Yellow Channel, returns 100%.
+ */
+function calculateBreakoutProximity(ema8High, ema8Low, ema34High, ema34Low, prevEma8High = 0, prevEma8Low = 0) {
+  // Full breakout confirmed: both White channel lines strictly above Yellow channel
+  if (ema8Low > ema34High && ema8High > ema34High) {
+    return 100;
+  }
+
+  const channelHeight = Math.max(ema34High - ema34Low, 1e-8);
+  const isSlantingDown = (prevEma8High > 0 && ema8High < prevEma8High && ema8Low < prevEma8Low);
+
+  // Downtrend / completely below the Yellow channel
+  if (ema8High <= ema34Low) {
+    if (isSlantingDown) {
+      // Completely oversold/downtrending without upward momentum
+      return 0;
+    }
+    const distBelow = ema34Low - ema8High;
+    if (distBelow >= channelHeight) {
+      return 0;
+    }
+    // Curving upwards towards Yellow channel bottom boundary
+    const upwardProgress = ((channelHeight - distBelow) / channelHeight) * 25.0;
+    return Math.max(0, Math.min(24, Math.floor(upwardProgress)));
+  }
+
+  // White channel interacting with / ascending through Yellow channel:
+  const pHigh = Math.max(0, Math.min(1.0, (ema8High - ema34Low) / channelHeight));
+  const pLow = Math.max(0, Math.min(1.0, (ema8Low - ema34Low) / channelHeight));
+
+  const proximity = 25.0 + (pHigh * 25.0) + (pLow * 49.0);
+  return Math.max(0, Math.min(99, Math.floor(proximity)));
+}
+
+/**
  * Evaluates High/Low EMA Channel Strategy on 30-minute timeframe with Smart Multi-Candle Breakout & Exit Logic.
  * 
  * Rules:
@@ -101,7 +144,7 @@ function formatPriceForHyperliquid(price) {
 async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
   if (!candles || candles.length < 240) {
     console.warn(`[Strategy] Insufficient 30m candles for ${coin} (${candles?.length || 0}/240 required)`);
-    return { isUptrend: false, isBuySignal: false, isSellSignal: false, breakoutCandleOffset: -1, exitCandleOffset: -1, metrics: {} };
+    return { isUptrend: false, isBuySignal: false, isSellSignal: false, breakoutCandleOffset: -1, exitCandleOffset: -1, proximityScore: 0, metrics: {} };
   }
 
   // Parse OHLCV data series
@@ -187,6 +230,11 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
   const ema34_low = ema34LowSeries[idx];
   const maxBaseline = Math.max(ema200, ema233);
 
+  // Calculate Breakout Proximity (% towards valid ▲ BUY breakout target)
+  const prevE8H = idx >= 1 ? ema8HighSeries[idx - 1] : 0;
+  const prevE8L = idx >= 1 ? ema8LowSeries[idx - 1] : 0;
+  const proximityScore = isBuySignal ? 100 : calculateBreakoutProximity(ema8_high, ema8_low, ema34_high, ema34_low, prevE8H, prevE8L);
+
   const metrics = {
     ema200,
     ema233,
@@ -199,10 +247,11 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
     isCurrentAbove,
     isCurrentBelow,
     breakoutCandleOffset,
-    exitCandleOffset
+    exitCandleOffset,
+    proximityScore
   };
 
-  return { isUptrend, isBuySignal, isSellSignal, breakoutCandleOffset, exitCandleOffset, metrics };
+  return { isUptrend, isBuySignal, isSellSignal, breakoutCandleOffset, exitCandleOffset, proximityScore, metrics };
 }
 
 /**
@@ -387,18 +436,28 @@ async function executeBotTick(uid, db, config, botSecret) {
       console.log(`[${uid}] 🎯 Authorized Auto-Buy Assets (${enabledAssets.length}): ${enabledAssets.join(", ")}`);
     }
 
-    // 2. Automatically execute Spot BUY on whichever coin generates a valid 30m EMA Golden Cross signal FIRST
-    // STRICT RULE: Only evaluate and execute auto-buy trades for assets that are explicitly TOGGLED ON by user!
-    const firstBuySignal = validResults.find(r => 
+    // Filter scanned results for assets explicitly authorized (toggled ON) by user
+    const authorizedResults = validResults.filter(r => isAssetAuthorizedForBuy(r.coin));
+
+    // Prioritize authorized assets by proximity score descending (closest to or at 100% breakout transition)
+    authorizedResults.sort((a, b) => (b.proximityScore || 0) - (a.proximityScore || 0));
+
+    if (authorizedResults.length > 0) {
+      const radarLog = authorizedResults.map(r => `${r.coin}: ${r.proximityScore}%${r.isBuySignal ? ' [▲ BUY]' : ''}`).join(", ");
+      console.log(`[${uid}] 📡 TARGET RADAR (Toggled Assets Proximity): ${radarLog}`);
+    }
+
+    // 2. Automatically execute Spot BUY on whichever authorized coin has a confirmed buy signal,
+    // prioritizing the asset closest to / at confirmed 100% breakout transition.
+    const bestBuySignal = authorizedResults.find(r => 
       r.isBuySignal && 
-      isAssetAuthorizedForBuy(r.coin) && 
       (spotBalances.get(r.coin) || 0) <= 0.0001
     );
 
-    if (firstBuySignal && usdcBalance > 5.0 && config.active) {
-      const { coin, coinPrice, breakoutCandleOffset, market } = firstBuySignal;
+    if (bestBuySignal && usdcBalance > 5.0 && config.active) {
+      const { coin, coinPrice, breakoutCandleOffset, proximityScore, market } = bestBuySignal;
       const offsetDesc = breakoutCandleOffset === 0 ? "current candle" : `${breakoutCandleOffset} candle(s) ago`;
-      console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: 30M GOLDEN CROSS BUY SIGNAL DETECTED on ${coin} (breakout transition: ${offsetDesc})! Executing Spot Buy with $${usdcBalance.toFixed(2)} USDC...`);
+      console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: 30M GOLDEN CROSS BUY SIGNAL DETECTED on ${coin} (Proximity: ${proximityScore}%, breakout transition: ${offsetDesc})! Executing Spot Buy with $${usdcBalance.toFixed(2)} USDC...`);
       try {
         const resolvedMarket = market || spotMarketMap.get(coin.toUpperCase());
         const allocPct = (config.allocation_pct || 100) / 100.0;
@@ -434,6 +493,18 @@ async function executeBotTick(uid, db, config, botSecret) {
     console.log(`[${uid}] 🕸️ Grid Trading: Monitoring grid levels across ${availableCoins.length} Spot pairs`);
   }
 
+  // Build Target Radar telemetry object for toggled assets
+  const targetRadarTelemetry = {};
+  if (Array.isArray(validResults)) {
+    validResults.forEach(r => {
+      targetRadarTelemetry[r.coin] = {
+        score: r.proximityScore || 0,
+        isBuySignal: r.isBuySignal || false,
+        price: r.coinPrice || 0
+      };
+    });
+  }
+
   // Write Telemetry Stats back to Firestore users/{uid}/bot/bot_status
   const statusDocRef = db.doc(`users/${uid}/bot/bot_status`);
   await statusDocRef.set({
@@ -443,6 +514,7 @@ async function executeBotTick(uid, db, config, botSecret) {
     strategy: config.strategy,
     timeframe: "30m",
     scanned_markets_count: availableCoins.length,
+    target_radar: targetRadarTelemetry,
     updated_at: Date.now()
   }, { merge: true });
 
@@ -452,6 +524,7 @@ async function executeBotTick(uid, db, config, botSecret) {
 module.exports = {
   executeBotTick,
   evaluateEmaRibbonStrategy,
+  calculateBreakoutProximity,
   calculateEMA,
   formatSizeForHyperliquid,
   formatPriceForHyperliquid,
