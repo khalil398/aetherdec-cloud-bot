@@ -70,14 +70,22 @@ async function fetchSpotMetaAndCtxs() {
 
       const tokenMap = new Map();
       tokens.forEach((tok, i) => {
-        tokenMap.set(tok.index !== undefined ? tok.index : i, tok.name);
+        const idx = tok.index !== undefined ? tok.index : i;
+        tokenMap.set(idx, {
+          name: tok.name || "",
+          szDecimals: tok.szDecimals !== undefined ? tok.szDecimals : 2,
+          weiDecimals: tok.weiDecimals !== undefined ? tok.weiDecimals : 8
+        });
       });
 
       universe.forEach((u, i) => {
         const idx = u.index !== undefined ? u.index : i;
         const tokenPair = u.tokens || [];
-        const t0Name = tokenMap.get(tokenPair[0]) || "";
-        const t1Name = tokenMap.get(tokenPair[1]) || "USDC";
+        const t0Obj = tokenMap.get(tokenPair[0]);
+        const t1Obj = tokenMap.get(tokenPair[1]);
+        const t0Name = t0Obj ? t0Obj.name : "";
+        const t1Name = t1Obj ? t1Obj.name : "USDC";
+        const szDecimals = t0Obj && t0Obj.szDecimals !== undefined ? t0Obj.szDecimals : 2;
 
         const rawName = u.name || "";
         const displayName = (rawName.startsWith("@") || !rawName)
@@ -94,7 +102,8 @@ async function fetchSpotMetaAndCtxs() {
             displayName,
             coin: baseCoin,
             quote: t1Name,
-            markPrice: markPx
+            markPrice: markPx,
+            szDecimals: szDecimals
           });
         }
       });

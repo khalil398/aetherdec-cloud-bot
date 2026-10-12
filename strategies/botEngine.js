@@ -31,18 +31,77 @@ function calculateEMA(values, period) {
 }
 
 /**
- * Evaluates High/Low EMA Channel Strategy on 30-minute timeframe.
+ * Known fallback szDecimals for core Hyperliquid spot tokens.
+ */
+const FALLBACK_SZ_DECIMALS = {
+  BTC: 5,
+  ETH: 4,
+  SOL: 2,
+  HYPE: 2,
+  PURR: 0,
+  HFUN: 2,
+  SUI: 2,
+  PEPE: 0,
+  DOGE: 1,
+  AVAX: 2,
+  LINK: 2,
+  XRP: 1
+};
+
+/**
+ * Rounds down size strictly to szDecimals without scientific notation or decimal overflow.
+ */
+function formatSizeForHyperliquid(size, szDecimals = 2) {
+  const dec = Math.max(0, parseInt(szDecimals) || 0);
+  const factor = Math.pow(10, dec);
+  const floored = Math.floor(Number(size) * factor) / factor;
+  return floored.toFixed(dec);
+}
+
+/**
+ * Formats limit price to comply strictly with Hyperliquid rules:
+ * Max 5 significant figures, formatted cleanly.
+ */
+function formatPriceForHyperliquid(price) {
+  if (!price || price <= 0) return "0";
+  const num = Number(price);
+  if (num >= 100000) return Math.round(num).toString();
+  if (num >= 10000) return (Math.round(num * 10) / 10).toFixed(1);
+  if (num >= 1000) return (Math.round(num * 10) / 10).toFixed(1);
+  if (num >= 100) return (Math.round(num * 100) / 100).toFixed(2);
+  if (num >= 10) return (Math.round(num * 100) / 100).toFixed(2);
+  if (num >= 1) return (Math.round(num * 1000) / 1000).toFixed(3);
+  if (num >= 0.1) return (Math.round(num * 10000) / 10000).toFixed(4);
+  if (num >= 0.01) return (Math.round(num * 100000) / 100000).toFixed(5);
+  return Number(num.toPrecision(5)).toString();
+}
+
+/**
+ * Evaluates High/Low EMA Channel Strategy on 30-minute timeframe with Smart Multi-Candle Breakout & Exit Logic.
  * 
- * Pine Script Equivalent:
- * ema200 = ta.ema(close, 200)
- * ema233 = ta.ema(close, 233)
- * ema8_high = ta.ema(high, 8), ema8_low = ta.ema(low, 8)
- * ema34_high = ta.ema(high, 34), ema34_low = ta.ema(low, 34)
+ * Rules:
+ * 1. BUY Signal (▲ BUY):
+ *    - Full Channel Breakout Requirement:
+ *      Both EMA 8 lines (White Channel: EMA 8 High and EMA 8 Low) MUST be strictly ABOVE the Yellow Channel (EMA 34 High and EMA 34 Low).
+ *      Condition: EMA_8_Low > EMA_34_High AND EMA_8_High > EMA_34_High.
+ *      If only one white line has crossed while the other is still inside/below the yellow channel, DO NOT buy.
+ *    - Trend Filter: Both channels strictly ABOVE EMA 200 & EMA 233.
+ *    - Smart Breakout Window (Current Candle or within Last 1-2 Candles):
+ *      Executes a BUY if the breakout transition occurred on the current candle (offset 0)
+ *      OR within the last 1 to 2 candles (offset 1 or 2).
+ * 
+ * 2. SELL / Exit Signal (▼ SELL):
+ *    - Full Channel Exit Requirement:
+ *      Both EMA 8 lines (White Channel) MUST be strictly BELOW the Yellow Channel (EMA 34 High and EMA 34 Low).
+ *      Condition: EMA_8_High < EMA_34_Low AND EMA_8_Low < EMA_34_Low.
+ *    - Smart Exit Window:
+ *      Executes a SELL/CLOSE order if the downward exit transition occurred on the current candle (offset 0)
+ *      OR within the last 1 to 2 candles (offset 1 or 2).
  */
 async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
   if (!candles || candles.length < 240) {
     console.warn(`[Strategy] Insufficient 30m candles for ${coin} (${candles?.length || 0}/240 required)`);
-    return { isUptrend: false, isBuySignal: false, isSellSignal: false, metrics: {} };
+    return { isUptrend: false, isBuySignal: false, isSellSignal: false, breakoutCandleOffset: -1, exitCandleOffset: -1, metrics: {} };
   }
 
   // Parse OHLCV data series
@@ -60,27 +119,73 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
 
   const idx = candles.length - 1; // Current bar
 
+  // Helper 1: Full White Channel strictly ABOVE Yellow Channel (both lines)
+  const isWhiteAboveYellow = (i) => {
+    if (i < 0 || i >= candles.length) return false;
+    const e8H = ema8HighSeries[i];
+    const e8L = ema8LowSeries[i];
+    const e34H = ema34HighSeries[i];
+    return (e8L > e34H && e8H > e34H);
+  };
+
+  // Helper 2: Full White Channel strictly BELOW Yellow Channel (both lines)
+  const isWhiteBelowYellow = (i) => {
+    if (i < 0 || i >= candles.length) return false;
+    const e8H = ema8HighSeries[i];
+    const e8L = ema8LowSeries[i];
+    const e34L = ema34LowSeries[i];
+    return (e8H < e34L && e8L < e34L);
+  };
+
+  // Helper 3: Trend Filter (Both channels strictly above EMA 200 & EMA 233)
+  const checkUptrend = (i) => {
+    if (i < 0 || i >= candles.length) return false;
+    const maxBaseline = Math.max(ema200Series[i], ema233Series[i]);
+    return (
+      ema8HighSeries[i] > maxBaseline &&
+      ema8LowSeries[i] > maxBaseline &&
+      ema34HighSeries[i] > maxBaseline &&
+      ema34LowSeries[i] > maxBaseline
+    );
+  };
+
+  const isCurrentAbove = isWhiteAboveYellow(idx);
+  const isCurrentBelow = isWhiteBelowYellow(idx);
+  const isUptrend = checkUptrend(idx);
+
+  // 1. Smart Breakout Window (Current Candle or within Last 1-2 Candles)
+  let breakoutCandleOffset = -1; // 0 = current candle, 1 = 1 candle ago, 2 = 2 candles ago
+  if (isCurrentAbove && isUptrend) {
+    for (let offset = 0; offset <= 2; offset++) {
+      const k = idx - offset;
+      if (k >= 1 && isWhiteAboveYellow(k) && !isWhiteAboveYellow(k - 1)) {
+        breakoutCandleOffset = offset;
+        break;
+      }
+    }
+  }
+  const isBuySignal = (breakoutCandleOffset !== -1);
+
+  // 2. Smart Exit Window (Current Candle or within Last 1-2 Candles)
+  let exitCandleOffset = -1; // 0 = current candle, 1 = 1 candle ago, 2 = 2 candles ago
+  if (isCurrentBelow) {
+    for (let offset = 0; offset <= 2; offset++) {
+      const k = idx - offset;
+      if (k >= 1 && isWhiteBelowYellow(k) && !isWhiteBelowYellow(k - 1)) {
+        exitCandleOffset = offset;
+        break;
+      }
+    }
+  }
+  const isSellSignal = (exitCandleOffset !== -1);
+
   const ema200 = ema200Series[idx];
   const ema233 = ema233Series[idx];
   const ema8_high = ema8HighSeries[idx];
   const ema8_low = ema8LowSeries[idx];
   const ema34_high = ema34HighSeries[idx];
   const ema34_low = ema34LowSeries[idx];
-
-  // Trend Filter Condition: Both White (8 High/Low) & Yellow (34 High/Low) strictly ABOVE EMA200 & EMA233
   const maxBaseline = Math.max(ema200, ema233);
-  const isUptrend = (
-    ema8_high > maxBaseline &&
-    ema8_low > maxBaseline &&
-    ema34_high > maxBaseline &&
-    ema34_low > maxBaseline
-  );
-
-  // BUY Signal: Trend Filter MET AND White Channel crosses ABOVE Yellow Channel (ema8_low > ema34_high)
-  const isBuySignal = isUptrend && (ema8_low > ema34_high);
-
-  // SELL Signal: White Channel crosses BELOW Yellow Channel (ema8_high < ema34_low)
-  const isSellSignal = (ema8_high < ema34_low);
 
   const metrics = {
     ema200,
@@ -90,10 +195,14 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
     ema34_high,
     ema34_low,
     maxBaseline,
-    isUptrend
+    isUptrend,
+    isCurrentAbove,
+    isCurrentBelow,
+    breakoutCandleOffset,
+    exitCandleOffset
   };
 
-  return { isUptrend, isBuySignal, isSellSignal, metrics };
+  return { isUptrend, isBuySignal, isSellSignal, breakoutCandleOffset, exitCandleOffset, metrics };
 }
 
 /**
@@ -141,19 +250,25 @@ async function executeBotTick(uid, db, config, botSecret) {
   }
 
   const assetIndexMap = new Map();
+  const szDecimalsMap = new Map();
   const FALLBACK_UNIVERSE = ["BTC", "ETH", "SOL", "HYPE", "PURR", "HFUN", "SUI", "PEPE", "DOGE", "AVAX", "LINK", "XRP"];
   
+  // Populate fallback asset indices and szDecimals
+  Object.entries(FALLBACK_SZ_DECIMALS).forEach(([c, dec]) => szDecimalsMap.set(c, dec));
+  assetIndexMap.set("PURR", 10000);
+  assetIndexMap.set("HFUN", 10001);
+  assetIndexMap.set("HYPE", 10150);
+  assetIndexMap.set("BTC", 10200);
+  assetIndexMap.set("ETH", 10201);
+  assetIndexMap.set("SOL", 10202);
+
   if (spotMarkets && spotMarkets.length > 0) {
     spotMarkets.forEach(m => {
       assetIndexMap.set(m.coin, m.l1AssetIndex);
+      if (m.szDecimals !== undefined) {
+        szDecimalsMap.set(m.coin, m.szDecimals);
+      }
     });
-  } else {
-    assetIndexMap.set("PURR", 10000);
-    assetIndexMap.set("HFUN", 10001);
-    assetIndexMap.set("HYPE", 10150);
-    assetIndexMap.set("BTC", 10200);
-    assetIndexMap.set("ETH", 10201);
-    assetIndexMap.set("SOL", 10202);
   }
 
   const availableCoins = (spotMarkets && spotMarkets.length > 0)
@@ -189,21 +304,31 @@ async function executeBotTick(uid, db, config, botSecret) {
 
     // 1. Process SELL Signals for held token positions
     for (const res of validResults) {
-      const { coin, coinPrice, isSellSignal } = res;
+      const { coin, coinPrice, isSellSignal, exitCandleOffset } = res;
       const heldBalance = spotBalances.get(coin) || 0.0;
 
       if (isSellSignal && heldBalance > 0.0001 && config.active) {
-        console.log(`[${uid}] 🔻 MULTI-PAIR SCANNER: SELL SIGNAL on ${coin}! Selling 100% of ${heldBalance} ${coin}...`);
+        const offsetDesc = exitCandleOffset === 0 ? "current candle" : `${exitCandleOffset} candle(s) ago`;
+        console.log(`[${uid}] 🔻 MULTI-PAIR SCANNER: SELL/EXIT SIGNAL on ${coin} (exit transition: ${offsetDesc})! Selling 100% of held ${heldBalance} ${coin}...`);
         try {
           const assetIdx = assetIndexMap.get(coin) || (coin === "BTC" ? 10200 : 10000);
-          await placeAgentOrder({
-            agentPrivateKey,
-            masterAddress,
-            assetIndex: assetIdx,
-            isBuy: false,
-            limitPx: (coinPrice * 0.99).toFixed(2),
-            sz: heldBalance.toFixed(4)
-          });
+          const szDec = szDecimalsMap.get(coin) !== undefined ? szDecimalsMap.get(coin) : 2;
+          const formattedSz = formatSizeForHyperliquid(heldBalance, szDec);
+          const limitPx = formatPriceForHyperliquid(coinPrice * 0.99);
+
+          if (parseFloat(formattedSz) > 0) {
+            await placeAgentOrder({
+              agentPrivateKey,
+              masterAddress,
+              assetIndex: assetIdx,
+              isBuy: false,
+              limitPx: limitPx,
+              sz: formattedSz
+            });
+            console.log(`[${uid}] ✅ Spot SELL placed: ${formattedSz} ${coin} @ limit ${limitPx} (szDecimals: ${szDec})`);
+          } else {
+            console.warn(`[${uid}] Formatted sell size for ${coin} rounded to zero with szDecimals=${szDec}`);
+          }
         } catch (err) {
           console.error(`[${uid}] Spot Sell Execution Failed for ${coin}:`, err.message);
         }
@@ -214,22 +339,31 @@ async function executeBotTick(uid, db, config, botSecret) {
     const firstBuySignal = validResults.find(r => r.isBuySignal && (spotBalances.get(r.coin) || 0) <= 0.0001);
 
     if (firstBuySignal && usdcBalance > 5.0 && config.active) {
-      const { coin, coinPrice } = firstBuySignal;
-      console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: 30M GOLDEN CROSS BUY SIGNAL DETECTED on ${coin}! Executing Spot Buy with $${usdcBalance.toFixed(2)} USDC...`);
+      const { coin, coinPrice, breakoutCandleOffset } = firstBuySignal;
+      const offsetDesc = breakoutCandleOffset === 0 ? "current candle" : `${breakoutCandleOffset} candle(s) ago`;
+      console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: 30M GOLDEN CROSS BUY SIGNAL DETECTED on ${coin} (breakout transition: ${offsetDesc})! Executing Spot Buy with $${usdcBalance.toFixed(2)} USDC...`);
       try {
         const allocPct = (config.allocation_pct || 100) / 100.0;
         const buyAmountUsdc = usdcBalance * allocPct;
-        const sizeToBuy = (buyAmountUsdc / coinPrice).toFixed(4);
+        const rawSize = buyAmountUsdc / coinPrice;
+        const szDec = szDecimalsMap.get(coin) !== undefined ? szDecimalsMap.get(coin) : 2;
+        const formattedSz = formatSizeForHyperliquid(rawSize, szDec);
+        const limitPx = formatPriceForHyperliquid(coinPrice * 1.01);
 
-        const assetIdx = assetIndexMap.get(coin) || (coin === "BTC" ? 10200 : 10000);
-        await placeAgentOrder({
-          agentPrivateKey,
-          masterAddress,
-          assetIndex: assetIdx,
-          isBuy: true,
-          limitPx: (coinPrice * 1.01).toFixed(2),
-          sz: sizeToBuy
-        });
+        if (parseFloat(formattedSz) > 0) {
+          const assetIdx = assetIndexMap.get(coin) || (coin === "BTC" ? 10200 : 10000);
+          await placeAgentOrder({
+            agentPrivateKey,
+            masterAddress,
+            assetIndex: assetIdx,
+            isBuy: true,
+            limitPx: limitPx,
+            sz: formattedSz
+          });
+          console.log(`[${uid}] ✅ Spot BUY placed: ${formattedSz} ${coin} @ limit ${limitPx} (szDecimals: ${szDec})`);
+        } else {
+          console.warn(`[${uid}] Formatted buy size for ${coin} rounded to zero with szDecimals=${szDec} for $${buyAmountUsdc.toFixed(2)} USDC allocation`);
+        }
       } catch (err) {
         console.error(`[${uid}] Spot Buy Execution Failed for ${coin}:`, err.message);
       }
@@ -258,6 +392,9 @@ async function executeBotTick(uid, db, config, botSecret) {
 module.exports = {
   executeBotTick,
   evaluateEmaRibbonStrategy,
-  calculateEMA
+  calculateEMA,
+  formatSizeForHyperliquid,
+  formatPriceForHyperliquid,
+  FALLBACK_SZ_DECIMALS
 };
 
