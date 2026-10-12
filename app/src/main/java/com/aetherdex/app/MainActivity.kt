@@ -30,6 +30,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -137,8 +138,20 @@ class MainActivity : AppCompatActivity(),
     private var marginModeIsolated: Boolean = true  // Default to Isolated for safety
     private val activePositions = mutableListOf<Position>()
     private val closedPositions = mutableListOf<ClosedPosition>()
-    private var currentRawSymbol: String = "BTCUSDC"
-    private var currentDisplaySymbol: String = "BTC/USDC"
+    private val tradeViewModel: TradeViewModel by viewModels()
+
+    // Isolated Trading Symbol States: Perpetual Futures vs. Spot Trading
+    private var selectedPerpAsset: String = "BTC/USDC"
+    private var rawPerpSymbol: String = "BTCUSDC"
+
+    private var selectedSpotAsset: String = "PURR/USDC"
+    private var rawSpotSymbol: String = "PURR"
+
+    val currentDisplaySymbol: String
+        get() = if (isSpotMode) selectedSpotAsset else selectedPerpAsset
+
+    val currentRawSymbol: String
+        get() = if (isSpotMode) rawSpotSymbol else rawPerpSymbol
     private val symbolPrices = mutableMapOf<String, Double>()
     private var currentBtcPrice: Double = 0.0
     private var symbolWebSocket: okhttp3.WebSocket? = null
@@ -335,26 +348,42 @@ class MainActivity : AppCompatActivity(),
             }
         }
 
-        // Shared spot selection synchronization with Bot Strategy Chart
+        // ── Observe Decoupled Trading Symbol States from TradeViewModel ──
+        tradeViewModel.selectedSpotAsset.observe(this) { spotAsset ->
+            selectedSpotAsset = spotAsset
+            rawSpotSymbol = HyperliquidOrderManager.cleanSymbolString(spotAsset)
+            if (isSpotMode) {
+                if (::actvSymbol.isInitialized) {
+                    actvSymbol.setText(spotAsset, false)
+                }
+                switchLivePriceSymbol(rawSpotSymbol)
+                updateSideColorsForSpot()
+                updateSpotBalanceUi()
+            }
+        }
+
+        tradeViewModel.selectedPerpAsset.observe(this) { perpAsset ->
+            selectedPerpAsset = perpAsset
+            rawPerpSymbol = HyperliquidOrderManager.cleanSymbolString(perpAsset)
+            if (!isSpotMode) {
+                if (::actvSymbol.isInitialized) {
+                    actvSymbol.setText(perpAsset, false)
+                }
+                switchLivePriceSymbol(rawPerpSymbol)
+                updateLeverageLimitsForSymbol(rawPerpSymbol)
+            }
+            if (::webViewChart.isInitialized) {
+                val fullChartUrl = getTradingViewUrlForSymbol(rawPerpSymbol)
+                webViewChart.loadUrl(fullChartUrl)
+            }
+        }
+
+        // Shared spot selection synchronization with Bot Strategy Chart (Spot ONLY)
         SharedSpotSelectionState.addListener { symbol, source ->
             if (source !== this) {
                 runOnUiThread {
-                    val clean = HyperliquidOrderManager.cleanSymbolString(symbol)
-                    currentRawSymbol = clean
-                    currentDisplaySymbol = symbol
+                    tradeViewModel.setSpotAsset(symbol)
                     saveDemoTradingState()
-                    if (::actvSymbol.isInitialized) {
-                        actvSymbol.setText(symbol, false)
-                    }
-                    if (::webViewChart.isInitialized) {
-                        val fullChartUrl = getTradingViewUrlForSymbol(clean)
-                        webViewChart.loadUrl(fullChartUrl)
-                    }
-                    switchLivePriceSymbol(currentRawSymbol)
-                    if (isSpotMode) {
-                        updateSideColorsForSpot()
-                        updateSpotBalanceUi()
-                    }
                 }
             }
         }
@@ -3059,9 +3088,6 @@ class MainActivity : AppCompatActivity(),
                     settingsSection.visibility = View.GONE
                     historySection.visibility = View.GONE
                     taxSection.visibility = View.GONE
-                    if (currentDisplaySymbol.isNotBlank()) {
-                        SharedSpotSelectionState.setSymbol(currentDisplaySymbol)
-                    }
                     ensureBotChartFragmentLoaded()
                 }
                 3 -> { // Wallet
@@ -3430,7 +3456,7 @@ class MainActivity : AppCompatActivity(),
                         e.printStackTrace()
                     }
                     if (::webViewChart.isInitialized) {
-                        val fullChartUrl = getTradingViewUrlForSymbol(currentRawSymbol)
+                        val fullChartUrl = getTradingViewUrlForSymbol(rawPerpSymbol)
                         webViewChart.loadUrl(fullChartUrl)
                     }
 
@@ -3766,21 +3792,20 @@ class MainActivity : AppCompatActivity(),
         val assetList = HyperliquidOrderManager.getAllAssetInfos()
         val adapter = AssetDropdownAdapter(this, assetList)
         actvSymbol.setAdapter(adapter)
-        actvSymbol.setText(currentDisplaySymbol, false)
+        actvSymbol.setText(selectedPerpAsset, false)
 
         actvSymbol.setOnClickListener {
             actvSymbol.showDropDown()
         }
 
-        updateLeverageLimitsForSymbol(currentRawSymbol)
+        updateLeverageLimitsForSymbol(rawPerpSymbol)
 
         actvSymbol.setOnItemClickListener { parent, _, position, _ ->
             val selectedAsset = parent.getItemAtPosition(position) as? HyperliquidOrderManager.AssetInfo
             val selectedDisplay = selectedAsset?.displaySymbol ?: actvSymbol.text.toString()
             val newRaw = HyperliquidOrderManager.cleanSymbolString(selectedDisplay)
-            if (newRaw != currentRawSymbol) {
-                currentRawSymbol = newRaw
-                currentDisplaySymbol = selectedDisplay
+            if (newRaw != rawPerpSymbol) {
+                tradeViewModel.setPerpAsset(selectedDisplay, newRaw)
                 saveDemoTradingState()
 
                 if (::webViewChart.isInitialized) {
@@ -3788,11 +3813,11 @@ class MainActivity : AppCompatActivity(),
                     webViewChart.loadUrl(fullChartUrl)
                 }
 
-                switchLivePriceSymbol(currentRawSymbol)
-                updateLeverageLimitsForSymbol(currentRawSymbol)
+                switchLivePriceSymbol(rawPerpSymbol)
+                updateLeverageLimitsForSymbol(rawPerpSymbol)
                 updatePositionSizeHint()
                 updateTpSlEstUi()
-                snackString("Chart Symbol: $currentDisplaySymbol")
+                snackString("Perpetual Symbol: $selectedPerpAsset")
             }
         }
     }
@@ -3830,6 +3855,7 @@ class MainActivity : AppCompatActivity(),
             updateSideColorsForSpot()
 
             setupSpotSymbolDropdown()
+            switchLivePriceSymbol(rawSpotSymbol)
             fetchSpotBalances()
             fetchSpotOpenOrders()
             snackString("Switched to Spot Trading Mode")
@@ -3859,6 +3885,8 @@ class MainActivity : AppCompatActivity(),
             applySideColors()
 
             setupSymbolDropdown()
+            switchLivePriceSymbol(rawPerpSymbol)
+            updateLeverageLimitsForSymbol(rawPerpSymbol)
             snackString("Switched to Perpetual Futures Mode")
         }
     }
@@ -3915,13 +3943,13 @@ class MainActivity : AppCompatActivity(),
         actvSymbol.isCursorVisible = false
         actvSymbol.isClickable = true
 
-        if (!spotAssets.any { it.displaySymbol == currentDisplaySymbol }) {
+        if (!spotAssets.any { it.displaySymbol == selectedSpotAsset }) {
             val defaultSpot = spotAssets.firstOrNull()?.displaySymbol ?: "PURR/USDC"
-            currentDisplaySymbol = defaultSpot
-            currentRawSymbol = HyperliquidOrderManager.cleanSymbolString(defaultSpot)
+            val defaultRaw = HyperliquidOrderManager.cleanSymbolString(defaultSpot)
+            tradeViewModel.setSpotAsset(defaultSpot, defaultRaw)
         }
 
-        actvSymbol.setText(currentDisplaySymbol, false)
+        actvSymbol.setText(selectedSpotAsset, false)
 
         // 3. Ensure tapping anywhere on the field exclusively opens SpotAssetSearchBottomSheet
         actvSymbol.setOnClickListener {
@@ -3951,25 +3979,15 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun showSpotAssetSearchDialog() {
-        SpotAssetSearchBottomSheet.show(this, currentDisplaySymbol) { selectedDisplay ->
+        SpotAssetSearchBottomSheet.show(this, selectedSpotAsset) { selectedDisplay ->
             val newRaw = HyperliquidOrderManager.cleanSymbolString(selectedDisplay)
-            currentRawSymbol = newRaw
-            currentDisplaySymbol = selectedDisplay
-            if (::actvSymbol.isInitialized) {
-                actvSymbol.setText(selectedDisplay, false)
-            }
-            SharedSpotSelectionState.setSymbol(selectedDisplay, source = this)
+            tradeViewModel.setSpotAsset(selectedDisplay, newRaw)
             saveDemoTradingState()
 
-            if (::webViewChart.isInitialized) {
-                val fullChartUrl = getTradingViewUrlForSymbol(newRaw)
-                webViewChart.loadUrl(fullChartUrl)
-            }
-
-            switchLivePriceSymbol(currentRawSymbol)
+            switchLivePriceSymbol(rawSpotSymbol)
             updateSideColorsForSpot()
             updateSpotBalanceUi()
-            snackString("Spot Pair Selected: $currentDisplaySymbol")
+            snackString("Spot Pair Selected: $selectedSpotAsset")
         }
     }
 
@@ -4498,24 +4516,26 @@ class MainActivity : AppCompatActivity(),
 
     private fun checkAndUpdateSymbol(url: String?, title: String?) {
         val extracted = extractSymbolFromUrlOrTitle(url, title) ?: return
-        if (extracted != currentRawSymbol && extracted.isNotBlank()) {
-            currentRawSymbol = extracted
-            currentDisplaySymbol = formatDisplaySymbol(extracted)
+        if (extracted != rawPerpSymbol && extracted.isNotBlank()) {
+            val displaySym = formatDisplaySymbol(extracted)
+            tradeViewModel.setPerpAsset(displaySym, extracted)
             saveDemoTradingState()
 
-            if (::actvSymbol.isInitialized) {
-                actvSymbol.setText(currentDisplaySymbol, false)
-            }
+            if (!isSpotMode) {
+                if (::actvSymbol.isInitialized) {
+                    actvSymbol.setText(displaySym, false)
+                }
 
-            if (!isMarketOrder) {
-                etEntryPrice.setText("")
-            }
+                if (!isMarketOrder) {
+                    etEntryPrice.setText("")
+                }
 
-            switchLivePriceSymbol(currentRawSymbol)
-            updateLeverageLimitsForSymbol(currentRawSymbol)
-            updatePositionSizeHint()
-            updateTpSlEstUi()
-            snackString("Chart Symbol: $currentDisplaySymbol")
+                switchLivePriceSymbol(extracted)
+                updateLeverageLimitsForSymbol(extracted)
+                updatePositionSizeHint()
+                updateTpSlEstUi()
+                snackString("Perpetual Symbol: $displaySym")
+            }
         }
     }
 
@@ -6240,6 +6260,10 @@ class MainActivity : AppCompatActivity(),
                 .putFloat("demo_balance", demoBalance.toFloat())
                 .putString("active_positions_json", jsonArray.toString())
                 .putString("closed_positions_json", closedJsonArray.toString())
+                .putString("selected_raw_perp_symbol", rawPerpSymbol)
+                .putString("selected_display_perp_symbol", selectedPerpAsset)
+                .putString("selected_raw_spot_symbol", rawSpotSymbol)
+                .putString("selected_display_spot_symbol", selectedSpotAsset)
                 .putString("selected_raw_symbol", currentRawSymbol)
                 .putString("selected_display_symbol", currentDisplaySymbol)
                 .putBoolean("margin_mode_isolated", marginModeIsolated)
@@ -6264,8 +6288,13 @@ class MainActivity : AppCompatActivity(),
             demoBalance = prefs.getFloat("demo_balance", 0.0f).toDouble()
             hyperliquidL1UsdcBalance = prefs.getFloat("hyperliquid_l1_balance", 0.0f).toDouble()
             marginModeIsolated = prefs.getBoolean("margin_mode_isolated", true)  // Default to isolated
-            currentRawSymbol = prefs.getString("selected_raw_symbol", "BTCUSDC") ?: "BTCUSDC"
-            currentDisplaySymbol = prefs.getString("selected_display_symbol", "BTC/USDC") ?: "BTC/USDC"
+            val restoredPerpRaw = prefs.getString("selected_raw_perp_symbol", prefs.getString("selected_raw_symbol", "BTCUSDC")) ?: "BTCUSDC"
+            val restoredPerpDisplay = prefs.getString("selected_display_perp_symbol", prefs.getString("selected_display_symbol", "BTC/USDC")) ?: "BTC/USDC"
+            val restoredSpotRaw = prefs.getString("selected_raw_spot_symbol", "PURR") ?: "PURR"
+            val restoredSpotDisplay = prefs.getString("selected_display_spot_symbol", "PURR/USDC") ?: "PURR/USDC"
+
+            tradeViewModel.setPerpAsset(restoredPerpDisplay, restoredPerpRaw)
+            tradeViewModel.setSpotAsset(restoredSpotDisplay, restoredSpotRaw)
 
             if (::actvSymbol.isInitialized) {
                 actvSymbol.setText(currentDisplaySymbol, false)
@@ -6817,7 +6846,7 @@ class MainActivity : AppCompatActivity(),
             }
         }
 
-        val fullChartUrl = getTradingViewUrlForSymbol(currentRawSymbol)
+        val fullChartUrl = getTradingViewUrlForSymbol(rawPerpSymbol)
         webViewChart.loadUrl(fullChartUrl)
     }
 
@@ -7716,7 +7745,7 @@ class MainActivity : AppCompatActivity(),
 
     private fun updateChartResolution(resolution: String) {
         if (::webViewChart.isInitialized) {
-            val tvUrl = getTradingViewUrlForSymbol(currentRawSymbol)
+            val tvUrl = getTradingViewUrlForSymbol(rawPerpSymbol)
             val fullChartUrl = "$tvUrl&interval=$resolution"
             webViewChart.loadUrl(fullChartUrl)
         }
