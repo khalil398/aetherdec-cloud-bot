@@ -567,7 +567,7 @@ class BotStrategyChartFragment : Fragment() {
         val enabledTokens = BotAssetPermissionManager.getEnabledAssets(context)
         val initialItems = enabledTokens.map { token ->
             val clean = HyperliquidOrderManager.cleanSymbolString(token).uppercase(Locale.US)
-            val disp = if (!token.contains("/") && !token.endsWith("USDC", true)) "$clean/USDC" else token
+            val disp = "$clean/USDC"
             BotRadarManager.getScore(clean) ?: BotRadarManager.RadarItem(
                 symbol = disp,
                 cleanToken = clean,
@@ -613,7 +613,8 @@ class BotStrategyChartFragment : Fragment() {
     }
 
     fun selectSymbol(symbol: String, notifySharedState: Boolean = false) {
-        val normalized = if (!symbol.contains("/") && !symbol.endsWith("USDC", true)) "$symbol/USDC" else symbol
+        val clean = HyperliquidOrderManager.cleanSymbolString(symbol)
+        val normalized = if (clean.isNotBlank()) "$clean/USDC" else "PURR/USDC"
         if (normalized.equals(currentPair, ignoreCase = true) && botChartView.candles.isNotEmpty()) {
             return
         }

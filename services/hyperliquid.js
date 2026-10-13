@@ -127,7 +127,13 @@ async function fetchSpotMetaAndCtxs() {
 async function fetchCandleSnapshot(coin = "BTC", interval = "5m", count = 300) {
   try {
     const now = Date.now();
-    const startTime = now - (count * 5 * 60 * 1000);
+    const intervalMinutes = interval === "1h" ? 60 :
+                            interval === "30m" ? 30 :
+                            interval === "15m" ? 15 :
+                            interval === "1m" ? 1 :
+                            interval === "4h" ? 240 :
+                            interval === "1d" ? 1440 : 5;
+    const startTime = now - (count * intervalMinutes * 60 * 1000);
     const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
       type: "candleSnapshot",
       req: {

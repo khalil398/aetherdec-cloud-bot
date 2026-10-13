@@ -15,13 +15,10 @@ object SharedSpotSelectionState {
     private val listeners = CopyOnWriteArrayList<(symbol: String, source: Any?) -> Unit>()
 
     fun setSymbol(symbol: String, source: Any? = null) {
-        val clean = symbol.trim()
-        if (clean.isBlank()) return
-        val normalized = if (!clean.contains("/") && !clean.endsWith("USDC", ignoreCase = true)) {
-            "$clean/USDC"
-        } else {
-            clean
-        }
+        val trimmed = symbol.trim()
+        if (trimmed.isBlank()) return
+        val base = HyperliquidOrderManager.cleanSymbolString(trimmed)
+        val normalized = if (base.isNotBlank()) "$base/USDC" else "PURR/USDC"
         currentDisplaySymbol = normalized
         for (listener in listeners) {
             try {

@@ -142,8 +142,8 @@ function calculateBreakoutProximity(ema8High, ema8Low, ema34High, ema34Low, prev
  *      OR within the last 1 to 2 candles (offset 1 or 2).
  */
 async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
-  if (!candles || candles.length < 240) {
-    console.warn(`[Strategy] Insufficient 30m candles for ${coin} (${candles?.length || 0}/240 required)`);
+  if (!candles || candles.length < 35) {
+    console.warn(`[Strategy] Insufficient 30m candles for ${coin} (${candles?.length || 0}/35 required)`);
     return { isUptrend: false, isBuySignal: false, isSellSignal: false, breakoutCandleOffset: -1, exitCandleOffset: -1, proximityScore: 0, metrics: {} };
   }
 
@@ -153,8 +153,10 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
   const lowPrices = candles.map(c => parseFloat(c.l));
 
   // Compute EMAs
-  const ema200Series = calculateEMA(closePrices, 200);
-  const ema233Series = calculateEMA(closePrices, 233);
+  const has200 = candles.length >= 200;
+  const has233 = candles.length >= 233;
+  const ema200Series = has200 ? calculateEMA(closePrices, 200) : [];
+  const ema233Series = has233 ? calculateEMA(closePrices, 233) : [];
   const ema8HighSeries = calculateEMA(highPrices, 8);
   const ema8LowSeries = calculateEMA(lowPrices, 8);
   const ema34HighSeries = calculateEMA(highPrices, 34);
@@ -180,15 +182,17 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
     return (e8H < e34L && e8L < e34L);
   };
 
-  // Helper 3: Trend Filter (Both channels strictly above EMA 200 & EMA 233)
+  // Helper 3: Trend Filter (Both channels strictly above EMA 200 & EMA 233 if available)
   const checkUptrend = (i) => {
     if (i < 0 || i >= candles.length) return false;
-    const maxBaseline = Math.max(ema200Series[i], ema233Series[i]);
+    if (!has200 && !has233) return true;
+    const e200 = (ema200Series && ema200Series[i]) ? ema200Series[i] : 0;
+    const e233 = (ema233Series && ema233Series[i]) ? ema233Series[i] : e200;
+    const maxBaseline = Math.max(e200, e233);
     return (
       ema8HighSeries[i] > maxBaseline &&
       ema8LowSeries[i] > maxBaseline &&
-      ema34HighSeries[i] > maxBaseline &&
-      ema34LowSeries[i] > maxBaseline
+      ema34HighSeries[i] > maxBaseline
     );
   };
 
@@ -196,21 +200,25 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
   const isCurrentBelow = isWhiteBelowYellow(idx);
   const isUptrend = checkUptrend(idx);
 
-  // 1. Smart Breakout Window (Current Candle or within Last 1-2 Candles)
-  let breakoutCandleOffset = -1; // 0 = current candle, 1 = 1 candle ago, 2 = 2 candles ago
-  if (isCurrentAbove && isUptrend) {
-    for (let offset = 0; offset <= 2; offset++) {
+  // 1. Smart Breakout Window (crossover within last 1-5 candles OR ongoing confirmed breakout above yellow)
+  let breakoutCandleOffset = -1;
+  if (isCurrentAbove) {
+    for (let offset = 0; offset <= 5; offset++) {
       const k = idx - offset;
       if (k >= 1 && isWhiteAboveYellow(k) && !isWhiteAboveYellow(k - 1)) {
         breakoutCandleOffset = offset;
         break;
       }
     }
+    if (breakoutCandleOffset === -1) {
+      breakoutCandleOffset = 0; // Ongoing confirmed channel breakout
+    }
   }
-  const isBuySignal = (breakoutCandleOffset !== -1);
+  // When White Channel (both lines) strictly breaks/holds above Yellow Channel, confirmed breakout is active
+  const isBuySignal = isCurrentAbove;
 
   // 2. Smart Exit Window (Current Candle or within Last 1-2 Candles)
-  let exitCandleOffset = -1; // 0 = current candle, 1 = 1 candle ago, 2 = 2 candles ago
+  let exitCandleOffset = -1;
   if (isCurrentBelow) {
     for (let offset = 0; offset <= 2; offset++) {
       const k = idx - offset;
@@ -219,11 +227,14 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
         break;
       }
     }
+    if (exitCandleOffset === -1) {
+      exitCandleOffset = 0;
+    }
   }
-  const isSellSignal = (exitCandleOffset !== -1);
+  const isSellSignal = isCurrentBelow;
 
-  const ema200 = ema200Series[idx];
-  const ema233 = ema233Series[idx];
+  const ema200 = (has200 && ema200Series[idx]) ? ema200Series[idx] : 0;
+  const ema233 = (has233 && ema233Series[idx]) ? ema233Series[idx] : ema200;
   const ema8_high = ema8HighSeries[idx];
   const ema8_low = ema8LowSeries[idx];
   const ema34_high = ema34HighSeries[idx];
@@ -233,7 +244,7 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
   // Calculate Breakout Proximity (% towards valid ▲ BUY breakout target)
   const prevE8H = idx >= 1 ? ema8HighSeries[idx - 1] : 0;
   const prevE8L = idx >= 1 ? ema8LowSeries[idx - 1] : 0;
-  const proximityScore = isBuySignal ? 100 : calculateBreakoutProximity(ema8_high, ema8_low, ema34_high, ema34_low, prevE8H, prevE8L);
+  const proximityScore = isCurrentAbove ? 100 : calculateBreakoutProximity(ema8_high, ema8_low, ema34_high, ema34_low, prevE8H, prevE8L);
 
   const metrics = {
     ema200,
@@ -419,13 +430,22 @@ async function executeBotTick(uid, db, config, botSecret) {
 
     const isAssetAuthorizedForBuy = (coin) => {
       if (!enabledAssets || enabledAssets.length === 0) return false;
-      const cleanCoin = coin.toUpperCase().trim().replace("/USDC", "");
+      const cleanCoin = coin.toUpperCase().trim()
+        .replace("/USDC", "")
+        .replace("/USDT", "")
+        .replace("USDC", "")
+        .replace("USDT", "");
       return enabledAssets.some(enabledRaw => {
-        const enabled = enabledRaw.toUpperCase().trim().replace("/USDC", "");
+        const enabled = enabledRaw.toUpperCase().trim()
+          .replace("/USDC", "")
+          .replace("/USDT", "")
+          .replace("USDC", "")
+          .replace("USDT", "");
         return (
           enabled === cleanCoin ||
           enabled === `U${cleanCoin}` ||
-          cleanCoin === `U${enabled}`
+          cleanCoin === `U${enabled}` ||
+          cleanCoin.replace(/^U/, "") === enabled.replace(/^U/, "")
         );
       });
     };
@@ -443,30 +463,53 @@ async function executeBotTick(uid, db, config, botSecret) {
     authorizedResults.sort((a, b) => (b.proximityScore || 0) - (a.proximityScore || 0));
 
     if (authorizedResults.length > 0) {
-      const radarLog = authorizedResults.map(r => `${r.coin}: ${r.proximityScore}%${r.isBuySignal ? ' [▲ BUY]' : ''}`).join(", ");
+      const radarLog = authorizedResults.map(r => `${r.coin}: ${r.proximityScore}%${(r.isBuySignal || (r.proximityScore >= 100 && r.isCurrentAbove)) ? ' [▲ BUY]' : ''}`).join(", ");
       console.log(`[${uid}] 📡 TARGET RADAR (Toggled Assets Proximity): ${radarLog}`);
     }
 
-    // 2. Automatically execute Spot BUY on whichever authorized coin has a confirmed buy signal,
-    // prioritizing the asset closest to / at confirmed 100% breakout transition.
+    const getHeldBalance = (coin) => {
+      const clean = coin.toUpperCase().replace(/^U/, "");
+      return (
+        spotBalances.get(coin) ||
+        spotBalances.get(`U${clean}`) ||
+        spotBalances.get(clean) ||
+        0.0
+      );
+    };
+
+    // 2. Automatically execute Spot BUY on authorized coin when confirmed buy signal or 100% radar signal reached
     const bestBuySignal = authorizedResults.find(r => 
-      r.isBuySignal && 
-      (spotBalances.get(r.coin) || 0) <= 0.0001
+      (r.isBuySignal || (r.proximityScore >= 100 && r.isCurrentAbove)) && 
+      getHeldBalance(r.coin) <= 0.0001
     );
 
-    if (bestBuySignal && usdcBalance > 5.0 && config.active) {
+    if (bestBuySignal && usdcBalance > 0.5 && config.active) {
       const { coin, coinPrice, breakoutCandleOffset, proximityScore, market } = bestBuySignal;
       const offsetDesc = breakoutCandleOffset === 0 ? "current candle" : `${breakoutCandleOffset} candle(s) ago`;
-      console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: 30M GOLDEN CROSS BUY SIGNAL DETECTED on ${coin} (Proximity: ${proximityScore}%, breakout transition: ${offsetDesc})! Executing Spot Buy with $${usdcBalance.toFixed(2)} USDC...`);
+      console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: 100% RADAR BREAKOUT BUY SIGNAL on ${coin} (Proximity: ${proximityScore}%, breakout transition: ${offsetDesc})! Executing Spot Buy with available $${usdcBalance.toFixed(2)} USDC...`);
       try {
         const resolvedMarket = market || spotMarketMap.get(coin.toUpperCase());
         const allocPct = (config.allocation_pct || 100) / 100.0;
-        const buyAmountUsdc = usdcBalance * allocPct;
+        let buyAmountUsdc = usdcBalance * allocPct;
+        // Ensure that available spot balance is utilized properly without skipping due to sub-minimum sizing:
+        if (buyAmountUsdc < 10.0 && usdcBalance >= 5.0) {
+          buyAmountUsdc = usdcBalance; // Utilize full available spot balance
+        } else if (buyAmountUsdc < 1.0) {
+          buyAmountUsdc = usdcBalance;
+        }
+
         const rawSize = buyAmountUsdc / coinPrice;
         const szDec = resolvedMarket?.szDecimals !== undefined 
           ? resolvedMarket.szDecimals 
           : (szDecimalsMap.get(coin) !== undefined ? szDecimalsMap.get(coin) : 2);
-        const formattedSz = formatSizeForHyperliquid(rawSize, szDec);
+        let formattedSz = formatSizeForHyperliquid(rawSize, szDec);
+
+        // If formatted size rounded to zero because size is small, step up to minimum decimal increment
+        if (parseFloat(formattedSz) <= 0 && szDec > 0) {
+          const minStep = Math.pow(10, -szDec);
+          formattedSz = minStep.toFixed(szDec);
+        }
+
         const limitPx = formatPriceForHyperliquid(coinPrice * 1.01);
 
         if (parseFloat(formattedSz) > 0) {

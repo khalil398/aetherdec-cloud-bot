@@ -3689,18 +3689,22 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun cleanSymbolString(sym: String): String {
-        return sym.trim().uppercase().replace(".", "").replace("-", "")
+        return HyperliquidOrderManager.cleanSymbolString(sym)
     }
 
     private fun formatDisplaySymbol(rawSymbol: String): String {
+        val clean = HyperliquidOrderManager.cleanSymbolString(rawSymbol)
+        if (isSpotMode) {
+            return if (clean.isNotBlank()) "$clean/USDC" else "PURR/USDC"
+        }
         val upper = rawSymbol.uppercase()
         return when {
             upper.endsWith("USDC") -> "${upper.dropLast(4)}/USDC"
-            upper.endsWith("USDT") -> "${upper.dropLast(4)}/USDT"
-            upper.endsWith("BUSD") -> "${upper.dropLast(4)}/BUSD"
+            upper.endsWith("USDT") -> "${upper.dropLast(4)}/USDC"
+            upper.endsWith("BUSD") -> "${upper.dropLast(4)}/USDC"
             upper.endsWith("BTC") && upper.length > 3 -> "${upper.dropLast(3)}/BTC"
             upper.endsWith("PERP") -> upper.replace("PERP", "/PERP")
-            else -> upper
+            else -> if (!upper.contains("/")) "$clean/USDC" else upper
         }
     }
 
@@ -3766,6 +3770,7 @@ class MainActivity : AppCompatActivity(),
         val assetList = HyperliquidOrderManager.getAllAssetInfos()
         val adapter = AssetDropdownAdapter(this, assetList)
         actvSymbol.setAdapter(adapter)
+        currentDisplaySymbol = formatDisplaySymbol(currentRawSymbol)
         actvSymbol.setText(currentDisplaySymbol, false)
 
         actvSymbol.setOnClickListener {
@@ -3915,13 +3920,19 @@ class MainActivity : AppCompatActivity(),
         actvSymbol.isCursorVisible = false
         actvSymbol.isClickable = true
 
-        if (!spotAssets.any { it.displaySymbol == currentDisplaySymbol }) {
+        val cleanCurrent = HyperliquidOrderManager.cleanSymbolString(currentDisplaySymbol)
+        val candidateSpot = if (cleanCurrent.isNotBlank()) "$cleanCurrent/USDC" else "PURR/USDC"
+        if (spotAssets.any { it.displaySymbol.equals(candidateSpot, ignoreCase = true) }) {
+            currentDisplaySymbol = candidateSpot
+            currentRawSymbol = cleanCurrent
+        } else if (!spotAssets.any { it.displaySymbol.equals(currentDisplaySymbol, ignoreCase = true) }) {
             val defaultSpot = spotAssets.firstOrNull()?.displaySymbol ?: "PURR/USDC"
             currentDisplaySymbol = defaultSpot
             currentRawSymbol = HyperliquidOrderManager.cleanSymbolString(defaultSpot)
         }
 
         actvSymbol.setText(currentDisplaySymbol, false)
+        SharedSpotSelectionState.setSymbol(currentDisplaySymbol, source = this)
 
         // 3. Ensure tapping anywhere on the field exclusively opens SpotAssetSearchBottomSheet
         actvSymbol.setOnClickListener {
@@ -4498,9 +4509,31 @@ class MainActivity : AppCompatActivity(),
 
     private fun checkAndUpdateSymbol(url: String?, title: String?) {
         val extracted = extractSymbolFromUrlOrTitle(url, title) ?: return
-        if (extracted != currentRawSymbol && extracted.isNotBlank()) {
-            currentRawSymbol = extracted
-            currentDisplaySymbol = formatDisplaySymbol(extracted)
+        val clean = HyperliquidOrderManager.cleanSymbolString(extracted)
+        if (clean.isBlank()) return
+
+        if (isSpotMode) {
+            val spotPair = "$clean/USDC"
+            if (spotPair != currentDisplaySymbol) {
+                currentRawSymbol = clean
+                currentDisplaySymbol = spotPair
+                saveDemoTradingState()
+
+                if (::actvSymbol.isInitialized) {
+                    actvSymbol.setText(currentDisplaySymbol, false)
+                }
+                SharedSpotSelectionState.setSymbol(currentDisplaySymbol, source = this)
+                switchLivePriceSymbol(currentRawSymbol)
+                updateSideColorsForSpot()
+                updateSpotBalanceUi()
+                snackString("Spot Pair: $currentDisplaySymbol")
+            }
+            return
+        }
+
+        if (clean != currentRawSymbol) {
+            currentRawSymbol = clean
+            currentDisplaySymbol = formatDisplaySymbol(clean)
             saveDemoTradingState()
 
             if (::actvSymbol.isInitialized) {

@@ -42,7 +42,7 @@ object BotRadarManager {
 
     fun updateScore(symbol: String, proximity: Int, isBreakout: Boolean = proximity >= 100) {
         val clean = HyperliquidOrderManager.cleanSymbolString(symbol).uppercase(Locale.US)
-        val formattedSymbol = if (!symbol.contains("/") && !symbol.endsWith("USDC", true)) "$clean/USDC" else symbol
+        val formattedSymbol = "$clean/USDC"
         val clamped = proximity.coerceIn(0, 100)
         cachedScores[clean] = RadarItem(
             symbol = formattedSymbol,
@@ -77,7 +77,7 @@ object BotRadarManager {
      */
     suspend fun fetchProximityForAsset(token: String): RadarItem = withContext(Dispatchers.IO) {
         val clean = HyperliquidOrderManager.cleanSymbolString(token).uppercase(Locale.US)
-        val displaySymbol = if (!token.contains("/") && !token.endsWith("USDC", true)) "$clean/USDC" else token
+        val displaySymbol = "$clean/USDC"
         val queryCoin = getHyperliquidQueryCoin(clean)
 
         try {
