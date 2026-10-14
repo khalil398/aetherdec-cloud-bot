@@ -686,7 +686,7 @@ class BotStrategyChartFragment : Fragment() {
             var candlesLoaded = false
             try {
                 val now = System.currentTimeMillis()
-                val startTime = now - (300L * 30L * 60L * 1000L)
+                val startTime = now - (1000L * 30L * 60L * 1000L)
                 val url = URL("${HyperliquidOrderManager.HYPERLIQUID_API_URL}/info")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
@@ -744,7 +744,7 @@ class BotStrategyChartFragment : Fragment() {
                 // Secondary fallback to Binance for major cryptos
                 try {
                     val binanceSymbol = "${clean}USDT"
-                    val bUrl = URL("https://api.binance.com/api/v3/klines?symbol=$binanceSymbol&interval=30m&limit=300")
+                    val bUrl = URL("https://api.binance.com/api/v3/klines?symbol=$binanceSymbol&interval=30m&limit=1000")
                     val bConn = bUrl.openConnection() as HttpURLConnection
                     bConn.requestMethod = "GET"
                     bConn.connectTimeout = 6000

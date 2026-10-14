@@ -101,19 +101,12 @@ class BotStrategyChartView @JvmOverloads constructor(
             val result = DoubleArray(n)
             if (n == 0) return result
 
-            val k = 2.0 / (period + 1.0)
-            var sum = 0.0
-            val initialCount = minOf(n, period)
-            for (i in 0 until initialCount) {
-                sum += data[i]
-            }
-            var ema = sum / initialCount
-            for (i in 0 until initialCount) {
-                result[i] = ema
-            }
+            val alpha = 2.0 / (period + 1.0)
+            var ema = data[0]
+            result[0] = ema
 
-            for (i in initialCount until n) {
-                ema = (data[i] * k) + (ema * (1.0 - k))
+            for (i in 1 until n) {
+                ema = (alpha * data[i]) + ((1.0 - alpha) * ema)
                 result[i] = ema
             }
             return result
@@ -694,6 +687,8 @@ class BotStrategyChartView @JvmOverloads constructor(
             if (i < ema34HighSeries.size && ema34HighSeries[i] > maxPrice) maxPrice = ema34HighSeries[i]
             if (i < ema200Series.size && ema200Series[i] > 0 && ema200Series[i] < minPrice) minPrice = ema200Series[i]
             if (i < ema200Series.size && ema200Series[i] > maxPrice) maxPrice = ema200Series[i]
+            if (i < ema233Series.size && ema233Series[i] > 0 && ema233Series[i] < minPrice) minPrice = ema233Series[i]
+            if (i < ema233Series.size && ema233Series[i] > maxPrice) maxPrice = ema233Series[i]
         }
 
         if (minPrice >= maxPrice) {
@@ -744,16 +739,21 @@ class BotStrategyChartView @JvmOverloads constructor(
         pathEma200.reset()
         pathEma233.reset()
 
-        var firstPoint = true
+        var firstPointWhite = true
+        var firstPointYellow = true
+        var firstPoint200 = true
+        var firstPoint233 = true
+
         for (i in renderStartIndex..renderEndIndex) {
             val cx = getX(i)
 
             if (i < ema8HighSeries.size && ema8HighSeries[i] > 0) {
                 val y8H = getY(ema8HighSeries[i])
                 val y8L = getY(ema8LowSeries[i])
-                if (firstPoint) {
+                if (firstPointWhite) {
                     pathWhiteUpper.moveTo(cx, y8H)
                     pathWhiteLower.moveTo(cx, y8L)
+                    firstPointWhite = false
                 } else {
                     pathWhiteUpper.lineTo(cx, y8H)
                     pathWhiteLower.lineTo(cx, y8L)
@@ -763,9 +763,10 @@ class BotStrategyChartView @JvmOverloads constructor(
             if (i < ema34HighSeries.size && ema34HighSeries[i] > 0) {
                 val y34H = getY(ema34HighSeries[i])
                 val y34L = getY(ema34LowSeries[i])
-                if (firstPoint) {
+                if (firstPointYellow) {
                     pathYellowUpper.moveTo(cx, y34H)
                     pathYellowLower.moveTo(cx, y34L)
+                    firstPointYellow = false
                 } else {
                     pathYellowUpper.lineTo(cx, y34H)
                     pathYellowLower.lineTo(cx, y34L)
@@ -774,15 +775,23 @@ class BotStrategyChartView @JvmOverloads constructor(
 
             if (i < ema200Series.size && ema200Series[i] > 0) {
                 val y200 = getY(ema200Series[i])
-                if (firstPoint) pathEma200.moveTo(cx, y200) else pathEma200.lineTo(cx, y200)
+                if (firstPoint200) {
+                    pathEma200.moveTo(cx, y200)
+                    firstPoint200 = false
+                } else {
+                    pathEma200.lineTo(cx, y200)
+                }
             }
 
             if (i < ema233Series.size && ema233Series[i] > 0) {
                 val y233 = getY(ema233Series[i])
-                if (firstPoint) pathEma233.moveTo(cx, y233) else pathEma233.lineTo(cx, y233)
+                if (firstPoint233) {
+                    pathEma233.moveTo(cx, y233)
+                    firstPoint233 = false
+                } else {
+                    pathEma233.lineTo(cx, y233)
+                }
             }
-
-            firstPoint = false
         }
 
         // Construct White Channel Fill (EMA 8 High/Low)

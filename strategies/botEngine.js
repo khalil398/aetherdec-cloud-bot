@@ -11,20 +11,14 @@ const {
  * Calculates Exponential Moving Average (EMA) array for a series of values.
  */
 function calculateEMA(values, period) {
-  if (!values || values.length < period) return [];
-  const k = 2 / (period + 1);
+  if (!values || values.length === 0) return [];
+  const alpha = 2 / (period + 1);
   const emas = new Array(values.length);
+  let currentEma = values[0];
+  emas[0] = currentEma;
 
-  // Initial SMA for first 'period' elements
-  let sum = 0;
-  for (let i = 0; i < period; i++) {
-    sum += values[i];
-  }
-  let currentEma = sum / period;
-  emas[period - 1] = currentEma;
-
-  for (let i = period; i < values.length; i++) {
-    currentEma = (values[i] - currentEma) * k + currentEma;
+  for (let i = 1; i < values.length; i++) {
+    currentEma = (values[i] * alpha) + (currentEma * (1 - alpha));
     emas[i] = currentEma;
   }
   return emas;
@@ -153,10 +147,8 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
   const lowPrices = candles.map(c => parseFloat(c.l));
 
   // Compute EMAs
-  const has200 = candles.length >= 200;
-  const has233 = candles.length >= 233;
-  const ema200Series = has200 ? calculateEMA(closePrices, 200) : [];
-  const ema233Series = has233 ? calculateEMA(closePrices, 233) : [];
+  const ema200Series = calculateEMA(closePrices, 200);
+  const ema233Series = calculateEMA(closePrices, 233);
   const ema8HighSeries = calculateEMA(highPrices, 8);
   const ema8LowSeries = calculateEMA(lowPrices, 8);
   const ema34HighSeries = calculateEMA(highPrices, 34);
@@ -372,7 +364,7 @@ async function executeBotTick(uid, db, config, botSecret) {
           const coinPrice = parseFloat(allMids[querySymbol] || allMids[coin] || (market ? market.markPrice : 0) || 0);
           if (coinPrice <= 0) return null;
 
-          const candles30m = await fetchCandleSnapshot(querySymbol, "30m", 260);
+          const candles30m = await fetchCandleSnapshot(querySymbol, "30m", 1000);
           const signalResult = await evaluateEmaRibbonStrategy(coin, candles30m);
           return { coin, coinPrice, market, ...signalResult };
         } catch (e) {
