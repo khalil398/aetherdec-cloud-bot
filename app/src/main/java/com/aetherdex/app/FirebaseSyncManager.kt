@@ -7,6 +7,7 @@ import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
+import java.util.Locale
 
 /**
  * Manages Firebase Authentication and cloud synchronization with Firestore.
@@ -155,6 +156,7 @@ object FirebaseSyncManager {
         active: Boolean,
         strategy: String,
         allocationPct: Int,
+        targetCoin: String = "",
         accountId: String = ""
     ) {
         if (!isOnline(context)) {
@@ -164,11 +166,17 @@ object FirebaseSyncManager {
 
         ensureFirebaseAuth {
             val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
-            val enabledAssetsList = BotAssetPermissionManager.getEnabledAssets(context).toList()
+            val cleanTarget = HyperliquidOrderManager.cleanSymbolString(targetCoin).uppercase(Locale.US)
+            val currentEnabled = BotAssetPermissionManager.getEnabledAssets(context).toMutableSet()
+            if (cleanTarget.isNotBlank()) {
+                currentEnabled.add(cleanTarget)
+            }
+            val enabledAssetsList = currentEnabled.toList()
             val payload = hashMapOf<String, Any>(
                 "active" to active,
                 "strategy" to strategy,
                 "allocation_pct" to allocationPct,
+                "target_coin" to (if (cleanTarget.isNotBlank()) cleanTarget else "BTC"),
                 "enabled_assets" to enabledAssetsList,
                 "updated_at" to System.currentTimeMillis()
             )
@@ -180,7 +188,7 @@ object FirebaseSyncManager {
                 .document("bot_config")
                 .set(payload, SetOptions.merge())
                 .addOnSuccessListener {
-                    Log.i(TAG, "Synced bot_config to Firestore (users/$docId/bot/bot_config): active=$active, enabled_assets=${enabledAssetsList.size}")
+                    Log.i(TAG, "Synced bot_config to Firestore (users/$docId/bot/bot_config): active=$active, target_coin=$cleanTarget, enabled_assets=${enabledAssetsList.size}")
                 }
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Failed to sync bot_config to Firestore", e)

@@ -294,10 +294,11 @@ object HyperliquidOrderManager {
         val clean = cleanSymbolString(symbol)
         if (clean == "PURR") return 10000
         if (clean == "HFUN") return 10001
-        if (clean == "HYPE") return 10150
-        if (clean == "BTC") return 10200
+        if (clean == "HYPE") return 10107
+        if (clean == "UBTC" || clean == "BTC") return 10142
         if (clean == "ETH") return 10201
         if (clean == "SOL") return 10202
+        if (clean == "UZEC" || clean == "ZEC") return 10272
         return 10000
     }
 

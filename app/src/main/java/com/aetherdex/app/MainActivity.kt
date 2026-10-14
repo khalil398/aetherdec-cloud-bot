@@ -3980,6 +3980,16 @@ class MainActivity : AppCompatActivity(),
             switchLivePriceSymbol(currentRawSymbol)
             updateSideColorsForSpot()
             updateSpotBalanceUi()
+            if (isBotActive) {
+                FirebaseSyncManager.syncBotConfigToFirestore(
+                    this,
+                    active = true,
+                    strategy = botStrategy,
+                    allocationPct = botAllocationPct,
+                    targetCoin = currentDisplaySymbol,
+                    accountId = currentUserProfile.accountId
+                )
+            }
             snackString("Spot Pair Selected: $currentDisplaySymbol")
         }
     }
@@ -4035,6 +4045,7 @@ class MainActivity : AppCompatActivity(),
                         active = true,
                         strategy = botStrategy,
                         allocationPct = botAllocationPct,
+                        targetCoin = currentDisplaySymbol,
                         accountId = currentUserProfile.accountId
                     )
                 }
@@ -4058,6 +4069,7 @@ class MainActivity : AppCompatActivity(),
                         active = true,
                         strategy = botStrategy,
                         allocationPct = botAllocationPct,
+                        targetCoin = currentDisplaySymbol,
                         accountId = currentUserProfile.accountId
                     )
                 }
@@ -4113,6 +4125,7 @@ class MainActivity : AppCompatActivity(),
                 active = true,
                 strategy = botStrategy,
                 allocationPct = botAllocationPct,
+                targetCoin = currentDisplaySymbol,
                 accountId = currentUserProfile.accountId
             )
             withContext(Dispatchers.Main) {
@@ -4143,6 +4156,7 @@ class MainActivity : AppCompatActivity(),
             active = false,
             strategy = botStrategy,
             allocationPct = botAllocationPct,
+            targetCoin = currentDisplaySymbol,
             accountId = currentUserProfile.accountId
         )
     }
