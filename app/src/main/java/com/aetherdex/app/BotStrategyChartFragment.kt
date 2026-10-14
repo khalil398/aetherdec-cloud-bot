@@ -49,6 +49,11 @@ class BotStrategyChartFragment : Fragment() {
     private var currentPair = "PURR/USDC"
     private var isFullscreenMode = false
 
+    private val availableTimeframes = listOf("1m", "5m", "15m", "30m", "1h", "4h", "1D", "1w", "1M")
+    private var currentTimeframe = "30m"
+    private val timeframeButtons = mutableMapOf<String, TextView>()
+    private lateinit var scrollTimeframes: HorizontalScrollView
+
     private lateinit var rootFrameLayout: FrameLayout
     private lateinit var chartContentLayout: LinearLayout
     private lateinit var headerCard: LinearLayout
@@ -242,7 +247,7 @@ class BotStrategyChartFragment : Fragment() {
             background = roundedBg(bgChip, 8f)
             layoutParams = LinearLayout.LayoutParams(dp(32), dp(32))
             setOnClickListener {
-                fetch30mCandleHistory(currentPair)
+                fetchCandleHistory(currentPair, currentTimeframe)
                 val hlCoin = getHyperliquidCoin(currentPair)
                 connectHyperliquidWebSocket(currentPair, hlCoin)
                 startPollingLoop(currentPair, hlCoin)
@@ -252,6 +257,50 @@ class BotStrategyChartFragment : Fragment() {
 
         headerCard.addView(rightActions)
         chartContentLayout.addView(headerCard)
+
+        // ── Multi-Timeframe Selector Bar (1m, 5m, 15m, 30m, 1h, 4h, 1D, 1w, 1M) ──
+        scrollTimeframes = HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                setMargins(dp(10), 0, dp(10), dp(6))
+            }
+        }
+
+        val layoutTimeframes = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        timeframeButtons.clear()
+        availableTimeframes.forEach { tf ->
+            val btnTf = TextView(context).apply {
+                text = tf
+                textSize = 12f
+                setTypeface(null, if (tf == currentTimeframe) Typeface.BOLD else Typeface.NORMAL)
+                gravity = Gravity.CENTER
+                val padH = dp(11)
+                val padV = dp(5)
+                setPadding(padH, padV, padH, padV)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    marginEnd = dp(6)
+                }
+                setOnClickListener {
+                    selectTimeframe(tf)
+                }
+            }
+            timeframeButtons[tf] = btnTf
+            layoutTimeframes.addView(btnTf)
+        }
+        scrollTimeframes.addView(layoutTimeframes)
+        chartContentLayout.addView(scrollTimeframes)
+        updateTimeframeButtonsUi()
 
         // Loading ProgressBar
         progressBar = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -268,6 +317,7 @@ class BotStrategyChartFragment : Fragment() {
 
         // ── Main Bot Strategy Chart Canvas ─────────────────────────────────
         botChartView = BotStrategyChartView(context).apply {
+            timeframeLabel = currentTimeframe
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 0,
@@ -309,7 +359,7 @@ class BotStrategyChartFragment : Fragment() {
 
         // Fetch initial data & start live ticker loops
         val hlCoin = getHyperliquidCoin(currentPair)
-        fetch30mCandleHistory(currentPair)
+        fetchCandleHistory(currentPair, currentTimeframe)
         connectHyperliquidWebSocket(currentPair, hlCoin)
         startPollingLoop(currentPair, hlCoin)
 
@@ -331,9 +381,88 @@ class BotStrategyChartFragment : Fragment() {
     private fun setFullscreenState(fullscreen: Boolean) {
         isFullscreenMode = fullscreen
         headerCard.visibility = if (fullscreen) View.GONE else View.VISIBLE
+        scrollTimeframes.visibility = if (fullscreen) View.GONE else View.VISIBLE
         progressBar.visibility = if (fullscreen) View.GONE else (if (fetchJob?.isActive == true) View.VISIBLE else View.GONE)
         btnFloatingExitFullscreen?.visibility = if (fullscreen) View.VISIBLE else View.GONE
         onFullscreenToggleListener?.invoke(fullscreen)
+    }
+
+    fun selectTimeframe(timeframe: String) {
+        if (currentTimeframe == timeframe && botChartView.candles.isNotEmpty()) return
+        currentTimeframe = timeframe
+        botChartView.timeframeLabel = timeframe
+        updateTimeframeButtonsUi()
+        fetchCandleHistory(currentPair, currentTimeframe)
+        val hlCoin = getHyperliquidCoin(currentPair)
+        connectHyperliquidWebSocket(currentPair, hlCoin)
+    }
+
+    private fun updateTimeframeButtonsUi() {
+        val density = resources.displayMetrics.density
+        val dp = { v: Int -> (v * density).toInt() }
+        val activeBg = Color.parseColor("#00E676")
+        val inactiveBg = Color.parseColor("#151921")
+        val activeText = Color.parseColor("#0B0E14")
+        val inactiveText = Color.parseColor("#8A96A8")
+        val strokeColor = Color.parseColor("#2A3241")
+
+        timeframeButtons.forEach { (tf, btn) ->
+            val isSelected = (tf == currentTimeframe)
+            btn.setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
+            btn.setTextColor(if (isSelected) activeText else inactiveText)
+            btn.background = GradientDrawable().apply {
+                setColor(if (isSelected) activeBg else inactiveBg)
+                cornerRadius = density * 6f
+                if (!isSelected) {
+                    setStroke(dp(1), strokeColor)
+                }
+            }
+        }
+    }
+
+    private fun getHyperliquidInterval(timeframe: String): String {
+        return when (timeframe) {
+            "1m" -> "1m"
+            "5m" -> "5m"
+            "15m" -> "15m"
+            "30m" -> "30m"
+            "1h" -> "1h"
+            "4h" -> "4h"
+            "1D" -> "1d"
+            "1w" -> "1w"
+            "1M" -> "1M"
+            else -> "30m"
+        }
+    }
+
+    private fun getBinanceInterval(timeframe: String): String {
+        return when (timeframe) {
+            "1m" -> "1m"
+            "5m" -> "5m"
+            "15m" -> "15m"
+            "30m" -> "30m"
+            "1h" -> "1h"
+            "4h" -> "4h"
+            "1D" -> "1d"
+            "1w" -> "1w"
+            "1M" -> "1M"
+            else -> "30m"
+        }
+    }
+
+    private fun getCandleDurationMs(timeframe: String): Long {
+        return when (timeframe) {
+            "1m" -> 60_000L
+            "5m" -> 5 * 60_000L
+            "15m" -> 15 * 60_000L
+            "30m" -> 30 * 60_000L
+            "1h" -> 60 * 60_000L
+            "4h" -> 4 * 60 * 60_000L
+            "1D" -> 24 * 60 * 60_000L
+            "1w" -> 7 * 24 * 60 * 60_000L
+            "1M" -> 30L * 24 * 60 * 60_000L
+            else -> 30 * 60_000L
+        }
     }
 
     private fun ensureSpotMetadataLoaded() {
@@ -629,7 +758,7 @@ class BotStrategyChartFragment : Fragment() {
         val hlCoin = getHyperliquidCoin(normalized)
 
         disconnectWebSocket()
-        fetch30mCandleHistory(normalized)
+        fetchCandleHistory(normalized, currentTimeframe)
         connectHyperliquidWebSocket(normalized, hlCoin)
         startPollingLoop(normalized, hlCoin)
     }
@@ -676,17 +805,28 @@ class BotStrategyChartFragment : Fragment() {
         return null
     }
 
-    private fun fetch30mCandleHistory(symbol: String) {
+    private fun fetchCandleHistory(symbol: String, timeframe: String = currentTimeframe) {
         fetchJob?.cancel()
         progressBar.visibility = View.VISIBLE
         val hlCoin = getHyperliquidCoin(symbol)
         val clean = HyperliquidOrderManager.cleanSymbolString(symbol).uppercase(Locale.US)
+        val hlInterval = getHyperliquidInterval(timeframe)
+        val candleDuration = getCandleDurationMs(timeframe)
+
+        // Request maximum historical candle depth allowed by exchange (up to 5,000 candles on Hyperliquid)
+        val maxCandles = when (timeframe) {
+            "1m", "5m", "15m", "30m", "1h", "4h" -> 5000L
+            "1D" -> 3000L
+            "1w" -> 1000L
+            "1M" -> 300L
+            else -> 5000L
+        }
 
         fetchJob = lifecycleScope.launch(Dispatchers.IO) {
             var candlesLoaded = false
             try {
                 val now = System.currentTimeMillis()
-                val startTime = now - (1000L * 30L * 60L * 1000L)
+                val startTime = now - (maxCandles * candleDuration)
                 val url = URL("${HyperliquidOrderManager.HYPERLIQUID_API_URL}/info")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
@@ -699,7 +839,7 @@ class BotStrategyChartFragment : Fragment() {
                     put("type", "candleSnapshot")
                     put("req", JSONObject().apply {
                         put("coin", hlCoin)
-                        put("interval", "30m")
+                        put("interval", hlInterval)
                         put("startTime", startTime)
                         put("endTime", now)
                     })
@@ -744,7 +884,8 @@ class BotStrategyChartFragment : Fragment() {
                 // Secondary fallback to Binance for major cryptos
                 try {
                     val binanceSymbol = "${clean}USDT"
-                    val bUrl = URL("https://api.binance.com/api/v3/klines?symbol=$binanceSymbol&interval=30m&limit=1000")
+                    val bInterval = getBinanceInterval(timeframe)
+                    val bUrl = URL("https://api.binance.com/api/v3/klines?symbol=$binanceSymbol&interval=$bInterval&limit=1000")
                     val bConn = bUrl.openConnection() as HttpURLConnection
                     bConn.requestMethod = "GET"
                     bConn.connectTimeout = 6000
@@ -790,13 +931,13 @@ class BotStrategyChartFragment : Fragment() {
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 try {
-                    // Subscribe to real-time candles for this coin
+                    // Subscribe to real-time candles for this coin and selected timeframe
                     val candleSub = JSONObject().apply {
                         put("method", "subscribe")
                         put("subscription", JSONObject().apply {
                             put("type", "candle")
                             put("coin", hlCoin)
-                            put("interval", "30m")
+                            put("interval", getHyperliquidInterval(currentTimeframe))
                         })
                     }
                     webSocket.send(candleSub.toString())
@@ -926,7 +1067,7 @@ class BotStrategyChartFragment : Fragment() {
                 currentList[currentList.size - 1] = candle
             } else if (candle.timestamp > last.timestamp) {
                 currentList.add(candle)
-                if (currentList.size > 500) currentList.removeAt(0)
+                if (currentList.size > 5500) currentList.removeAt(0)
             }
         } else {
             currentList.add(candle)

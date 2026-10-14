@@ -133,10 +133,12 @@ class BotStrategyChartView @JvmOverloads constructor(
         }
     }
 
+    var timeframeLabel: String = "30m"
+
     // Candle data
     var candles: List<Candle> = emptyList()
         set(value) {
-            val isNewDataset = field.isEmpty() || (value.isNotEmpty() && field.isNotEmpty() && abs(value.first().close - field.first().close) > field.first().close * 0.1)
+            val isNewDataset = field.isEmpty() || (value.isNotEmpty() && field.isNotEmpty() && (abs(value.first().close - field.first().close) > field.first().close * 0.1 || abs(value.size - field.size) > 20))
             field = value
             recalculateIndicators()
             updatePriceRange()
@@ -927,8 +929,12 @@ class BotStrategyChartView @JvmOverloads constructor(
 
             if (hoverIndex in candles.indices) {
                 val hc = candles[hoverIndex]
-                val sdf = SimpleDateFormat("MM-dd HH:mm (30m)", Locale.US)
-                val timeStr = if (hc.timestamp > 0) sdf.format(Date(hc.timestamp)) else "30m Candle"
+                val pattern = when (timeframeLabel) {
+                    "1D", "1d", "1w", "1M" -> "yyyy-MM-dd"
+                    else -> "MM-dd HH:mm"
+                }
+                val sdf = SimpleDateFormat("$pattern ($timeframeLabel)", Locale.US)
+                val timeStr = if (hc.timestamp > 0) sdf.format(Date(hc.timestamp)) else "$timeframeLabel Candle"
 
                 val hoverPrice = currentMaxPrice - ((clampedY - paddingTopPx) / chartHeight) * priceRange
                 val priceHoverStr = formatPriceValue(hoverPrice)
