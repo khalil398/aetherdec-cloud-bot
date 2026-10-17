@@ -548,11 +548,11 @@ async function executeBotTick(uid, db, config, botSecret) {
 
         if (assetIdx < 0) continue;
 
-        // Exit Long on 30m SELL signal
-        if (isCurrentlyLong && isSellSignal && config.active) {
+        // Two-Way Futures: Exit Long on 30m SELL breakout (close Long to prepare for Short)
+        if (isCurrentlyLong && isSellSignal && isFuturesActive) {
           const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
           const limitPx = formatPriceForHyperliquid(coinPrice * 0.98); // 2% market slippage buffer
-          console.log(`[${uid}] 🔻 FUTURES EXIT: Closing LONG on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on 30m SELL breakout`);
+          console.log(`[${uid}] 🔻 TWO-WAY FUTURES: Closing LONG on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on 30m BEARISH SELL breakout`);
           try {
             const exitResult = await placeAgentOrder({
               agentPrivateKey,
@@ -563,17 +563,18 @@ async function executeBotTick(uid, db, config, botSecret) {
               sz: closeSz,
               reduceOnly: true
             });
-            console.log(`[${uid}] ✅ Futures LONG close order placed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
+            console.log(`[${uid}] ✅ Futures LONG closed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
+            currentPositionsMap.delete(coin); // Mark position deleted to allow immediate two-way SHORT reversal
           } catch (err) {
             console.error(`[${uid}] Failed to close LONG on ${coin}:`, err.message);
           }
         }
 
-        // Exit Short on 30m BUY signal
-        if (isCurrentlyShort && isBuySignal && config.active) {
+        // Two-Way Futures: Exit Short on 30m BUY breakout (close Short to prepare for Long)
+        if (isCurrentlyShort && isBuySignal && isFuturesActive) {
           const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
           const limitPx = formatPriceForHyperliquid(coinPrice * 1.02); // 2% market slippage buffer
-          console.log(`[${uid}] 🔺 FUTURES EXIT: Closing SHORT on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on 30m BUY breakout`);
+          console.log(`[${uid}] 🔺 TWO-WAY FUTURES: Closing SHORT on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on 30m BULLISH BUY breakout`);
           try {
             const exitResult = await placeAgentOrder({
               agentPrivateKey,
@@ -584,14 +585,15 @@ async function executeBotTick(uid, db, config, botSecret) {
               sz: closeSz,
               reduceOnly: true
             });
-            console.log(`[${uid}] ✅ Futures SHORT close order placed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
+            console.log(`[${uid}] ✅ Futures SHORT closed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
+            currentPositionsMap.delete(coin); // Mark position deleted to allow immediate two-way LONG reversal
           } catch (err) {
             console.error(`[${uid}] Failed to close SHORT on ${coin}:`, err.message);
           }
         }
       }
 
-      // 2. Process ENTRIES for authorized pairs without existing position
+      // 2. Process ENTRIES (Two-Way Futures: Open Long on Bullish, Open Short on Bearish)
       const authorizedResults = validResults.filter(r => isAssetAuthorizedForBuy(r.coin));
       authorizedResults.sort((a, b) => (b.proximityScore || 0) - (a.proximityScore || 0));
 
@@ -600,19 +602,18 @@ async function executeBotTick(uid, db, config, botSecret) {
         const currentSzi = currentPos ? parseFloat(currentPos.szi || 0) : 0;
         if (Math.abs(currentSzi) > 0.0001) return false; // Already has open position
 
-        const isBuyOpportunity = (r.isBuySignal || (r.proximityScore >= 100 && r.isCurrentAbove)) &&
-          (positionDirection === "LONG" || positionDirection === "BOTH");
+        // Bullish opportunity -> Open LONG
+        const isBuyOpportunity = (r.isBuySignal || (r.proximityScore >= 100 && r.isCurrentAbove));
 
-        const isSellOpportunity = (r.isSellSignal || (r.proximityScore <= 0 && !r.isCurrentAbove)) &&
-          (positionDirection === "SHORT" || positionDirection === "BOTH");
+        // Bearish opportunity -> Open SHORT
+        const isSellOpportunity = (r.isSellSignal || (r.proximityScore <= 0 && !r.isCurrentAbove));
 
         return isBuyOpportunity || isSellOpportunity;
       });
 
-      if (bestEntrySignal && perpBalance >= 1.0 && config.active) {
+      if (bestEntrySignal && perpBalance >= 1.0 && isFuturesActive) {
         const { coin, coinPrice, proximityScore, isBuySignal, isCurrentAbove, market } = bestEntrySignal;
-        const isEnteringLong = (isBuySignal || (proximityScore >= 100 && isCurrentAbove)) &&
-          (positionDirection === "LONG" || positionDirection === "BOTH");
+        const isEnteringLong = (isBuySignal || (proximityScore >= 100 && isCurrentAbove));
 
         const targetSide = isEnteringLong ? "BUY/LONG" : "SELL/SHORT";
         const isOrderBuy = isEnteringLong;
@@ -620,20 +621,55 @@ async function executeBotTick(uid, db, config, botSecret) {
         const szDec = market?.szDecimals !== undefined ? market.szDecimals : 2;
 
         if (assetIdx >= 0) {
-          // STRICT RESPECT FOR MARGIN MODE (Isolated vs. Cross)
+          // LEVERAGE FALLBACK SAFETY:
+          // Check asset's maximum supported leverage via Hyperliquid metadata API before placing order
+          const assetMaxLeverage = market?.maxLeverage !== undefined ? parseInt(market.maxLeverage) : 20;
+          let effectiveLeverage = configuredLeverage;
+
+          if (configuredLeverage > assetMaxLeverage) {
+            effectiveLeverage = assetMaxLeverage;
+            console.log(`[${uid}] ⚠️ LEVERAGE FALLBACK SAFETY: Asset ${coin} max supported leverage is ${assetMaxLeverage}x (requested: ${configuredLeverage}x). Safely falling back to exchange maximum allowable ${effectiveLeverage}x.`);
+          } else {
+            console.log(`[${uid}] 🎯 Asset ${coin} supports requested leverage ${configuredLeverage}x (exchange max: ${assetMaxLeverage}x). Applying ${effectiveLeverage}x.`);
+          }
+
+          // STRICT RESPECT FOR MARGIN MODE (Isolated vs. Cross) & Dynamic Leverage Fallback
           let marginConfiguredOk = false;
           try {
-            console.log(`[${uid}] 🛡️ Enforcing Margin Mode: ${marginMode} (${configuredLeverage}x) on ${coin} (assetIndex: ${assetIdx})`);
+            console.log(`[${uid}] 🛡️ Enforcing Margin Mode: ${marginMode} (${effectiveLeverage}x) on ${coin} (assetIndex: ${assetIdx})`);
             const levResult = await updateAgentLeverage({
               agentPrivateKey,
               masterAddress,
               assetIndex: assetIdx,
               isCross: !isIsolated,
-              leverage: configuredLeverage
+              leverage: effectiveLeverage
             });
             marginConfiguredOk = !levResult?.response?.data?.error;
           } catch (levErr) {
-            if (isIsolated) {
+            const errStr = (levErr.response?.data?.error || levErr.message || "").toLowerCase();
+            if (errStr.includes("leverage") && effectiveLeverage > 1) {
+              const fallbackLev = Math.max(1, Math.min(effectiveLeverage - 1, assetMaxLeverage, 5));
+              console.warn(`[${uid}] ⚠️ Leverage rejection on ${coin} (${effectiveLeverage}x): "${errStr}". Attempting automated fallback to ${fallbackLev}x...`);
+              try {
+                await updateAgentLeverage({
+                  agentPrivateKey,
+                  masterAddress,
+                  assetIndex: assetIdx,
+                  isCross: !isIsolated,
+                  leverage: fallbackLev
+                });
+                effectiveLeverage = fallbackLev;
+                marginConfiguredOk = true;
+                console.log(`[${uid}] ✅ Leverage fallback succeeded: Applied ${effectiveLeverage}x on ${coin}`);
+              } catch (e2) {
+                if (isIsolated) {
+                  console.error(`[${uid}] ❌ STRICT MARGIN PROTECTION: Isolated margin configuration failed for ${coin}: "${e2.message}". Order aborted.`);
+                  marginConfiguredOk = false;
+                } else {
+                  marginConfiguredOk = true;
+                }
+              }
+            } else if (isIsolated) {
               console.error(`[${uid}] ❌ STRICT MARGIN PROTECTION: Failed to configure ISOLATED margin mode on Hyperliquid for ${coin}: "${levErr.message}". Order aborted to prevent cross-margin exposure.`);
               marginConfiguredOk = false;
             } else {
@@ -644,9 +680,9 @@ async function executeBotTick(uid, db, config, botSecret) {
           if (isIsolated && !marginConfiguredOk) {
             console.error(`[${uid}] ⛔ STRICT ISOLATION GUARD: Aborting ${targetSide} on ${coin}. Bot is strictly configured for Isolated margin and will NEVER place a Cross-margin order.`);
           } else {
-            const allocPct = (config.allocation_pct || 25) / 100.0;
+            const allocPct = (futuresAllocPct || 25) / 100.0;
             const marginUsd = perpBalance * allocPct;
-            const notionalUsd = marginUsd * configuredLeverage;
+            const notionalUsd = marginUsd * effectiveLeverage;
             const rawSize = notionalUsd / coinPrice;
             let formattedSz = formatSizeForHyperliquid(rawSize, szDec);
 
@@ -659,7 +695,7 @@ async function executeBotTick(uid, db, config, botSecret) {
               : formatPriceForHyperliquid(coinPrice * 0.98);
 
             if (parseFloat(formattedSz) > 0) {
-              console.log(`[${uid}] 🚀 FUTURES ENGINE: Executing ${marginMode} ${configuredLeverage}x ${targetSide} on ${coin} (Size: ${formattedSz}, Notional: ~$${notionalUsd.toFixed(2)} USD, Margin: ~$${marginUsd.toFixed(2)} USDC @ limit ${limitPx})...`);
+              console.log(`[${uid}] 🚀 TWO-WAY FUTURES ENGINE: Executing ${marginMode} ${effectiveLeverage}x ${targetSide} on ${coin} (Size: ${formattedSz}, Notional: ~$${notionalUsd.toFixed(2)} USD, Margin: ~$${marginUsd.toFixed(2)} USDC @ limit ${limitPx})...`);
 
               try {
                 const orderResult = await placeAgentOrder({
@@ -682,7 +718,9 @@ async function executeBotTick(uid, db, config, botSecret) {
                       side: isOrderBuy ? "LONG" : "SHORT",
                       market: "PERP",
                       margin_mode: marginMode,
-                      leverage: configuredLeverage,
+                      leverage: effectiveLeverage,
+                      requested_leverage: configuredLeverage,
+                      max_allowed_leverage: assetMaxLeverage,
                       status: "REJECTED",
                       error: statusEntry.error,
                       attempted_size: formattedSz,
@@ -699,7 +737,9 @@ async function executeBotTick(uid, db, config, botSecret) {
                       side: isOrderBuy ? "LONG" : "SHORT",
                       market: "PERP",
                       margin_mode: marginMode,
-                      leverage: configuredLeverage,
+                      leverage: effectiveLeverage,
+                      requested_leverage: configuredLeverage,
+                      max_allowed_leverage: assetMaxLeverage,
                       status: "SUCCESS",
                       size: formattedSz,
                       price: limitPx,
@@ -805,7 +845,7 @@ async function executeBotTick(uid, db, config, botSecret) {
         (coin.startsWith("U") ? spotBalances.get(coin.substring(1)) : 0) || 
         0.0;
 
-      if (isSellSignal && heldBalance > 0.0001 && config.active) {
+      if (isSellSignal && heldBalance > 0.0001 && isSpotActive) {
         const offsetDesc = exitCandleOffset === 0 ? "current candle" : `${exitCandleOffset} candle(s) ago`;
         console.log(`[${uid}] 🔻 MULTI-PAIR SCANNER: SELL/EXIT SIGNAL on ${coin} (exit transition: ${offsetDesc})! Selling 100% of held ${heldBalance} ${coin}...`);
         try {
