@@ -121,11 +121,31 @@ class MainActivity : AppCompatActivity(),
     private lateinit var layoutPerpMarginContainer: View
 
     private var isSpotMode: Boolean = false
-    private var isBotActive: Boolean = false
-    private var botStrategy: String = "Smart DCA / Dip Buyer"
-    private var botAllocationPct: Int = 25
-    private var botTotalPnlUsd: Double = 0.0
-    private var botActiveTradesCount: Int = 0
+
+    // Decoupled Bot state for Spot and Perpetual Futures
+    private var isSpotBotActive: Boolean = false
+    private var isFuturesBotActive: Boolean = false
+    private var spotBotStrategy: String = "30m EMA High/Low"
+    private var futuresBotStrategy: String = "30m EMA High/Low"
+    private var spotBotAllocationPct: Int = 25
+    private var futuresBotAllocationPct: Int = 25
+    private var spotBotTotalPnlUsd: Double = 0.0
+    private var futuresBotTotalPnlUsd: Double = 0.0
+    private var spotBotActiveTradesCount: Int = 0
+    private var futuresBotActiveTradesCount: Int = 0
+    private var isUpdatingBotUiProgrammatically: Boolean = false
+
+    // Context-sensitive accessors
+    private val isBotActive: Boolean
+        get() = if (isSpotMode) isSpotBotActive else isFuturesBotActive
+    private val botStrategy: String
+        get() = if (isSpotMode) spotBotStrategy else futuresBotStrategy
+    private val botAllocationPct: Int
+        get() = if (isSpotMode) spotBotAllocationPct else futuresBotAllocationPct
+    private val botTotalPnlUsd: Double
+        get() = if (isSpotMode) spotBotTotalPnlUsd else futuresBotTotalPnlUsd
+    private val botActiveTradesCount: Int
+        get() = if (isSpotMode) spotBotActiveTradesCount else futuresBotActiveTradesCount
     private var spotUsdcBalance: Double = 0.0
     private var spotAssetBalances = mutableMapOf<String, Double>()
     private var spotBotJob: kotlinx.coroutines.Job? = null
@@ -856,7 +876,7 @@ class MainActivity : AppCompatActivity(),
             applySideColors()
             updatePositionSizeHint()
             updateTpSlEstUi()
-            if (isBotActive && !isSpotMode) {
+            if (isFuturesBotActive && !isSpotMode) {
                 syncCurrentBotConfig()
             }
         }
@@ -901,7 +921,7 @@ class MainActivity : AppCompatActivity(),
             syncChipFromSlider(v)
             updatePositionSizeHint()
             updateTpSlEstUi()
-            if (isBotActive && !isSpotMode) {
+            if (isFuturesBotActive && !isSpotMode) {
                 syncCurrentBotConfig()
             }
         }
@@ -914,7 +934,7 @@ class MainActivity : AppCompatActivity(),
                     updatePositionSizeHint()
                     updateTpSlEstUi()
                     syncLeverageAndMarginModeToHyperliquid()
-                    if (isBotActive && !isSpotMode) {
+                    if (isFuturesBotActive && !isSpotMode) {
                         syncCurrentBotConfig()
                     }
                 }
@@ -943,7 +963,7 @@ class MainActivity : AppCompatActivity(),
                         snackString("Margin Mode: $mode")
 
                         syncLeverageAndMarginModeToHyperliquid()
-                        if (isBotActive && !isSpotMode) {
+                        if (isFuturesBotActive && !isSpotMode) {
                             syncCurrentBotConfig()
                         }
                     }
@@ -3851,8 +3871,33 @@ class MainActivity : AppCompatActivity(),
             setupSpotSymbolDropdown()
             fetchSpotBalances()
             fetchSpotOpenOrders()
+
+            // Synchronize UI controls to Spot Bot state
+            isUpdatingBotUiProgrammatically = true
+            try {
+                if (::switchBotActive.isInitialized) {
+                    switchBotActive.isChecked = isSpotBotActive
+                }
+                if (::sliderBotAllocation.isInitialized) {
+                    sliderBotAllocation.value = spotBotAllocationPct.toFloat()
+                }
+                if (::tvBotAllocationLabel.isInitialized) {
+                    tvBotAllocationLabel.text = "Capital Allocation: ${spotBotAllocationPct}%"
+                }
+                if (::chipStrategyGrid.isInitialized && ::chipStrategyTrend.isInitialized && ::chipStrategyDca.isInitialized) {
+                    when (spotBotStrategy) {
+                        "Grid Trading" -> chipStrategyGrid.isChecked = true
+                        "Trend Following" -> chipStrategyTrend.isChecked = true
+                        "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
+                        else -> chipStrategyDca.isChecked = true
+                    }
+                }
+            } finally {
+                isUpdatingBotUiProgrammatically = false
+            }
+
             updateBotUi()
-            if (isBotActive) syncCurrentBotConfig()
+            if (isSpotBotActive) syncCurrentBotConfig()
             snackString("Switched to Spot Trading Mode")
         } else {
             if (::btnMarketTypeSpot.isInitialized && ::btnMarketTypePerp.isInitialized) {
@@ -3879,8 +3924,33 @@ class MainActivity : AppCompatActivity(),
             applySideColors()
 
             setupSymbolDropdown()
+
+            // Synchronize UI controls to Perpetual Futures Bot state
+            isUpdatingBotUiProgrammatically = true
+            try {
+                if (::switchBotActive.isInitialized) {
+                    switchBotActive.isChecked = isFuturesBotActive
+                }
+                if (::sliderBotAllocation.isInitialized) {
+                    sliderBotAllocation.value = futuresBotAllocationPct.toFloat()
+                }
+                if (::tvBotAllocationLabel.isInitialized) {
+                    tvBotAllocationLabel.text = "Capital Allocation: ${futuresBotAllocationPct}%"
+                }
+                if (::chipStrategyGrid.isInitialized && ::chipStrategyTrend.isInitialized && ::chipStrategyDca.isInitialized) {
+                    when (futuresBotStrategy) {
+                        "Grid Trading" -> chipStrategyGrid.isChecked = true
+                        "Trend Following" -> chipStrategyTrend.isChecked = true
+                        "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
+                        else -> chipStrategyDca.isChecked = true
+                    }
+                }
+            } finally {
+                isUpdatingBotUiProgrammatically = false
+            }
+
             updateBotUi()
-            if (isBotActive) syncCurrentBotConfig()
+            if (isFuturesBotActive) syncCurrentBotConfig()
             snackString("Switched to Perpetual Futures Mode")
         }
     }
@@ -4011,73 +4081,104 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
-    private fun syncCurrentBotConfig(isActiveState: Boolean = isBotActive) {
+    private fun syncCurrentBotConfig(isActiveState: Boolean? = null) {
         val currentLeverage = if (::sliderLeverage.isInitialized) sliderLeverage.value.toInt() else 10
         val direction = if (::btnShort.isInitialized && btnShort.isChecked && !btnLong.isChecked) "SHORT" else "LONG"
         val marginMode = if (marginModeIsolated) "ISOLATED" else "CROSS"
 
+        val effectiveSpotActive = if (isSpotMode && isActiveState != null) isActiveState else isSpotBotActive
+        val effectiveFuturesActive = if (!isSpotMode && isActiveState != null) isActiveState else isFuturesBotActive
+
         FirebaseSyncManager.syncBotConfigToFirestore(
             context = this,
-            active = isActiveState,
-            strategy = botStrategy,
-            allocationPct = botAllocationPct,
+            active = effectiveSpotActive || effectiveFuturesActive,
+            strategy = if (isSpotMode) spotBotStrategy else futuresBotStrategy,
+            allocationPct = if (isSpotMode) spotBotAllocationPct else futuresBotAllocationPct,
             targetCoin = currentDisplaySymbol,
             accountId = currentUserProfile.accountId,
             marketType = if (isSpotMode) "SPOT" else "PERP",
             leverage = currentLeverage,
             marginMode = marginMode,
             isIsolated = marginModeIsolated,
-            positionDirection = direction
+            positionDirection = direction,
+            isSpotBotActive = effectiveSpotActive,
+            isFuturesBotActive = effectiveFuturesActive,
+            spotStrategy = spotBotStrategy,
+            spotAllocationPct = spotBotAllocationPct,
+            futuresStrategy = futuresBotStrategy,
+            futuresAllocationPct = futuresBotAllocationPct
         )
     }
 
     private fun setupBotEngine() {
         if (!::switchBotActive.isInitialized) return
 
-        val prefs = getSharedPreferences("aetherdex_bot_prefs", MODE_PRIVATE)
-        isBotActive = prefs.getBoolean("bot_active", false)
-        botStrategy = prefs.getString("bot_strategy", "Smart DCA / Dip Buyer") ?: "Smart DCA / Dip Buyer"
-        botAllocationPct = prefs.getInt("bot_allocation_pct", 25)
-        botTotalPnlUsd = prefs.getFloat("bot_pnl_usd", 0.0f).toDouble()
-        botActiveTradesCount = prefs.getInt("bot_active_trades", 0)
+        loadBotPrefs()
 
-        switchBotActive.isChecked = isBotActive
-        if (::sliderBotAllocation.isInitialized) sliderBotAllocation.value = botAllocationPct.toFloat()
-        if (::tvBotAllocationLabel.isInitialized) tvBotAllocationLabel.text = "Capital Allocation: ${botAllocationPct}%"
+        isUpdatingBotUiProgrammatically = true
+        try {
+            val initialActive = if (isSpotMode) isSpotBotActive else isFuturesBotActive
+            val initialAlloc = if (isSpotMode) spotBotAllocationPct else futuresBotAllocationPct
+            val initialStrat = if (isSpotMode) spotBotStrategy else futuresBotStrategy
 
-        if (::chipStrategyGrid.isInitialized && ::chipStrategyTrend.isInitialized && ::chipStrategyDca.isInitialized) {
-            when (botStrategy) {
-                "Grid Trading" -> chipStrategyGrid.isChecked = true
-                "Trend Following" -> chipStrategyTrend.isChecked = true
-                "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
-                else -> chipStrategyDca.isChecked = true
+            switchBotActive.isChecked = initialActive
+            if (::sliderBotAllocation.isInitialized) sliderBotAllocation.value = initialAlloc.toFloat()
+            if (::tvBotAllocationLabel.isInitialized) tvBotAllocationLabel.text = "Capital Allocation: ${initialAlloc}%"
+
+            if (::chipStrategyGrid.isInitialized && ::chipStrategyTrend.isInitialized && ::chipStrategyDca.isInitialized) {
+                when (initialStrat) {
+                    "Grid Trading" -> chipStrategyGrid.isChecked = true
+                    "Trend Following" -> chipStrategyTrend.isChecked = true
+                    "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
+                    else -> chipStrategyDca.isChecked = true
+                }
             }
+        } finally {
+            isUpdatingBotUiProgrammatically = false
         }
 
         updateBotUi()
 
         switchBotActive.setOnCheckedChangeListener { _, isChecked ->
-            isBotActive = isChecked
-            saveBotPrefs()
-            updateBotUi()
-            if (isBotActive) {
-                val mode = if (isSpotMode) "Spot" else "Futures"
-                snackString("AI Bot Activated (24/7 $mode Strategy Running)")
-                startBotLoop()
+            if (isUpdatingBotUiProgrammatically) return@setOnCheckedChangeListener
+            if (isSpotMode) {
+                isSpotBotActive = isChecked
+                saveBotPrefs()
+                updateBotUi()
+                if (isSpotBotActive) {
+                    snackString("AI Bot Activated (24/7 Spot Strategy Running)")
+                } else {
+                    snackString("AI Spot Bot Paused")
+                }
             } else {
-                snackString("AI Bot Paused")
-                stopBotLoop()
+                isFuturesBotActive = isChecked
+                saveBotPrefs()
+                updateBotUi()
+                if (isFuturesBotActive) {
+                    snackString("AI Bot Activated (24/7 Futures Strategy Running)")
+                } else {
+                    snackString("AI Futures Bot Paused")
+                }
             }
+            syncCurrentBotConfig()
+            checkAndManageBotLoop()
         }
 
         if (::sliderBotAllocation.isInitialized) {
             sliderBotAllocation.addOnChangeListener { _, value, _ ->
-                botAllocationPct = value.toInt()
+                if (isUpdatingBotUiProgrammatically) return@addOnChangeListener
+                val v = value.toInt()
+                if (isSpotMode) {
+                    spotBotAllocationPct = v
+                } else {
+                    futuresBotAllocationPct = v
+                }
                 if (::tvBotAllocationLabel.isInitialized) {
-                    tvBotAllocationLabel.text = "Capital Allocation: ${botAllocationPct}%"
+                    tvBotAllocationLabel.text = "Capital Allocation: ${v}%"
                 }
                 saveBotPrefs()
-                if (isBotActive) {
+                val active = if (isSpotMode) isSpotBotActive else isFuturesBotActive
+                if (active) {
                     syncCurrentBotConfig()
                 }
             }
@@ -4085,41 +4186,70 @@ class MainActivity : AppCompatActivity(),
 
         if (::chipGroupBotStrategy.isInitialized) {
             chipGroupBotStrategy.setOnCheckedStateChangeListener { _, checkedIds ->
+                if (isUpdatingBotUiProgrammatically) return@setOnCheckedStateChangeListener
                 val id = checkedIds.firstOrNull() ?: R.id.chipStrategyDca
-                botStrategy = when (id) {
+                val strat = when (id) {
                     R.id.chipStrategyGrid -> "Grid Trading"
                     R.id.chipStrategyTrend -> "Trend Following"
                     R.id.chipStrategyEmaChannel -> "30m EMA High/Low"
                     else -> "Smart DCA / Dip Buyer"
                 }
+                if (isSpotMode) {
+                    spotBotStrategy = strat
+                } else {
+                    futuresBotStrategy = strat
+                }
                 saveBotPrefs()
-                snackString("Bot Strategy updated: $botStrategy")
-                if (isBotActive) {
+                val mode = if (isSpotMode) "Spot" else "Futures"
+                snackString("$mode Bot Strategy updated: $strat")
+                val active = if (isSpotMode) isSpotBotActive else isFuturesBotActive
+                if (active) {
                     syncCurrentBotConfig()
                 }
             }
         }
 
-        if (isBotActive) {
+        if (isSpotBotActive || isFuturesBotActive) {
             startBotLoop()
         }
+    }
+
+    private fun loadBotPrefs() {
+        val prefs = getSharedPreferences("aetherdex_bot_prefs", MODE_PRIVATE)
+        isSpotBotActive = prefs.getBoolean("spot_bot_active", false)
+        isFuturesBotActive = prefs.getBoolean("futures_bot_active", false)
+        spotBotStrategy = prefs.getString("spot_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
+        futuresBotStrategy = prefs.getString("futures_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
+        spotBotAllocationPct = prefs.getInt("spot_bot_allocation_pct", 25)
+        futuresBotAllocationPct = prefs.getInt("futures_bot_allocation_pct", 25)
+        spotBotTotalPnlUsd = prefs.getFloat("spot_bot_pnl_usd", 0.0f).toDouble()
+        futuresBotTotalPnlUsd = prefs.getFloat("futures_bot_pnl_usd", 0.0f).toDouble()
+        spotBotActiveTradesCount = prefs.getInt("spot_bot_active_trades", 0)
+        futuresBotActiveTradesCount = prefs.getInt("futures_bot_active_trades", 0)
     }
 
     private fun saveBotPrefs() {
         val prefs = getSharedPreferences("aetherdex_bot_prefs", MODE_PRIVATE)
         prefs.edit()
-            .putBoolean("bot_active", isBotActive)
-            .putString("bot_strategy", botStrategy)
-            .putInt("bot_allocation_pct", botAllocationPct)
-            .putFloat("bot_pnl_usd", botTotalPnlUsd.toFloat())
-            .putInt("bot_active_trades", botActiveTradesCount)
+            .putBoolean("spot_bot_active", isSpotBotActive)
+            .putBoolean("futures_bot_active", isFuturesBotActive)
+            .putBoolean("bot_active", isSpotBotActive || isFuturesBotActive)
+            .putString("spot_bot_strategy", spotBotStrategy)
+            .putString("futures_bot_strategy", futuresBotStrategy)
+            .putInt("spot_bot_allocation_pct", spotBotAllocationPct)
+            .putInt("futures_bot_allocation_pct", futuresBotAllocationPct)
+            .putFloat("spot_bot_pnl_usd", spotBotTotalPnlUsd.toFloat())
+            .putFloat("futures_bot_pnl_usd", futuresBotTotalPnlUsd.toFloat())
+            .putInt("spot_bot_active_trades", spotBotActiveTradesCount)
+            .putInt("futures_bot_active_trades", futuresBotActiveTradesCount)
             .apply()
     }
 
     private fun updateBotUi() {
         if (!::tvBotStatusBadge.isInitialized) return
+        val isCurrentlyActive = if (isSpotMode) isSpotBotActive else isFuturesBotActive
         val modeTag = if (isSpotMode) "Spot" else "Futures"
-        if (isBotActive) {
+        if (isCurrentlyActive) {
             tvBotStatusBadge.text = "● RUNNING (24/7 $modeTag Engine Active)"
             tvBotStatusBadge.setTextColor(ContextCompat.getColor(this, R.color.brand_green))
         } else {
@@ -4127,15 +4257,27 @@ class MainActivity : AppCompatActivity(),
             tvBotStatusBadge.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
         }
 
-        if (::tvBotActiveTradesCount.isInitialized) tvBotActiveTradesCount.text = "$botActiveTradesCount Active Trades"
+        val activeTrades = if (isSpotMode) spotBotActiveTradesCount else futuresBotActiveTradesCount
+        if (::tvBotActiveTradesCount.isInitialized) tvBotActiveTradesCount.text = "$activeTrades Active Trades"
 
         if (::tvBotTotalPnl.isInitialized) {
-            val sign = if (botTotalPnlUsd >= 0) "+" else ""
+            val pnlUsd = if (isSpotMode) spotBotTotalPnlUsd else futuresBotTotalPnlUsd
+            val sign = if (pnlUsd >= 0) "+" else ""
             val activeBal = if (isSpotMode) spotUsdcBalance else (if (isDemoModeActive) demoBalance else hyperliquidL1UsdcBalance)
-            val pct = if (activeBal > 0) (botTotalPnlUsd / activeBal) * 100.0 else 0.0
-            tvBotTotalPnl.text = String.format(Locale.US, "%s$%.2f (%s%.2f%%)", sign, botTotalPnlUsd, sign, pct)
-            val color = if (botTotalPnlUsd >= 0) ContextCompat.getColor(this, R.color.brand_green) else ContextCompat.getColor(this, R.color.brand_red)
+            val pct = if (activeBal > 0) (pnlUsd / activeBal) * 100.0 else 0.0
+            tvBotTotalPnl.text = String.format(Locale.US, "%s$%.2f (%s%.2f%%)", sign, pnlUsd, sign, pct)
+            val color = if (pnlUsd >= 0) ContextCompat.getColor(this, R.color.brand_green) else ContextCompat.getColor(this, R.color.brand_red)
             tvBotTotalPnl.setTextColor(color)
+        }
+    }
+
+    private fun checkAndManageBotLoop() {
+        if (isSpotBotActive || isFuturesBotActive) {
+            if (botStatusListener == null) {
+                startBotLoop()
+            }
+        } else {
+            stopBotLoop()
         }
     }
 
@@ -4147,13 +4289,26 @@ class MainActivity : AppCompatActivity(),
                 currentUserProfile.accountId
             )
             withContext(Dispatchers.Main) {
-                syncCurrentBotConfig(isActiveState = true)
+                syncCurrentBotConfig()
                 botStatusListener = FirebaseSyncManager.listenToBotStatus(
                     accountId = currentUserProfile.accountId
-                ) { pnlUsd, _, activeTrades ->
+                ) { pnlUsd, _, activeTrades, marketType ->
                     runOnUiThread {
-                        botTotalPnlUsd = pnlUsd
-                        botActiveTradesCount = activeTrades
+                        if (marketType == "PERP") {
+                            futuresBotTotalPnlUsd = pnlUsd
+                            futuresBotActiveTradesCount = activeTrades
+                        } else if (marketType == "SPOT") {
+                            spotBotTotalPnlUsd = pnlUsd
+                            spotBotActiveTradesCount = activeTrades
+                        } else {
+                            if (isSpotMode) {
+                                spotBotTotalPnlUsd = pnlUsd
+                                spotBotActiveTradesCount = activeTrades
+                            } else {
+                                futuresBotTotalPnlUsd = pnlUsd
+                                futuresBotActiveTradesCount = activeTrades
+                            }
+                        }
                         saveBotPrefs()
                         updateBotUi()
                     }
@@ -4169,7 +4324,9 @@ class MainActivity : AppCompatActivity(),
         botStatusListener?.remove()
         botStatusListener = null
 
-        syncCurrentBotConfig(isActiveState = false)
+        if (!isSpotBotActive && !isFuturesBotActive) {
+            syncCurrentBotConfig(isActiveState = false)
+        }
     }
 
     private fun fetchSpotBalances() {

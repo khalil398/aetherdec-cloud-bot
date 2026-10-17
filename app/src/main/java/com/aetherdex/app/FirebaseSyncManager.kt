@@ -162,7 +162,13 @@ object FirebaseSyncManager {
         leverage: Int = 10,
         marginMode: String = "ISOLATED",
         isIsolated: Boolean = true,
-        positionDirection: String = "LONG"
+        positionDirection: String = "LONG",
+        isSpotBotActive: Boolean = false,
+        isFuturesBotActive: Boolean = false,
+        spotStrategy: String = strategy,
+        spotAllocationPct: Int = allocationPct,
+        futuresStrategy: String = strategy,
+        futuresAllocationPct: Int = allocationPct
     ) {
         if (!isOnline(context)) {
             Log.d(TAG, "Device is offline. Skipping bot_config sync.")
@@ -177,8 +183,36 @@ object FirebaseSyncManager {
                 currentEnabled.add(cleanTarget)
             }
             val enabledAssetsList = currentEnabled.toList()
+            val isAnyActive = isSpotBotActive || isFuturesBotActive || active
+
+            val spotConfigMap = hashMapOf<String, Any>(
+                "active" to isSpotBotActive,
+                "strategy" to spotStrategy,
+                "allocation_pct" to spotAllocationPct,
+                "target_coin" to (if (cleanTarget.isNotBlank()) cleanTarget else "BTC"),
+                "market_type" to "SPOT",
+                "updated_at" to System.currentTimeMillis()
+            )
+
+            val futuresConfigMap = hashMapOf<String, Any>(
+                "active" to isFuturesBotActive,
+                "strategy" to futuresStrategy,
+                "allocation_pct" to futuresAllocationPct,
+                "target_coin" to (if (cleanTarget.isNotBlank()) cleanTarget else "BTC"),
+                "market_type" to "PERP",
+                "leverage" to leverage,
+                "margin_mode" to marginMode,
+                "is_isolated" to isIsolated,
+                "position_direction" to positionDirection,
+                "updated_at" to System.currentTimeMillis()
+            )
+
             val payload = hashMapOf<String, Any>(
-                "active" to active,
+                "active" to isAnyActive,
+                "is_spot_bot_active" to isSpotBotActive,
+                "is_futures_bot_active" to isFuturesBotActive,
+                "spot_active" to isSpotBotActive,
+                "futures_active" to isFuturesBotActive,
                 "strategy" to strategy,
                 "allocation_pct" to allocationPct,
                 "target_coin" to (if (cleanTarget.isNotBlank()) cleanTarget else "BTC"),
@@ -188,6 +222,8 @@ object FirebaseSyncManager {
                 "margin_mode" to marginMode,
                 "is_isolated" to isIsolated,
                 "position_direction" to positionDirection,
+                "spot_config" to spotConfigMap,
+                "futures_config" to futuresConfigMap,
                 "updated_at" to System.currentTimeMillis()
             )
 
@@ -198,11 +234,24 @@ object FirebaseSyncManager {
                 .document("bot_config")
                 .set(payload, SetOptions.merge())
                 .addOnSuccessListener {
-                    Log.i(TAG, "Synced bot_config to Firestore (users/$docId/bot/bot_config): active=$active, marketType=$marketType, leverage=${leverage}x, marginMode=$marginMode, direction=$positionDirection, target=$cleanTarget")
+                    Log.i(TAG, "Synced bot_config to Firestore (users/$docId/bot/bot_config): spotActive=$isSpotBotActive, futuresActive=$isFuturesBotActive, anyActive=$isAnyActive, marketType=$marketType, leverage=${leverage}x, marginMode=$marginMode, direction=$positionDirection")
                 }
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Failed to sync bot_config to Firestore", e)
                 }
+
+            // Sync dedicated market-scoped subdocuments for maximum isolation
+            firestore.collection("users")
+                .document(docId)
+                .collection("bot")
+                .document("spot_config")
+                .set(spotConfigMap, SetOptions.merge())
+
+            firestore.collection("users")
+                .document(docId)
+                .collection("bot")
+                .document("futures_config")
+                .set(futuresConfigMap, SetOptions.merge())
 
             // Secondary: Write to subcollection "bot_config", document "config"
             firestore.collection("users")
@@ -254,7 +303,7 @@ object FirebaseSyncManager {
 
     fun listenToBotStatus(
         accountId: String = "",
-        onUpdate: (pnlUsd: Double, pnlPct: Double, activeTrades: Int) -> Unit
+        onUpdateWithMarket: (pnlUsd: Double, pnlPct: Double, activeTrades: Int, marketType: String?) -> Unit
     ): com.google.firebase.firestore.ListenerRegistration? {
         val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
         Log.i(TAG, "Setting up real-time listener on bot_status for user UID: $docId")
@@ -267,8 +316,9 @@ object FirebaseSyncManager {
                     ?: (snapshot.get("pnl_pct") as? Number)?.toDouble() ?: 0.0
                 val activeTrades = snapshot.getLong("active_trades")?.toInt()
                     ?: (snapshot.get("active_trades") as? Number)?.toInt() ?: 0
-                Log.d(TAG, "Bot status update received from Firestore: pnlUsd=$pnlUsd, pnlPct=$pnlPct, activeTrades=$activeTrades")
-                onUpdate(pnlUsd, pnlPct, activeTrades)
+                val marketType = snapshot.getString("market_type")
+                Log.d(TAG, "Bot status update received from Firestore: pnlUsd=$pnlUsd, pnlPct=$pnlPct, activeTrades=$activeTrades, market=$marketType")
+                onUpdateWithMarket(pnlUsd, pnlPct, activeTrades, marketType)
             }
         }
 
@@ -307,12 +357,22 @@ object FirebaseSyncManager {
                         val pnlUsd = (statusMap["pnl_usd"] as? Number)?.toDouble() ?: 0.0
                         val pnlPct = (statusMap["pnl_pct"] as? Number)?.toDouble() ?: 0.0
                         val activeTrades = (statusMap["active_trades"] as? Number)?.toInt() ?: 0
-                        onUpdate(pnlUsd, pnlPct, activeTrades)
+                        val marketType = statusMap["market_type"] as? String
+                        onUpdateWithMarket(pnlUsd, pnlPct, activeTrades, marketType)
                     }
                 }
             }
 
         return registration
+    }
+
+    fun listenToBotStatus(
+        accountId: String = "",
+        onUpdate: (pnlUsd: Double, pnlPct: Double, activeTrades: Int) -> Unit
+    ): com.google.firebase.firestore.ListenerRegistration? {
+        return listenToBotStatus(accountId) { pnlUsd, pnlPct, activeTrades, _ ->
+            onUpdate(pnlUsd, pnlPct, activeTrades)
+        }
     }
 
 

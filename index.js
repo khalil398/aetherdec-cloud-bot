@@ -50,9 +50,23 @@ if (admin.apps.length > 0) {
     const config = change.doc.data();
     if (!uid || !config) return;
 
-    console.log(`🔔 Bot config update for UID [${uid}]: active=${config.active}, strategy='${config.strategy}'`);
+    const isSpotActive = config.is_spot_bot_active !== undefined
+      ? Boolean(config.is_spot_bot_active)
+      : (config.spot_active !== undefined
+        ? Boolean(config.spot_active)
+        : (config.market_type === "SPOT" ? Boolean(config.active) : false));
 
-    if (config.active) {
+    const isFuturesActive = config.is_futures_bot_active !== undefined
+      ? Boolean(config.is_futures_bot_active)
+      : (config.futures_active !== undefined
+        ? Boolean(config.futures_active)
+        : (config.market_type === "PERP" || config.market_type === "FUTURES" ? Boolean(config.active) : false));
+
+    const isAnyActive = isSpotActive || isFuturesActive || config.active === true;
+
+    console.log(`🔔 Bot config update for UID [${uid}]: spotActive=${isSpotActive}, futuresActive=${isFuturesActive}, anyActive=${isAnyActive}`);
+
+    if (isAnyActive) {
       startWorker(uid, db, config);
     } else {
       stopWorker(uid);

@@ -431,17 +431,39 @@ async function executeBotTick(uid, db, config, botSecret) {
   };
 
   // Prioritize active target coin and authorized assets in the scan queue
-  const isPerpMode = config.market_type === "PERP" || config.market_mode === "FUTURES" || config.is_spot === false;
-  const configuredLeverage = Math.max(1, Math.min(50, parseInt(config.leverage) || 10));
-  const marginMode = (config.margin_mode || (config.is_isolated !== false ? "ISOLATED" : "CROSS")).toUpperCase();
-  const isIsolated = marginMode === "ISOLATED" || config.is_isolated === true;
-  const positionDirection = (config.position_direction || "LONG").toUpperCase();
+  // Decoupled Market Activation States
+  const isSpotActive = config.is_spot_bot_active !== undefined
+    ? Boolean(config.is_spot_bot_active)
+    : (config.spot_active !== undefined
+      ? Boolean(config.spot_active)
+      : (config.market_type === "SPOT" ? Boolean(config.active) : false));
+
+  const isFuturesActive = config.is_futures_bot_active !== undefined
+    ? Boolean(config.is_futures_bot_active)
+    : (config.futures_active !== undefined
+      ? Boolean(config.futures_active)
+      : (config.market_type === "PERP" || config.market_type === "FUTURES" || config.is_spot === false ? Boolean(config.active) : false));
+
+  console.log(`[${uid}] ⚡ Bot Tick Evaluation: isSpotActive=${isSpotActive}, isFuturesActive=${isFuturesActive}`);
+
+  if (!isSpotActive && !isFuturesActive) {
+    console.log(`[${uid}] ⏸️ Both Spot and Futures bot engines are INACTIVE. Skipping tick.`);
+    return;
+  }
+
+  const futuresConfig = config.futures_config || config;
+  const futuresStrategy = futuresConfig.strategy || config.strategy || "30m EMA High/Low";
+  const futuresAllocPct = futuresConfig.allocation_pct || config.allocation_pct || 25;
+  const configuredLeverage = Math.max(1, Math.min(50, parseInt(futuresConfig.leverage || config.leverage) || 10));
+  const marginMode = (futuresConfig.margin_mode || config.margin_mode || (config.is_isolated !== false ? "ISOLATED" : "CROSS")).toUpperCase();
+  const isIsolated = marginMode === "ISOLATED" || futuresConfig.is_isolated === true || config.is_isolated === true;
+  const positionDirection = (futuresConfig.position_direction || config.position_direction || "LONG").toUpperCase();
 
   // =========================================================================
   // DUAL-MARKET ENGINE: 1. PERPETUAL FUTURES MODE
   // =========================================================================
-  if (isPerpMode) {
-    console.log(`[${uid}] ⚡ Running 30m Perpetual Futures Bot Engine '${config.strategy}' (Leverage: ${configuredLeverage}x, Margin: ${marginMode}, Direction: ${positionDirection}, Alloc: ${config.allocation_pct}%)...`);
+  if (isFuturesActive) {
+    console.log(`[${uid}] ⚡ Running 30m Perpetual Futures Bot Engine '${futuresStrategy}' (Leverage: ${configuredLeverage}x, Margin: ${marginMode}, Direction: ${positionDirection}, Alloc: ${futuresAllocPct}%)...`);
 
     const perpMarkets = await fetchPerpMetaAndCtxs();
     const perpMarketMap = new Map();
@@ -722,23 +744,35 @@ async function executeBotTick(uid, db, config, botSecret) {
     }, { merge: true });
 
     console.log(`[${uid}] ✅ Futures Telemetry updated: PnL=$${totalPnlUsd.toFixed(2)} (${pnlPct.toFixed(2)}%), Active Trades: ${activeTradesCount}, Margin: ${marginMode}`);
-    return;
+
+    // If Spot trading bot is NOT enabled, strictly exit now and NEVER place Spot orders
+    if (!isSpotActive) {
+      console.log(`[${uid}] 🛑 Spot bot is DISABLED. Strictly skipping all Spot evaluation and order placement.`);
+      return;
+    }
   }
 
   // =========================================================================
   // DUAL-MARKET ENGINE: 2. SPOT TRADING MODE
   // =========================================================================
-  const scanQueue = Array.from(new Set([
-    targetCoin,
-    ...enabledAssets,
-    ...availableCoins
-  ]));
+  if (isSpotActive) {
+    const spotConfig = config.spot_config || config;
+    const spotStrategy = spotConfig.strategy || config.strategy || "30m EMA High/Low";
+    const spotAllocPct = spotConfig.allocation_pct || config.allocation_pct || 25;
 
-  const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
-  const isEmaStrategyActive = (config.strategy === "30m EMA High/Low" || config.strategy === "5m EMA High/Low" || config.strategy === "Trend Following" || !config.strategy);
+    console.log(`[${uid}] ⚡ Running 30m Spot Bot Engine '${spotStrategy}' (Alloc: ${spotAllocPct}%)...`);
 
-  if (isEmaStrategyActive) {
-    console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Spot pairs (Target: ${targetCoin}, Authorized: ${enabledAssets.length})...`);
+    const scanQueue = Array.from(new Set([
+      targetCoin,
+      ...enabledAssets,
+      ...availableCoins
+    ]));
+
+    const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
+    const isEmaStrategyActive = (spotStrategy === "30m EMA High/Low" || spotStrategy === "5m EMA High/Low" || spotStrategy === "Trend Following" || !spotStrategy);
+
+    if (isEmaStrategyActive) {
+      console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Spot pairs (Target: ${targetCoin}, Authorized: ${enabledAssets.length})...`);
 
     // Simultaneous Parallel 30m Candle Snapshot Queries across spot pairs
     const scanResults = await Promise.all(
@@ -841,13 +875,13 @@ async function executeBotTick(uid, db, config, botSecret) {
       getHeldBalance(r.coin) <= 0.0001
     );
 
-    if (bestBuySignal && usdcBalance > 0.5 && config.active) {
+    if (bestBuySignal && usdcBalance > 0.5 && isSpotActive) {
       const { coin, coinPrice, breakoutCandleOffset, proximityScore, market } = bestBuySignal;
       const offsetDesc = breakoutCandleOffset === 0 ? "current candle" : `${breakoutCandleOffset} candle(s) ago`;
       console.log(`[${uid}] 🚀 MULTI-PAIR SCANNER: 100% RADAR BREAKOUT BUY SIGNAL on ${coin} (Proximity: ${proximityScore}%, state: IN_BUY, breakout transition: ${offsetDesc})! Executing Spot Buy with available $${usdcBalance.toFixed(2)} USDC...`);
       try {
         const resolvedMarket = market || resolveSpotMarket(coin, spotMarketMap);
-        const allocPct = (config.allocation_pct || 100) / 100.0;
+        const allocPct = (spotAllocPct || config.allocation_pct || 100) / 100.0;
         let buyAmountUsdc = usdcBalance * allocPct;
         // Utilize full available spot balance (e.g., $9.43)
         if (buyAmountUsdc < 10.0 && usdcBalance >= 1.0) {
@@ -983,14 +1017,18 @@ async function executeBotTick(uid, db, config, botSecret) {
     pnl_usd: totalPnlUsd,
     pnl_pct: pnlPct,
     active_trades: activeTradesCount,
-    strategy: config.strategy,
+    strategy: spotStrategy,
     timeframe: "30m",
+    market_type: "SPOT",
+    is_spot_bot_active: isSpotActive,
+    is_futures_bot_active: isFuturesActive,
     scanned_markets_count: availableCoins.length,
     target_radar: targetRadarTelemetry,
     updated_at: Date.now()
   }, { merge: true });
 
   console.log(`[${uid}] ✅ Telemetry updated: PnL=$${totalPnlUsd.toFixed(2)} (${pnlPct.toFixed(2)}%), Scanned Spot Markets: ${availableCoins.length}`);
+  }
 }
 
 module.exports = {
