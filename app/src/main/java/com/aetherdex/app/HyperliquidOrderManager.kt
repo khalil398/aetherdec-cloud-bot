@@ -845,6 +845,56 @@ object HyperliquidOrderManager {
     }
 
     /**
+     * Computes the EIP-712 digest for user-signed userSetAbstraction action.
+     * Domain: HyperliquidSignTransaction (chainId = 421614 / 0x66eee)
+     * Struct: UserSetAbstraction(string hyperliquidChain,address user,string abstraction,uint64 nonce)
+     */
+    fun calculateUserSetAbstractionEip712Digest(
+        hyperliquidChain: String = "Mainnet",
+        userAddress: String,
+        abstraction: String = "disabled",
+        nonce: Long
+    ): ByteArray {
+        val nameHash = keccak256("HyperliquidSignTransaction".toByteArray(Charsets.UTF_8))
+        val versionHash = keccak256("1".toByteArray(Charsets.UTF_8))
+        val chainIdBytes = pad32(java.math.BigInteger.valueOf(421614L).toByteArray())
+        val verifyingContractBytes = ByteArray(32)
+
+        val domainBuffer = ByteArray(32 * 5)
+        System.arraycopy(DOMAIN_TYPEHASH, 0, domainBuffer, 0, 32)
+        System.arraycopy(nameHash, 0, domainBuffer, 32, 32)
+        System.arraycopy(versionHash, 0, domainBuffer, 64, 32)
+        System.arraycopy(chainIdBytes, 0, domainBuffer, 96, 32)
+        System.arraycopy(verifyingContractBytes, 0, domainBuffer, 128, 32)
+        val domainSeparator = keccak256(domainBuffer)
+
+        val typeHash = keccak256(
+            "HyperliquidTransaction:UserSetAbstraction(string hyperliquidChain,address user,string abstraction,uint64 nonce)".toByteArray(Charsets.UTF_8)
+        )
+        val chainHash = keccak256(hyperliquidChain.toByteArray(Charsets.UTF_8))
+        val cleanUser = userAddress.trim().removePrefix("0x")
+        val userBytes = pad32(Numeric.hexStringToByteArray(cleanUser))
+        val abstractionHash = keccak256(abstraction.toByteArray(Charsets.UTF_8))
+        val nonceBytes = pad32(java.math.BigInteger.valueOf(nonce).toByteArray())
+
+        val structBuffer = ByteArray(32 * 5)
+        System.arraycopy(typeHash, 0, structBuffer, 0, 32)
+        System.arraycopy(chainHash, 0, structBuffer, 32, 32)
+        System.arraycopy(userBytes, 0, structBuffer, 64, 32)
+        System.arraycopy(abstractionHash, 0, structBuffer, 96, 32)
+        System.arraycopy(nonceBytes, 0, structBuffer, 128, 32)
+        val structHash = keccak256(structBuffer)
+
+        val digestBuffer = ByteArray(2 + 32 + 32)
+        digestBuffer[0] = 0x19.toByte()
+        digestBuffer[1] = 0x01.toByte()
+        System.arraycopy(domainSeparator, 0, digestBuffer, 2, 32)
+        System.arraycopy(structHash, 0, digestBuffer, 34, 32)
+
+        return keccak256(digestBuffer)
+    }
+
+    /**
      * Submits an approveAgent L1 action to Hyperliquid exchange API.
      * Approves an Agent Key (agentAddress) for trading authority.
      */
@@ -1462,26 +1512,159 @@ object HyperliquidOrderManager {
     }
 
     /**
-     * Executes internal transfer between Perpetual Clearinghouse and Spot Clearinghouse using Hyperliquid L1 usdClassTransfer user-signed action.
-     * When Unified Account is active, internal transfers are redundant because Spot and Perpetual balances are already pooled automatically.
-     * @param toSpot true = transfer from Perp to Spot (toPerp: false), false = transfer from Spot to Perp (toPerp: true)
+     * Disables account abstraction (switching to standard/manual mode) on Hyperliquid
+     * to eliminate "unified account is active" restrictions when performing internal transfers.
      */
-    suspend fun transferUsdcBetweenPerpAndSpot(
+    suspend fun disableUserAbstraction(
+        ctx: android.content.Context,
+        userAddress: String,
+        nonce: Long = System.currentTimeMillis()
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val actionObj = JSONObject().apply {
+                put("type", "userSetAbstraction")
+                put("hyperliquidChain", "Mainnet")
+                put("signatureChainId", "0x66eee")
+                put("user", userAddress.lowercase(Locale.US))
+                put("abstraction", "disabled")
+                put("nonce", nonce)
+            }
+
+            val signature = EmbeddedWalletManager.signUserSetAbstraction(
+                ctx = ctx,
+                userAddress = userAddress,
+                abstraction = "disabled",
+                nonce = nonce
+            )
+
+            val cleanSig = signature.trim().removePrefix("0x")
+            val rHex = if (cleanSig.length >= 64) "0x" + cleanSig.substring(0, 64) else "0x0"
+            val sHex = if (cleanSig.length >= 128) "0x" + cleanSig.substring(64, 128) else "0x0"
+            val vVal = if (cleanSig.length >= 130) cleanSig.substring(128, 130).toIntOrNull(16) ?: 27 else 27
+
+            val sigObj = JSONObject().apply {
+                put("r", rHex)
+                put("s", sHex)
+                put("v", vVal)
+            }
+
+            val requestBody = JSONObject().apply {
+                put("action", actionObj)
+                put("nonce", nonce)
+                put("signature", sigObj)
+                put("vaultAddress", null)
+            }
+
+            val url = URL("$HYPERLIQUID_API_URL/exchange")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+
+            conn.outputStream.use { os ->
+                os.write(requestBody.toString().toByteArray(Charsets.UTF_8))
+            }
+
+            val code = conn.responseCode
+            val responseText = if (code == 200) {
+                conn.inputStream.bufferedReader().readText()
+            } else {
+                conn.errorStream?.bufferedReader()?.readText() ?: ""
+            }
+
+            Log.i(TAG, "disableUserAbstraction response ($code): $responseText")
+            code == 200 && !responseText.contains("\"error\"") && !responseText.contains("\"err\"")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to disable user abstraction", e)
+            false
+        }
+    }
+
+    /**
+     * Executes the Hyperliquid L1 bridge class transfer between Spot and Perpetual Futures.
+     * Payload: { "type": "spotUser", "classTransfer": { "usdc": microUsdc, "toPerp": toPerp } }
+     */
+    suspend fun executeL1SpotClassTransfer(
         ctx: android.content.Context,
         amountUsdc: Double,
         toSpot: Boolean,
         nonce: Long = System.currentTimeMillis()
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         try {
-            val userAddress = EmbeddedWalletManager.getActiveEvmAddress(ctx)
-            if (userAddress.isNotBlank()) {
-                val abstraction = checkUserAbstraction(userAddress)
-                if (abstraction.equals("unifiedAccount", ignoreCase = true) || abstraction.equals("portfolioMargin", ignoreCase = true)) {
-                    Log.i(TAG, "Unified Account active ($abstraction). Bypassing internal transfer as funds are pooled automatically.")
-                    return@withContext true to "Unified Account Active: Spot and Perpetual Futures balances are pooled together automatically. No manual transfer needed."
-                }
+            val microUsdc = (amountUsdc * 1_000_000.0).toLong()
+            val toPerpVal = !toSpot
+
+            val actionObj = JSONObject().apply {
+                put("type", "spotUser")
+                put("classTransfer", JSONObject().apply {
+                    put("usdc", microUsdc)
+                    put("toPerp", toPerpVal)
+                })
             }
 
+            val signature = EmbeddedWalletManager.signEip712Order(ctx, actionObj, nonce)
+
+            val url = URL("$HYPERLIQUID_API_URL/exchange")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+
+            val cleanSig = signature.trim().removePrefix("0x")
+            val rHex = if (cleanSig.length >= 64) "0x" + cleanSig.substring(0, 64) else "0x0"
+            val sHex = if (cleanSig.length >= 128) "0x" + cleanSig.substring(64, 128) else "0x0"
+            val vVal = if (cleanSig.length >= 130) cleanSig.substring(128, 130).toIntOrNull(16) ?: 27 else 27
+
+            val sigObj = JSONObject().apply {
+                put("r", rHex)
+                put("s", sHex)
+                put("v", vVal)
+            }
+
+            val requestBody = JSONObject().apply {
+                put("action", actionObj)
+                put("nonce", nonce)
+                put("signature", sigObj)
+                put("vaultAddress", null)
+            }
+
+            Log.i(TAG, "=== HYPERLIQUID L1 BRIDGE TRANSFER REQUEST ===")
+            Log.i(TAG, requestBody.toString(2))
+
+            conn.outputStream.use { os ->
+                os.write(requestBody.toString().toByteArray(Charsets.UTF_8))
+            }
+
+            val code = conn.responseCode
+            val responseText = if (code == 200) {
+                conn.inputStream.bufferedReader().readText()
+            } else {
+                conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
+            }
+
+            Log.i(TAG, "L1 Bridge transfer response ($code): $responseText")
+            val isSuccess = code == 200 && !responseText.contains("\"error\"") && !responseText.contains("\"err\"")
+            isSuccess to responseText
+        } catch (e: Exception) {
+            Log.e(TAG, "L1 Bridge transfer failed", e)
+            false to "Transfer failed: ${e.message}"
+        }
+    }
+
+    /**
+     * Executes internal transfer using the legacy usdClassTransfer user-signed action.
+     */
+    suspend fun executeUsdClassTransfer(
+        ctx: android.content.Context,
+        amountUsdc: Double,
+        toSpot: Boolean,
+        nonce: Long = System.currentTimeMillis()
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        try {
             val amountStr = String.format(Locale.US, "%.4f", amountUsdc).trimEnd('0').trimEnd('.')
             val toPerpVal = !toSpot
 
@@ -1507,8 +1690,8 @@ object HyperliquidOrderManager {
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
             conn.doOutput = true
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
 
             val cleanSig = signature.trim().removePrefix("0x")
             val rHex = if (cleanSig.length >= 64) "0x" + cleanSig.substring(0, 64) else "0x0"
@@ -1528,7 +1711,7 @@ object HyperliquidOrderManager {
                 put("vaultAddress", null)
             }
 
-            Log.i(TAG, "=== HYPERLIQUID INTERNAL TRANSFER REQUEST ===")
+            Log.i(TAG, "=== HYPERLIQUID USD CLASS TRANSFER REQUEST ===")
             Log.i(TAG, requestBody.toString(2))
 
             conn.outputStream.use { os ->
@@ -1542,20 +1725,80 @@ object HyperliquidOrderManager {
                 conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $code"
             }
 
-            Log.i(TAG, "Transfer response ($code): $responseText")
-
-            // Gracefully handle Unified Account active response from exchange
-            if (responseText.contains("unified account is active", ignoreCase = true)) {
-                Log.i(TAG, "Exchange confirmed Unified Account is active. Funds are automatically pooled.")
-                return@withContext true to "Unified Account Active: Spot and Perpetual Futures balances are pooled together automatically. No manual transfer needed."
-            }
-
+            Log.i(TAG, "usdClassTransfer response ($code): $responseText")
             val isSuccess = code == 200 && !responseText.contains("\"error\"") && !responseText.contains("\"err\"")
             isSuccess to responseText
         } catch (e: Exception) {
-            Log.e(TAG, "Transfer failed", e)
+            Log.e(TAG, "usdClassTransfer failed", e)
             false to "Transfer failed: ${e.message}"
         }
+    }
+
+    /**
+     * Executes manual internal transfer between Spot and Perpetual Futures without triggering
+     * unified account restriction errors.
+     * Correctly formats parameters for the Hyperliquid L1 bridge (spotUser with classTransfer).
+     * If unified account is active, automatically disables abstraction on L1 and completes transfer.
+     */
+    suspend fun transferUsdcBetweenPerpAndSpot(
+        ctx: android.content.Context,
+        amountUsdc: Double,
+        toSpot: Boolean,
+        nonce: Long = System.currentTimeMillis()
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val userAddress = EmbeddedWalletManager.getActiveEvmAddress(ctx)
+
+        // If user has unified account active, proactively disable abstraction to permit manual internal transfers
+        if (userAddress.isNotBlank()) {
+            val abstraction = checkUserAbstraction(userAddress)
+            if (abstraction.equals("unifiedAccount", ignoreCase = true) || abstraction.equals("portfolioMargin", ignoreCase = true)) {
+                Log.i(TAG, "Unified Account mode detected ($abstraction). Disabling abstraction to permit manual transfer...")
+                val disabled = disableUserAbstraction(ctx, userAddress)
+                Log.i(TAG, "disableUserAbstraction result: $disabled")
+            }
+        }
+
+        // 1. Primary: Execute via native Hyperliquid L1 bridge (spotUser with classTransfer)
+        val (l1Success, l1Msg) = executeL1SpotClassTransfer(ctx, amountUsdc, toSpot, nonce)
+        if (l1Success) {
+            val destName = if (toSpot) "Spot Clearinghouse" else "Perpetual Futures"
+            return@withContext true to "Successfully transferred $amountUsdc USDC to $destName on Hyperliquid L1 bridge."
+        }
+
+        // 2. If rejected because unified account is active, disable abstraction and retry L1 bridge transfer
+        if (l1Msg.contains("unified account is active", ignoreCase = true) && userAddress.isNotBlank()) {
+            Log.i(TAG, "Retrying after disabling unified account abstraction...")
+            val disabled = disableUserAbstraction(ctx, userAddress)
+            if (disabled) {
+                val retryNonce = System.currentTimeMillis()
+                val (retryL1Success, retryL1Msg) = executeL1SpotClassTransfer(ctx, amountUsdc, toSpot, retryNonce)
+                if (retryL1Success) {
+                    val destName = if (toSpot) "Spot Clearinghouse" else "Perpetual Futures"
+                    return@withContext true to "Successfully transferred $amountUsdc USDC to $destName on Hyperliquid L1 bridge."
+                }
+            }
+        }
+
+        // 3. Fallback: Execute via usdClassTransfer
+        val (usdSuccess, usdMsg) = executeUsdClassTransfer(ctx, amountUsdc, toSpot, System.currentTimeMillis())
+        if (usdSuccess) {
+            val destName = if (toSpot) "Spot Clearinghouse" else "Perpetual Futures"
+            return@withContext true to "Successfully transferred $amountUsdc USDC to $destName."
+        }
+
+        // 4. If usdClassTransfer also reports unified account is active, disable and retry usdClassTransfer
+        if (usdMsg.contains("unified account is active", ignoreCase = true) && userAddress.isNotBlank()) {
+            val disabled = disableUserAbstraction(ctx, userAddress)
+            if (disabled) {
+                val retryUsd = executeUsdClassTransfer(ctx, amountUsdc, toSpot, System.currentTimeMillis())
+                if (retryUsd.first) {
+                    val destName = if (toSpot) "Spot Clearinghouse" else "Perpetual Futures"
+                    return@withContext true to "Successfully transferred $amountUsdc USDC to $destName."
+                }
+            }
+        }
+
+        false to (if (l1Msg.isNotBlank()) l1Msg else usdMsg)
     }
 
     data class SpotOpenOrder(

@@ -272,6 +272,34 @@ object EmbeddedWalletManager {
         }
     }
 
+    /**
+     * Signs a userSetAbstraction user-signed action using EIP-712.
+     */
+    fun signUserSetAbstraction(
+        ctx: Context,
+        userAddress: String,
+        abstraction: String = "disabled",
+        nonce: Long
+    ): String {
+        val privateKeyHex = getActivePrivateKeyHex(ctx) ?: return "0x0"
+        return try {
+            val digest = HyperliquidOrderManager.calculateUserSetAbstractionEip712Digest(
+                hyperliquidChain = "Mainnet",
+                userAddress = userAddress,
+                abstraction = abstraction,
+                nonce = nonce
+            )
+            val (r, s, v) = HyperliquidOrderManager.signEip712Digest(privateKeyHex, digest)
+            val rClean = r.removePrefix("0x").padStart(64, '0')
+            val sClean = s.removePrefix("0x").padStart(64, '0')
+            val vHex = v.toString(16).padStart(2, '0')
+            "0x$rClean$sClean$vHex"
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to sign userSetAbstraction", e)
+            "0x0"
+        }
+    }
+
 
     /**
      * Fetches live on-chain balance for the embedded wallet address.

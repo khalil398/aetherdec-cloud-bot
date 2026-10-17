@@ -4400,51 +4400,28 @@ class MainActivity : AppCompatActivity(),
         val btnConfirm = dialog.findViewById<MaterialButton>(R.id.btnConfirmTransfer)
         val layoutUnifiedNotice = dialog.findViewById<View>(R.id.layoutUnifiedAccountNotice)
 
-        var toSpot = true // true = Perp -> Spot, false = Spot -> Perp
+        var toSpot = isSpotMode // If in Spot mode, default Perp -> Spot; if in Futures mode, default Spot -> Perp
 
         fun updateBalancesAndLabels() {
             val perpBal = getPerpUsdcBalance()
             val spotBal = getSpotUsdcBalance()
 
-            if (isUnifiedAccountActive && !isDemoModeActive) {
-                layoutUnifiedNotice?.visibility = View.VISIBLE
-                val sharedBal = Math.max(perpBal, spotBal)
-                tvFromLabel?.text = if (toSpot) "Perpetual Futures" else "Spot Clearinghouse"
-                tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC (Unified)", sharedBal)
-                tvToLabel?.text = if (toSpot) "Spot Clearinghouse" else "Perpetual Futures"
-                tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC (Unified)", sharedBal)
-                btnConfirm?.text = "Sync Unified Balance"
+            layoutUnifiedNotice?.visibility = View.GONE
+            if (toSpot) {
+                tvFromLabel?.text = "Perpetual Futures"
+                tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", perpBal)
+                tvToLabel?.text = "Spot Clearinghouse"
+                tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", spotBal)
             } else {
-                layoutUnifiedNotice?.visibility = View.GONE
-                if (toSpot) {
-                    tvFromLabel?.text = "Perpetual Futures"
-                    tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", perpBal)
-                    tvToLabel?.text = "Spot Clearinghouse"
-                    tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", spotBal)
-                } else {
-                    tvFromLabel?.text = "Spot Clearinghouse"
-                    tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", spotBal)
-                    tvToLabel?.text = "Perpetual Futures"
-                    tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", perpBal)
-                }
-                btnConfirm?.text = "Confirm Internal Transfer"
+                tvFromLabel?.text = "Spot Clearinghouse"
+                tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", spotBal)
+                tvToLabel?.text = "Perpetual Futures"
+                tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", perpBal)
             }
+            btnConfirm?.text = "Confirm Internal Transfer"
         }
 
         updateBalancesAndLabels()
-
-        val activeAddr = EmbeddedWalletManager.getActiveEvmAddress(this)
-        if (activeAddr.isNotBlank() && !isDemoModeActive) {
-            lifecycleScope.launch(Dispatchers.IO) {
-                val abstraction = HyperliquidOrderManager.checkUserAbstraction(activeAddr)
-                if (abstraction.equals("unifiedAccount", ignoreCase = true) || abstraction.equals("portfolioMargin", ignoreCase = true)) {
-                    isUnifiedAccountActive = true
-                    withContext(Dispatchers.Main) {
-                        updateBalancesAndLabels()
-                    }
-                }
-            }
-        }
 
         btnClose?.setOnClickListener { dialog.dismiss() }
 
@@ -4465,16 +4442,6 @@ class MainActivity : AppCompatActivity(),
         btnConfirm?.setOnClickListener {
             val perpBal = getPerpUsdcBalance()
             val spotBal = getSpotUsdcBalance()
-
-            // If Unified Account mode is active on exchange, bypass legacy internal transfer action
-            if (isUnifiedAccountActive && !isDemoModeActive) {
-                val sharedBal = Math.max(perpBal, spotBal)
-                snackString(String.format(Locale.US, "Unified Account Active: Your $%.2f USDC is already pooled and ready for trading in both Spot & Futures!", sharedBal))
-                dialog.dismiss()
-                fetchHyperliquidBalance()
-                fetchSpotBalances()
-                return@setOnClickListener
-            }
 
             val amountStr = etAmount?.text?.toString()?.trim() ?: ""
             val amount = amountStr.toDoubleOrNull() ?: 0.0
@@ -4516,7 +4483,7 @@ class MainActivity : AppCompatActivity(),
                 snackString(String.format(Locale.US, "Successfully transferred $%.2f USDC (Demo)", safeTransferAmount))
                 dialog.dismiss()
             } else {
-                // Live L1 transfer on Hyperliquid Exchange API
+                // Live L1 bridge transfer on Hyperliquid Exchange API
                 lifecycleScope.launch(Dispatchers.IO) {
                     val (success, msg) = HyperliquidOrderManager.transferUsdcBetweenPerpAndSpot(
                         this@MainActivity,
@@ -4526,28 +4493,15 @@ class MainActivity : AppCompatActivity(),
 
                     withContext(Dispatchers.Main) {
                         btnConfirm.isEnabled = true
-                        btnConfirm.text = if (isUnifiedAccountActive) "Sync Unified Balance" else "Confirm Internal Transfer"
+                        btnConfirm.text = "Confirm Internal Transfer"
 
                         if (success) {
-                            if (msg.contains("unified", ignoreCase = true)) {
-                                isUnifiedAccountActive = true
-                                snackString(msg)
-                            } else {
-                                snackString("Transfer Successful!")
-                            }
+                            snackString(msg)
                             dialog.dismiss()
-                            fetchHyperliquidBalance()
+                            fetchHyperliquidBalance(showToast = true)
                             fetchSpotBalances()
                         } else {
-                            if (msg.contains("unified account", ignoreCase = true)) {
-                                isUnifiedAccountActive = true
-                                snackString("Unified Account Active: Your funds are automatically shared between Spot & Futures!")
-                                dialog.dismiss()
-                                fetchHyperliquidBalance()
-                                fetchSpotBalances()
-                            } else {
-                                snackString("Transfer Failed: $msg")
-                            }
+                            snackString("Transfer Failed: $msg")
                         }
                     }
                 }
