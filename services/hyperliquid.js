@@ -242,13 +242,127 @@ async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isB
   }
 }
 
+/**
+ * Fetches Perpetual Futures universe and context metadata.
+ */
+async function fetchPerpMetaAndCtxs() {
+  try {
+    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+      type: "metaAndAssetCtxs"
+    });
+    const rootData = response.data;
+    const perpMarkets = [];
+    if (Array.isArray(rootData) && rootData.length >= 2) {
+      const universe = rootData[0].universe || [];
+      const ctxs = rootData[1] || [];
+      universe.forEach((u, idx) => {
+        const markPx = ctxs[idx] ? parseFloat(ctxs[idx].markPx || 0) : 0;
+        perpMarkets.push({
+          assetIndex: idx,
+          coin: u.name,
+          displayName: `${u.name}-PERP`,
+          szDecimals: u.szDecimals !== undefined ? u.szDecimals : 2,
+          maxLeverage: u.maxLeverage !== undefined ? u.maxLeverage : 20,
+          onlyIsolated: u.onlyIsolated || false,
+          markPrice: markPx
+        });
+      });
+    }
+    return perpMarkets;
+  } catch (error) {
+    console.error("[Hyperliquid] Error fetching perp metaAndAssetCtxs:", error.message);
+    return [];
+  }
+}
+
+/**
+ * Updates leverage and margin mode (isolated vs cross) signed using the delegated Agent Key.
+ */
+async function updateAgentLeverage({ agentPrivateKey, masterAddress, assetIndex, isCross, leverage }) {
+  try {
+    const nonce = Date.now();
+    const action = {
+      type: "updateLeverage",
+      asset: assetIndex,
+      isCross: isCross,
+      leverage: parseInt(leverage)
+    };
+
+    const actionBytes = msgpack.encode(action);
+    const nonceBuffer = Buffer.alloc(8);
+    nonceBuffer.writeBigUInt64BE(BigInt(nonce));
+    const vaultMarker = Buffer.from([0x00]);
+    const connectionIdBytes = Buffer.concat([actionBytes, nonceBuffer, vaultMarker]);
+    const connectionId = ethers.keccak256(connectionIdBytes);
+
+    const domainSeparator = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "bytes32", "bytes32", "uint256", "bytes32"],
+        [
+          ethers.id("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+          ethers.id("Exchange"),
+          ethers.id("1"),
+          1337,
+          "0x0000000000000000000000000000000000000000"
+        ]
+      )
+    );
+
+    const agentStructHash = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ["bytes32", "bytes32", "bytes32"],
+        [
+          ethers.id("Agent(string source,bytes32 connectionId)"),
+          ethers.id("a"),
+          connectionId
+        ]
+      )
+    );
+
+    const digest = ethers.keccak256(
+      Buffer.concat([
+        Buffer.from("1901", "hex"),
+        Buffer.from(domainSeparator.slice(2), "hex"),
+        Buffer.from(agentStructHash.slice(2), "hex")
+      ])
+    );
+
+    const wallet = new ethers.Wallet(agentPrivateKey);
+    const signature = wallet.signingKey.sign(digest);
+
+    const payload = {
+      action,
+      nonce,
+      signature: {
+        r: signature.r,
+        s: signature.s,
+        v: signature.v
+      },
+      vaultAddress: null
+    };
+
+    const response = await axios.post(`${HYPERLIQUID_API_URL}/exchange`, payload, {
+      headers: { "Content-Type": "application/json" }
+    });
+
+    console.log(`[Hyperliquid] Agent updateLeverage for asset ${assetIndex} (isCross=${isCross}, leverage=${leverage}):`, response.data);
+    return response.data;
+  } catch (error) {
+    console.error(`[Hyperliquid] Agent updateLeverage failed for asset ${assetIndex}:`, error.response?.data || error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   fetchUserClearinghouseState,
   fetchSpotClearinghouseState,
   fetchAllMids,
   fetchSpotMetaAndCtxs,
+  fetchPerpMetaAndCtxs,
   fetchCandleSnapshot,
-  placeAgentOrder
+  placeAgentOrder,
+  updateAgentLeverage
 };
+
 
 

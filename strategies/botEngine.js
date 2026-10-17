@@ -3,8 +3,10 @@ const {
   fetchSpotClearinghouseState,
   fetchAllMids,
   fetchSpotMetaAndCtxs,
+  fetchPerpMetaAndCtxs,
   fetchCandleSnapshot,
-  placeAgentOrder
+  placeAgentOrder,
+  updateAgentLeverage
 } = require("../services/hyperliquid");
 
 /**
@@ -429,6 +431,303 @@ async function executeBotTick(uid, db, config, botSecret) {
   };
 
   // Prioritize active target coin and authorized assets in the scan queue
+  const isPerpMode = config.market_type === "PERP" || config.market_mode === "FUTURES" || config.is_spot === false;
+  const configuredLeverage = Math.max(1, Math.min(50, parseInt(config.leverage) || 10));
+  const marginMode = (config.margin_mode || (config.is_isolated !== false ? "ISOLATED" : "CROSS")).toUpperCase();
+  const isIsolated = marginMode === "ISOLATED" || config.is_isolated === true;
+  const positionDirection = (config.position_direction || "LONG").toUpperCase();
+
+  // =========================================================================
+  // DUAL-MARKET ENGINE: 1. PERPETUAL FUTURES MODE
+  // =========================================================================
+  if (isPerpMode) {
+    console.log(`[${uid}] ⚡ Running 30m Perpetual Futures Bot Engine '${config.strategy}' (Leverage: ${configuredLeverage}x, Margin: ${marginMode}, Direction: ${positionDirection}, Alloc: ${config.allocation_pct}%)...`);
+
+    const perpMarkets = await fetchPerpMetaAndCtxs();
+    const perpMarketMap = new Map();
+    if (perpMarkets && perpMarkets.length > 0) {
+      perpMarkets.forEach(m => {
+        perpMarketMap.set(m.coin.toUpperCase(), m);
+        perpMarketMap.set(`${m.coin.toUpperCase()}/USDC`, m);
+        perpMarketMap.set(`${m.coin.toUpperCase()}USDC`, m);
+      });
+    }
+
+    const perpAvailableCoins = (perpMarkets && perpMarkets.length > 0)
+      ? perpMarkets.map(m => m.coin)
+      : ["BTC", "ETH", "SOL", "HYPE", "AVAX", "SUI", "DOGE", "LINK", "XRP", "ARB", "OP"];
+
+    const perpBalance = parseFloat(perpClearinghouse?.withdrawable || perpClearinghouse?.marginSummary?.accountValue || 0.0);
+    const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
+
+    const scanQueue = Array.from(new Set([
+      targetCoin,
+      ...enabledAssets,
+      ...perpAvailableCoins
+    ])).filter(Boolean);
+
+    const isEmaStrategyActive = (config.strategy === "30m EMA High/Low" || config.strategy === "5m EMA High/Low" || config.strategy === "Trend Following" || !config.strategy);
+
+    let validResults = [];
+
+    if (isEmaStrategyActive) {
+      console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Perpetual Futures pairs (Target: ${targetCoin}, Authorized: ${enabledAssets.length}, Margin: ${marginMode})...`);
+
+      const scanResults = await Promise.all(
+        scanQueue.map(async (coin) => {
+          try {
+            const cleanCoin = coin.toUpperCase().trim()
+              .replace("/USDC", "")
+              .replace("/USDT", "")
+              .replace("USDC", "")
+              .replace("USDT", "")
+              .replace("/", "");
+            const market = perpMarketMap.get(cleanCoin);
+            const querySymbol = market ? market.coin : cleanCoin;
+            const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || 0);
+            if (coinPrice <= 0) return null;
+
+            // Strategy execution engine is strictly locked to 30m candles
+            const candles30m = await fetchCandleSnapshot(querySymbol, "30m", 1000);
+            if (!candles30m || candles30m.length < 35) return null;
+
+            const signalResult = await evaluateEmaRibbonStrategy(cleanCoin, candles30m);
+            return { coin: cleanCoin, coinPrice, market, ...signalResult };
+          } catch (e) {
+            console.error(`[${uid}] Error evaluating perp ${coin}:`, e.message);
+            return null;
+          }
+        })
+      );
+
+      validResults = scanResults.filter(Boolean);
+
+      // Map existing perpetual positions
+      const currentPositionsMap = new Map();
+      if (perpClearinghouse && perpClearinghouse.assetPositions) {
+        perpClearinghouse.assetPositions.forEach(item => {
+          if (item.position && item.position.coin) {
+            currentPositionsMap.set(item.position.coin.toUpperCase(), item.position);
+          }
+        });
+      }
+
+      // 1. Process EXITS for active positions
+      for (const res of validResults) {
+        const { coin, coinPrice, isSellSignal, isBuySignal, market } = res;
+        const currentPos = currentPositionsMap.get(coin);
+        if (!currentPos) continue;
+
+        const currentSzi = parseFloat(currentPos.szi || 0);
+        const isCurrentlyLong = currentSzi > 0.0001;
+        const isCurrentlyShort = currentSzi < -0.0001;
+        const assetIdx = market ? market.assetIndex : perpAvailableCoins.indexOf(coin);
+        const szDec = market?.szDecimals !== undefined ? market.szDecimals : 2;
+
+        if (assetIdx < 0) continue;
+
+        // Exit Long on 30m SELL signal
+        if (isCurrentlyLong && isSellSignal && config.active) {
+          const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
+          const limitPx = formatPriceForHyperliquid(coinPrice * 0.98); // 2% market slippage buffer
+          console.log(`[${uid}] 🔻 FUTURES EXIT: Closing LONG on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on 30m SELL breakout`);
+          try {
+            const exitResult = await placeAgentOrder({
+              agentPrivateKey,
+              masterAddress,
+              assetIndex: assetIdx,
+              isBuy: false,
+              limitPx,
+              sz: closeSz,
+              reduceOnly: true
+            });
+            console.log(`[${uid}] ✅ Futures LONG close order placed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
+          } catch (err) {
+            console.error(`[${uid}] Failed to close LONG on ${coin}:`, err.message);
+          }
+        }
+
+        // Exit Short on 30m BUY signal
+        if (isCurrentlyShort && isBuySignal && config.active) {
+          const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
+          const limitPx = formatPriceForHyperliquid(coinPrice * 1.02); // 2% market slippage buffer
+          console.log(`[${uid}] 🔺 FUTURES EXIT: Closing SHORT on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on 30m BUY breakout`);
+          try {
+            const exitResult = await placeAgentOrder({
+              agentPrivateKey,
+              masterAddress,
+              assetIndex: assetIdx,
+              isBuy: true,
+              limitPx,
+              sz: closeSz,
+              reduceOnly: true
+            });
+            console.log(`[${uid}] ✅ Futures SHORT close order placed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
+          } catch (err) {
+            console.error(`[${uid}] Failed to close SHORT on ${coin}:`, err.message);
+          }
+        }
+      }
+
+      // 2. Process ENTRIES for authorized pairs without existing position
+      const authorizedResults = validResults.filter(r => isAssetAuthorizedForBuy(r.coin));
+      authorizedResults.sort((a, b) => (b.proximityScore || 0) - (a.proximityScore || 0));
+
+      const bestEntrySignal = authorizedResults.find(r => {
+        const currentPos = currentPositionsMap.get(r.coin);
+        const currentSzi = currentPos ? parseFloat(currentPos.szi || 0) : 0;
+        if (Math.abs(currentSzi) > 0.0001) return false; // Already has open position
+
+        const isBuyOpportunity = (r.isBuySignal || (r.proximityScore >= 100 && r.isCurrentAbove)) &&
+          (positionDirection === "LONG" || positionDirection === "BOTH");
+
+        const isSellOpportunity = (r.isSellSignal || (r.proximityScore <= 0 && !r.isCurrentAbove)) &&
+          (positionDirection === "SHORT" || positionDirection === "BOTH");
+
+        return isBuyOpportunity || isSellOpportunity;
+      });
+
+      if (bestEntrySignal && perpBalance >= 1.0 && config.active) {
+        const { coin, coinPrice, proximityScore, isBuySignal, isCurrentAbove, market } = bestEntrySignal;
+        const isEnteringLong = (isBuySignal || (proximityScore >= 100 && isCurrentAbove)) &&
+          (positionDirection === "LONG" || positionDirection === "BOTH");
+
+        const targetSide = isEnteringLong ? "BUY/LONG" : "SELL/SHORT";
+        const isOrderBuy = isEnteringLong;
+        const assetIdx = market ? market.assetIndex : perpAvailableCoins.indexOf(coin);
+        const szDec = market?.szDecimals !== undefined ? market.szDecimals : 2;
+
+        if (assetIdx >= 0) {
+          // STRICT RESPECT FOR MARGIN MODE (Isolated vs. Cross)
+          let marginConfiguredOk = false;
+          try {
+            console.log(`[${uid}] 🛡️ Enforcing Margin Mode: ${marginMode} (${configuredLeverage}x) on ${coin} (assetIndex: ${assetIdx})`);
+            const levResult = await updateAgentLeverage({
+              agentPrivateKey,
+              masterAddress,
+              assetIndex: assetIdx,
+              isCross: !isIsolated,
+              leverage: configuredLeverage
+            });
+            marginConfiguredOk = !levResult?.response?.data?.error;
+          } catch (levErr) {
+            if (isIsolated) {
+              console.error(`[${uid}] ❌ STRICT MARGIN PROTECTION: Failed to configure ISOLATED margin mode on Hyperliquid for ${coin}: "${levErr.message}". Order aborted to prevent cross-margin exposure.`);
+              marginConfiguredOk = false;
+            } else {
+              marginConfiguredOk = true;
+            }
+          }
+
+          if (isIsolated && !marginConfiguredOk) {
+            console.error(`[${uid}] ⛔ STRICT ISOLATION GUARD: Aborting ${targetSide} on ${coin}. Bot is strictly configured for Isolated margin and will NEVER place a Cross-margin order.`);
+          } else {
+            const allocPct = (config.allocation_pct || 25) / 100.0;
+            const marginUsd = perpBalance * allocPct;
+            const notionalUsd = marginUsd * configuredLeverage;
+            const rawSize = notionalUsd / coinPrice;
+            let formattedSz = formatSizeForHyperliquid(rawSize, szDec);
+
+            if (parseFloat(formattedSz) <= 0 && szDec > 0) {
+              formattedSz = Math.pow(10, -szDec).toFixed(szDec);
+            }
+
+            const limitPx = isOrderBuy
+              ? formatPriceForHyperliquid(coinPrice * 1.02)
+              : formatPriceForHyperliquid(coinPrice * 0.98);
+
+            if (parseFloat(formattedSz) > 0) {
+              console.log(`[${uid}] 🚀 FUTURES ENGINE: Executing ${marginMode} ${configuredLeverage}x ${targetSide} on ${coin} (Size: ${formattedSz}, Notional: ~$${notionalUsd.toFixed(2)} USD, Margin: ~$${marginUsd.toFixed(2)} USDC @ limit ${limitPx})...`);
+
+              try {
+                const orderResult = await placeAgentOrder({
+                  agentPrivateKey,
+                  masterAddress,
+                  assetIndex: assetIdx,
+                  isBuy: isOrderBuy,
+                  limitPx,
+                  sz: formattedSz,
+                  reduceOnly: false
+                });
+
+                const statusEntry = orderResult?.response?.data?.statuses?.[0];
+                if (statusEntry?.error) {
+                  console.error(`[${uid}] ❌ Futures ${targetSide} REJECTED by Hyperliquid: "${statusEntry.error}"`);
+                  await db.doc(`users/${uid}/bot/bot_status`).set({
+                    last_order_result: {
+                      timestamp: Date.now(),
+                      coin,
+                      side: isOrderBuy ? "LONG" : "SHORT",
+                      market: "PERP",
+                      margin_mode: marginMode,
+                      leverage: configuredLeverage,
+                      status: "REJECTED",
+                      error: statusEntry.error,
+                      attempted_size: formattedSz,
+                      attempted_price: limitPx,
+                      asset_index: assetIdx
+                    }
+                  }, { merge: true });
+                } else {
+                  console.log(`[${uid}] ✅ Futures ${targetSide} order submitted successfully on Hyperliquid for ${coin}`);
+                  await db.doc(`users/${uid}/bot/bot_status`).set({
+                    last_order_result: {
+                      timestamp: Date.now(),
+                      coin,
+                      side: isOrderBuy ? "LONG" : "SHORT",
+                      market: "PERP",
+                      margin_mode: marginMode,
+                      leverage: configuredLeverage,
+                      status: "SUCCESS",
+                      size: formattedSz,
+                      price: limitPx,
+                      asset_index: assetIdx
+                    }
+                  }, { merge: true });
+                }
+              } catch (err) {
+                console.error(`[${uid}] Futures ${targetSide} Execution Failed for ${coin}:`, err.message);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Write Perpetual Futures Telemetry Stats back to Firestore
+    const targetRadarTelemetry = {};
+    if (Array.isArray(validResults)) {
+      validResults.forEach(r => {
+        targetRadarTelemetry[r.coin] = {
+          score: r.proximityScore || 0,
+          isBuySignal: r.isBuySignal || false,
+          price: r.coinPrice || 0
+        };
+      });
+    }
+
+    await db.doc(`users/${uid}/bot/bot_status`).set({
+      pnl_usd: totalPnlUsd,
+      pnl_pct: pnlPct,
+      active_trades: activeTradesCount,
+      strategy: config.strategy,
+      timeframe: "30m",
+      market_type: "PERP",
+      margin_mode: marginMode,
+      leverage: configuredLeverage,
+      position_direction: positionDirection,
+      scanned_markets_count: perpAvailableCoins.length,
+      target_radar: targetRadarTelemetry,
+      updated_at: Date.now()
+    }, { merge: true });
+
+    console.log(`[${uid}] ✅ Futures Telemetry updated: PnL=$${totalPnlUsd.toFixed(2)} (${pnlPct.toFixed(2)}%), Active Trades: ${activeTradesCount}, Margin: ${marginMode}`);
+    return;
+  }
+
+  // =========================================================================
+  // DUAL-MARKET ENGINE: 2. SPOT TRADING MODE
+  // =========================================================================
   const scanQueue = Array.from(new Set([
     targetCoin,
     ...enabledAssets,

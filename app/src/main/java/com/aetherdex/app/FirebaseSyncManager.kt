@@ -157,7 +157,12 @@ object FirebaseSyncManager {
         strategy: String,
         allocationPct: Int,
         targetCoin: String = "",
-        accountId: String = ""
+        accountId: String = "",
+        marketType: String = "SPOT",
+        leverage: Int = 10,
+        marginMode: String = "ISOLATED",
+        isIsolated: Boolean = true,
+        positionDirection: String = "LONG"
     ) {
         if (!isOnline(context)) {
             Log.d(TAG, "Device is offline. Skipping bot_config sync.")
@@ -178,6 +183,11 @@ object FirebaseSyncManager {
                 "allocation_pct" to allocationPct,
                 "target_coin" to (if (cleanTarget.isNotBlank()) cleanTarget else "BTC"),
                 "enabled_assets" to enabledAssetsList,
+                "market_type" to marketType,
+                "leverage" to leverage,
+                "margin_mode" to marginMode,
+                "is_isolated" to isIsolated,
+                "position_direction" to positionDirection,
                 "updated_at" to System.currentTimeMillis()
             )
 
@@ -188,7 +198,7 @@ object FirebaseSyncManager {
                 .document("bot_config")
                 .set(payload, SetOptions.merge())
                 .addOnSuccessListener {
-                    Log.i(TAG, "Synced bot_config to Firestore (users/$docId/bot/bot_config): active=$active, target_coin=$cleanTarget, enabled_assets=${enabledAssetsList.size}")
+                    Log.i(TAG, "Synced bot_config to Firestore (users/$docId/bot/bot_config): active=$active, marketType=$marketType, leverage=${leverage}x, marginMode=$marginMode, direction=$positionDirection, target=$cleanTarget")
                 }
                 .addOnFailureListener { e ->
                     Log.e(TAG, "Failed to sync bot_config to Firestore", e)

@@ -856,6 +856,9 @@ class MainActivity : AppCompatActivity(),
             applySideColors()
             updatePositionSizeHint()
             updateTpSlEstUi()
+            if (isBotActive && !isSpotMode) {
+                syncCurrentBotConfig()
+            }
         }
 
         typeGroup.addOnButtonCheckedListener { _, _, isChecked ->
@@ -898,6 +901,9 @@ class MainActivity : AppCompatActivity(),
             syncChipFromSlider(v)
             updatePositionSizeHint()
             updateTpSlEstUi()
+            if (isBotActive && !isSpotMode) {
+                syncCurrentBotConfig()
+            }
         }
 
         val chipListener = { chip: Chip, value: Int ->
@@ -908,6 +914,9 @@ class MainActivity : AppCompatActivity(),
                     updatePositionSizeHint()
                     updateTpSlEstUi()
                     syncLeverageAndMarginModeToHyperliquid()
+                    if (isBotActive && !isSpotMode) {
+                        syncCurrentBotConfig()
+                    }
                 }
             }
         }
@@ -934,6 +943,9 @@ class MainActivity : AppCompatActivity(),
                         snackString("Margin Mode: $mode")
 
                         syncLeverageAndMarginModeToHyperliquid()
+                        if (isBotActive && !isSpotMode) {
+                            syncCurrentBotConfig()
+                        }
                     }
                 }
             }
@@ -3809,6 +3821,9 @@ class MainActivity : AppCompatActivity(),
         val black = ContextCompat.getColor(this, R.color.black)
         val textPrimary = ContextCompat.getColor(this, R.color.text_primary)
 
+        // Ensure Bot Control Card is always visible at the top of BOTH Spot and Perpetual Futures tabs
+        if (::cardSpotBotPanel.isInitialized) cardSpotBotPanel.visibility = View.VISIBLE
+
         if (isSpot) {
             if (::btnMarketTypeSpot.isInitialized && ::btnMarketTypePerp.isInitialized) {
                 btnMarketTypeSpot.isChecked = true
@@ -3820,7 +3835,6 @@ class MainActivity : AppCompatActivity(),
                 btnMarketTypePerp.setTextColor(textPrimary)
             }
 
-            if (::cardSpotBotPanel.isInitialized) cardSpotBotPanel.visibility = View.VISIBLE
             if (::layoutSpotBalances.isInitialized) layoutSpotBalances.visibility = View.VISIBLE
             if (::layoutPerpMarginContainer.isInitialized) layoutPerpMarginContainer.visibility = View.GONE
             if (::tvEstLiquidationPrice.isInitialized) tvEstLiquidationPrice.visibility = View.GONE
@@ -3837,6 +3851,8 @@ class MainActivity : AppCompatActivity(),
             setupSpotSymbolDropdown()
             fetchSpotBalances()
             fetchSpotOpenOrders()
+            updateBotUi()
+            if (isBotActive) syncCurrentBotConfig()
             snackString("Switched to Spot Trading Mode")
         } else {
             if (::btnMarketTypeSpot.isInitialized && ::btnMarketTypePerp.isInitialized) {
@@ -3849,7 +3865,6 @@ class MainActivity : AppCompatActivity(),
                 btnMarketTypeSpot.setTextColor(textPrimary)
             }
 
-            if (::cardSpotBotPanel.isInitialized) cardSpotBotPanel.visibility = View.GONE
             if (::layoutSpotBalances.isInitialized) layoutSpotBalances.visibility = View.GONE
             if (::layoutPerpMarginContainer.isInitialized) layoutPerpMarginContainer.visibility = View.VISIBLE
             if (::tvEstLiquidationPrice.isInitialized) tvEstLiquidationPrice.visibility = View.VISIBLE
@@ -3864,6 +3879,8 @@ class MainActivity : AppCompatActivity(),
             applySideColors()
 
             setupSymbolDropdown()
+            updateBotUi()
+            if (isBotActive) syncCurrentBotConfig()
             snackString("Switched to Perpetual Futures Mode")
         }
     }
@@ -3994,6 +4011,26 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
+    private fun syncCurrentBotConfig(isActiveState: Boolean = isBotActive) {
+        val currentLeverage = if (::sliderLeverage.isInitialized) sliderLeverage.value.toInt() else 10
+        val direction = if (::btnShort.isInitialized && btnShort.isChecked && !btnLong.isChecked) "SHORT" else "LONG"
+        val marginMode = if (marginModeIsolated) "ISOLATED" else "CROSS"
+
+        FirebaseSyncManager.syncBotConfigToFirestore(
+            context = this,
+            active = isActiveState,
+            strategy = botStrategy,
+            allocationPct = botAllocationPct,
+            targetCoin = currentDisplaySymbol,
+            accountId = currentUserProfile.accountId,
+            marketType = if (isSpotMode) "SPOT" else "PERP",
+            leverage = currentLeverage,
+            marginMode = marginMode,
+            isIsolated = marginModeIsolated,
+            positionDirection = direction
+        )
+    }
+
     private fun setupBotEngine() {
         if (!::switchBotActive.isInitialized) return
 
@@ -4024,7 +4061,8 @@ class MainActivity : AppCompatActivity(),
             saveBotPrefs()
             updateBotUi()
             if (isBotActive) {
-                snackString("AI Bot Activated (24/7 Background Strategy Running)")
+                val mode = if (isSpotMode) "Spot" else "Futures"
+                snackString("AI Bot Activated (24/7 $mode Strategy Running)")
                 startBotLoop()
             } else {
                 snackString("AI Bot Paused")
@@ -4040,14 +4078,7 @@ class MainActivity : AppCompatActivity(),
                 }
                 saveBotPrefs()
                 if (isBotActive) {
-                    FirebaseSyncManager.syncBotConfigToFirestore(
-                        this,
-                        active = true,
-                        strategy = botStrategy,
-                        allocationPct = botAllocationPct,
-                        targetCoin = currentDisplaySymbol,
-                        accountId = currentUserProfile.accountId
-                    )
+                    syncCurrentBotConfig()
                 }
             }
         }
@@ -4064,14 +4095,7 @@ class MainActivity : AppCompatActivity(),
                 saveBotPrefs()
                 snackString("Bot Strategy updated: $botStrategy")
                 if (isBotActive) {
-                    FirebaseSyncManager.syncBotConfigToFirestore(
-                        this,
-                        active = true,
-                        strategy = botStrategy,
-                        allocationPct = botAllocationPct,
-                        targetCoin = currentDisplaySymbol,
-                        accountId = currentUserProfile.accountId
-                    )
+                    syncCurrentBotConfig()
                 }
             }
         }
@@ -4094,8 +4118,9 @@ class MainActivity : AppCompatActivity(),
 
     private fun updateBotUi() {
         if (!::tvBotStatusBadge.isInitialized) return
+        val modeTag = if (isSpotMode) "Spot" else "Futures"
         if (isBotActive) {
-            tvBotStatusBadge.text = "● RUNNING (24/7 Engine Active)"
+            tvBotStatusBadge.text = "● RUNNING (24/7 $modeTag Engine Active)"
             tvBotStatusBadge.setTextColor(ContextCompat.getColor(this, R.color.brand_green))
         } else {
             tvBotStatusBadge.text = "● IDLE (Disabled)"
@@ -4106,7 +4131,8 @@ class MainActivity : AppCompatActivity(),
 
         if (::tvBotTotalPnl.isInitialized) {
             val sign = if (botTotalPnlUsd >= 0) "+" else ""
-            val pct = if (spotUsdcBalance > 0) (botTotalPnlUsd / spotUsdcBalance) * 100.0 else 0.0
+            val activeBal = if (isSpotMode) spotUsdcBalance else (if (isDemoModeActive) demoBalance else hyperliquidL1UsdcBalance)
+            val pct = if (activeBal > 0) (botTotalPnlUsd / activeBal) * 100.0 else 0.0
             tvBotTotalPnl.text = String.format(Locale.US, "%s$%.2f (%s%.2f%%)", sign, botTotalPnlUsd, sign, pct)
             val color = if (botTotalPnlUsd >= 0) ContextCompat.getColor(this, R.color.brand_green) else ContextCompat.getColor(this, R.color.brand_red)
             tvBotTotalPnl.setTextColor(color)
@@ -4120,15 +4146,8 @@ class MainActivity : AppCompatActivity(),
                 this@MainActivity,
                 currentUserProfile.accountId
             )
-            FirebaseSyncManager.syncBotConfigToFirestore(
-                context = this@MainActivity,
-                active = true,
-                strategy = botStrategy,
-                allocationPct = botAllocationPct,
-                targetCoin = currentDisplaySymbol,
-                accountId = currentUserProfile.accountId
-            )
             withContext(Dispatchers.Main) {
+                syncCurrentBotConfig(isActiveState = true)
                 botStatusListener = FirebaseSyncManager.listenToBotStatus(
                     accountId = currentUserProfile.accountId
                 ) { pnlUsd, _, activeTrades ->
@@ -4143,7 +4162,6 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
-
     private fun stopBotLoop() {
         spotBotJob?.cancel()
         spotBotJob = null
@@ -4151,14 +4169,7 @@ class MainActivity : AppCompatActivity(),
         botStatusListener?.remove()
         botStatusListener = null
 
-        FirebaseSyncManager.syncBotConfigToFirestore(
-            context = this,
-            active = false,
-            strategy = botStrategy,
-            allocationPct = botAllocationPct,
-            targetCoin = currentDisplaySymbol,
-            accountId = currentUserProfile.accountId
-        )
+        syncCurrentBotConfig(isActiveState = false)
     }
 
     private fun fetchSpotBalances() {

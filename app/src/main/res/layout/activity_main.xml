@@ -131,7 +131,7 @@
                     app:cornerRadius="10dp" />
             </com.google.android.material.button.MaterialButtonToggleGroup>
 
-            <!-- AI Algorithmic Bot Controller Card (Spot Mode) -->
+            <!-- AI Algorithmic Bot Controller Card (Spot & Perpetual Futures Mode) -->
             <LinearLayout
                 android:id="@+id/cardSpotBotPanel"
                 android:layout_width="match_parent"
@@ -140,7 +140,7 @@
                 android:background="@drawable/bg_card_spot_bot"
                 android:orientation="vertical"
                 android:padding="14dp"
-                android:visibility="gone">
+                android:visibility="visible">
 
                 <RelativeLayout
                     android:layout_width="match_parent"
