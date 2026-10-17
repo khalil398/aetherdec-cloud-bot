@@ -6,7 +6,8 @@ const {
   fetchPerpMetaAndCtxs,
   fetchCandleSnapshot,
   placeAgentOrder,
-  updateAgentLeverage
+  updateAgentLeverage,
+  checkUserAbstraction
 } = require("../services/hyperliquid");
 
 /**
@@ -479,7 +480,13 @@ async function executeBotTick(uid, db, config, botSecret) {
       ? perpMarkets.map(m => m.coin)
       : ["BTC", "ETH", "SOL", "HYPE", "AVAX", "SUI", "DOGE", "LINK", "XRP", "ARB", "OP"];
 
-    const perpBalance = parseFloat(perpClearinghouse?.withdrawable || perpClearinghouse?.marginSummary?.accountValue || 0.0);
+    const rawPerpBal = parseFloat(perpClearinghouse?.withdrawable || perpClearinghouse?.marginSummary?.accountValue || 0.0);
+    const userAbstraction = await checkUserAbstraction(masterAddress);
+    const isUnifiedAccount = userAbstraction === "unifiedAccount" || userAbstraction === "portfolioMargin" || (rawPerpBal <= 0.01 && usdcBalance > 0);
+    const perpBalance = isUnifiedAccount ? Math.max(rawPerpBal, usdcBalance) : rawPerpBal;
+    if (isUnifiedAccount) {
+      console.log(`[${uid}] ⚡ Unified Account Active: Pooled USDC margin for Futures = $${perpBalance.toFixed(2)} (Spot: $${usdcBalance.toFixed(2)}, Perp ledger: $${rawPerpBal.toFixed(2)})`);
+    }
     const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
 
     const scanQueue = Array.from(new Set([

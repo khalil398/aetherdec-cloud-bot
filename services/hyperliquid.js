@@ -353,6 +353,22 @@ async function updateAgentLeverage({ agentPrivateKey, masterAddress, assetIndex,
   }
 }
 
+/**
+ * Checks whether user has Unified Account or Portfolio Margin active.
+ */
+async function checkUserAbstraction(userAddress) {
+  try {
+    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+      type: "userAbstraction",
+      user: userAddress
+    });
+    return response.data || "disabled";
+  } catch (error) {
+    console.error(`[Hyperliquid] Error checking userAbstraction for ${userAddress}:`, error.message);
+    return "disabled";
+  }
+}
+
 module.exports = {
   fetchUserClearinghouseState,
   fetchSpotClearinghouseState,
@@ -361,7 +377,8 @@ module.exports = {
   fetchPerpMetaAndCtxs,
   fetchCandleSnapshot,
   placeAgentOrder,
-  updateAgentLeverage
+  updateAgentLeverage,
+  checkUserAbstraction
 };
 
 

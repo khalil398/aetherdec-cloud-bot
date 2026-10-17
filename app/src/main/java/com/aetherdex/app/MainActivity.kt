@@ -121,6 +121,7 @@ class MainActivity : AppCompatActivity(),
     private lateinit var layoutPerpMarginContainer: View
 
     private var isSpotMode: Boolean = false
+    private var isUnifiedAccountActive: Boolean = false
 
     // Decoupled Bot state for Spot and Perpetual Futures
     private var isSpotBotActive: Boolean = false
@@ -4333,7 +4334,12 @@ class MainActivity : AppCompatActivity(),
         val addr = EmbeddedWalletManager.getAddress(this) ?: return
         lifecycleScope.launch(Dispatchers.IO) {
             val balances = HyperliquidOrderManager.fetchSpotClearinghouseState(addr)
+            val abstraction = HyperliquidOrderManager.checkUserAbstraction(addr)
+            val isUnified = abstraction.equals("unifiedAccount", ignoreCase = true) || abstraction.equals("portfolioMargin", ignoreCase = true)
             withContext(Dispatchers.Main) {
+                if (isUnified) {
+                    isUnifiedAccountActive = true
+                }
                 spotAssetBalances.clear()
                 balances.forEach { (coin, info) ->
                     spotAssetBalances[coin] = info.available
@@ -4345,22 +4351,30 @@ class MainActivity : AppCompatActivity(),
 
     private fun updateSpotBalanceUi() {
         if (!::tvSpotUsdcBalance.isInitialized || !::tvSpotAssetBalance.isInitialized) return
-        val usdcBal = spotAssetBalances["USDC"] ?: if (isDemoModeActive) demoBalance else hyperliquidL1UsdcBalance
+        val rawUsdc = spotAssetBalances["USDC"] ?: (if (isDemoModeActive) demoBalance else hyperliquidL1UsdcBalance)
+        val usdcBal = if (isUnifiedAccountActive && rawUsdc <= 0.0001 && hyperliquidL1UsdcBalance > 0) {
+            hyperliquidL1UsdcBalance
+        } else {
+            rawUsdc
+        }
         val baseToken = if (currentDisplaySymbol.contains("/")) currentDisplaySymbol.substringBefore("/") else currentDisplaySymbol
         val assetBal = spotAssetBalances[baseToken] ?: 0.0
 
         spotUsdcBalance = usdcBal
 
-        tvSpotUsdcBalance.text = String.format(Locale.US, "Available USDC: $%.2f", usdcBal)
+        val unifiedTag = if (isUnifiedAccountActive) " (Unified)" else ""
+        tvSpotUsdcBalance.text = String.format(Locale.US, "Available USDC: $%.2f%s", usdcBal, unifiedTag)
         tvSpotAssetBalance.text = String.format(Locale.US, "Available %s: %.4f", baseToken, assetBal)
     }
 
     private fun getPerpUsdcBalance(): Double {
-        return if (isDemoModeActive) demoBalance else hyperliquidL1UsdcBalance
+        if (isDemoModeActive) return demoBalance
+        return if (isUnifiedAccountActive) Math.max(hyperliquidL1UsdcBalance, spotUsdcBalance) else hyperliquidL1UsdcBalance
     }
 
     private fun getSpotUsdcBalance(): Double {
-        return spotUsdcBalance
+        if (isDemoModeActive) return spotUsdcBalance
+        return if (isUnifiedAccountActive) Math.max(hyperliquidL1UsdcBalance, spotUsdcBalance) else spotUsdcBalance
     }
 
     private fun showTransferDialog() {
@@ -4384,6 +4398,7 @@ class MainActivity : AppCompatActivity(),
         val etAmount = dialog.findViewById<com.google.android.material.textfield.TextInputEditText>(R.id.etTransferAmount)
         val btnMax = dialog.findViewById<MaterialButton>(R.id.btnTransferMax)
         val btnConfirm = dialog.findViewById<MaterialButton>(R.id.btnConfirmTransfer)
+        val layoutUnifiedNotice = dialog.findViewById<View>(R.id.layoutUnifiedAccountNotice)
 
         var toSpot = true // true = Perp -> Spot, false = Spot -> Perp
 
@@ -4391,20 +4406,45 @@ class MainActivity : AppCompatActivity(),
             val perpBal = getPerpUsdcBalance()
             val spotBal = getSpotUsdcBalance()
 
-            if (toSpot) {
-                tvFromLabel?.text = "Perpetual Futures"
-                tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", perpBal)
-                tvToLabel?.text = "Spot Clearinghouse"
-                tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", spotBal)
+            if (isUnifiedAccountActive && !isDemoModeActive) {
+                layoutUnifiedNotice?.visibility = View.VISIBLE
+                val sharedBal = Math.max(perpBal, spotBal)
+                tvFromLabel?.text = if (toSpot) "Perpetual Futures" else "Spot Clearinghouse"
+                tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC (Unified)", sharedBal)
+                tvToLabel?.text = if (toSpot) "Spot Clearinghouse" else "Perpetual Futures"
+                tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC (Unified)", sharedBal)
+                btnConfirm?.text = "Sync Unified Balance"
             } else {
-                tvFromLabel?.text = "Spot Clearinghouse"
-                tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", spotBal)
-                tvToLabel?.text = "Perpetual Futures"
-                tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", perpBal)
+                layoutUnifiedNotice?.visibility = View.GONE
+                if (toSpot) {
+                    tvFromLabel?.text = "Perpetual Futures"
+                    tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", perpBal)
+                    tvToLabel?.text = "Spot Clearinghouse"
+                    tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", spotBal)
+                } else {
+                    tvFromLabel?.text = "Spot Clearinghouse"
+                    tvFromBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", spotBal)
+                    tvToLabel?.text = "Perpetual Futures"
+                    tvToBalance?.text = String.format(Locale.US, "Avail: $%.2f USDC", perpBal)
+                }
+                btnConfirm?.text = "Confirm Internal Transfer"
             }
         }
 
         updateBalancesAndLabels()
+
+        val activeAddr = EmbeddedWalletManager.getActiveEvmAddress(this)
+        if (activeAddr.isNotBlank() && !isDemoModeActive) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val abstraction = HyperliquidOrderManager.checkUserAbstraction(activeAddr)
+                if (abstraction.equals("unifiedAccount", ignoreCase = true) || abstraction.equals("portfolioMargin", ignoreCase = true)) {
+                    isUnifiedAccountActive = true
+                    withContext(Dispatchers.Main) {
+                        updateBalancesAndLabels()
+                    }
+                }
+            }
+        }
 
         btnClose?.setOnClickListener { dialog.dismiss() }
 
@@ -4423,10 +4463,21 @@ class MainActivity : AppCompatActivity(),
         }
 
         btnConfirm?.setOnClickListener {
-            val amountStr = etAmount?.text?.toString()?.trim() ?: ""
-            val amount = amountStr.toDoubleOrNull() ?: 0.0
             val perpBal = getPerpUsdcBalance()
             val spotBal = getSpotUsdcBalance()
+
+            // If Unified Account mode is active on exchange, bypass legacy internal transfer action
+            if (isUnifiedAccountActive && !isDemoModeActive) {
+                val sharedBal = Math.max(perpBal, spotBal)
+                snackString(String.format(Locale.US, "Unified Account Active: Your $%.2f USDC is already pooled and ready for trading in both Spot & Futures!", sharedBal))
+                dialog.dismiss()
+                fetchHyperliquidBalance()
+                fetchSpotBalances()
+                return@setOnClickListener
+            }
+
+            val amountStr = etAmount?.text?.toString()?.trim() ?: ""
+            val amount = amountStr.toDoubleOrNull() ?: 0.0
             val maxAvailable = if (toSpot) perpBal else spotBal
 
             if (amount <= 0.0) {
@@ -4475,15 +4526,28 @@ class MainActivity : AppCompatActivity(),
 
                     withContext(Dispatchers.Main) {
                         btnConfirm.isEnabled = true
-                        btnConfirm.text = "Confirm Internal Transfer"
+                        btnConfirm.text = if (isUnifiedAccountActive) "Sync Unified Balance" else "Confirm Internal Transfer"
 
                         if (success) {
-                            snackString("Transfer Successful!")
+                            if (msg.contains("unified", ignoreCase = true)) {
+                                isUnifiedAccountActive = true
+                                snackString(msg)
+                            } else {
+                                snackString("Transfer Successful!")
+                            }
                             dialog.dismiss()
                             fetchHyperliquidBalance()
                             fetchSpotBalances()
                         } else {
-                            snackString("Transfer Failed: $msg")
+                            if (msg.contains("unified account", ignoreCase = true)) {
+                                isUnifiedAccountActive = true
+                                snackString("Unified Account Active: Your funds are automatically shared between Spot & Futures!")
+                                dialog.dismiss()
+                                fetchHyperliquidBalance()
+                                fetchSpotBalances()
+                            } else {
+                                snackString("Transfer Failed: $msg")
+                            }
                         }
                     }
                 }
@@ -5184,8 +5248,15 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun updateDemoBalanceUi() {
-        val bal = if (isDemoModeActive) demoBalance else hyperliquidL1UsdcBalance
-        tvAvailableBalance.text = String.format(java.util.Locale.US, "Avail: $%.2f USDC", bal)
+        val bal = if (isDemoModeActive) {
+            demoBalance
+        } else if (isUnifiedAccountActive) {
+            Math.max(hyperliquidL1UsdcBalance, spotUsdcBalance)
+        } else {
+            hyperliquidL1UsdcBalance
+        }
+        val unifiedTag = if (isUnifiedAccountActive && !isDemoModeActive) " (Unified)" else ""
+        tvAvailableBalance.text = String.format(java.util.Locale.US, "Avail: $%.2f USDC%s", bal, unifiedTag)
     }
 
     private fun fetchHyperliquidBalance(showToast: Boolean = false) {
@@ -5204,11 +5275,15 @@ class MainActivity : AppCompatActivity(),
                 if (response != null) {
                     val marginSummary = response.optJSONObject("marginSummary")
                     val accountValue = marginSummary?.optString("accountValue", "0.0")?.toDoubleOrNull() ?: 0.0
-                    val withdrawableStr = response.optString("withdrawable", null)
+                    val withdrawableStr = if (response.has("withdrawable")) response.optString("withdrawable") else null
                     val withdrawable = withdrawableStr?.toDoubleOrNull()
                     
-                    // Forcefully overwrite local state with exact Hyperliquid L1 clearinghouse response
-                    val balanceToUse = withdrawable ?: accountValue
+                    val rawBalance = withdrawable ?: accountValue
+                    val balanceToUse = if (isUnifiedAccountActive && rawBalance <= 0.0001 && spotUsdcBalance > 0) {
+                        spotUsdcBalance
+                    } else {
+                        rawBalance
+                    }
 
                     hyperliquidL1UsdcBalance = balanceToUse
                     updateDemoBalanceUi()
@@ -5218,9 +5293,10 @@ class MainActivity : AppCompatActivity(),
                     prefs.edit().putFloat("hyperliquid_l1_balance", balanceToUse.toFloat()).apply()
 
                     if (showToast) {
-                        snackString(String.format(java.util.Locale.US, "Hyperliquid L1 Balance Synced: $%.2f USDC", balanceToUse))
+                        val unifiedText = if (isUnifiedAccountActive) " (Unified)" else ""
+                        snackString(String.format(java.util.Locale.US, "Hyperliquid L1 Balance Synced: $%.2f USDC%s", balanceToUse, unifiedText))
                     }
-                    android.util.Log.i("MainActivity", "Hyperliquid balance updated: $balanceToUse USDC (withdrawable=$withdrawable, accountValue=$accountValue)")
+                    android.util.Log.i("MainActivity", "Hyperliquid balance updated: $balanceToUse USDC (withdrawable=$withdrawable, accountValue=$accountValue, isUnified=$isUnifiedAccountActive)")
                 } else {
                     android.util.Log.w("MainActivity", "Hyperliquid API returned null response")
                 }

@@ -1430,7 +1430,40 @@ object HyperliquidOrderManager {
     }
 
     /**
+     * Checks account abstraction mode on Hyperliquid Info API (e.g., "unifiedAccount", "portfolioMargin", "disabled", "default").
+     */
+    suspend fun checkUserAbstraction(userAddress: String): String = withContext(Dispatchers.IO) {
+        if (userAddress.isBlank()) return@withContext "disabled"
+        try {
+            val url = URL("$HYPERLIQUID_API_URL/info")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+
+            val requestBody = JSONObject().apply {
+                put("type", "userAbstraction")
+                put("user", userAddress)
+            }
+
+            conn.outputStream.use { os ->
+                os.write(requestBody.toString().toByteArray(Charsets.UTF_8))
+            }
+
+            if (conn.responseCode == 200) {
+                conn.inputStream.bufferedReader().readText().trim().trim('"')
+            } else "disabled"
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to check user abstraction: ${e.message}")
+            "disabled"
+        }
+    }
+
+    /**
      * Executes internal transfer between Perpetual Clearinghouse and Spot Clearinghouse using Hyperliquid L1 usdClassTransfer user-signed action.
+     * When Unified Account is active, internal transfers are redundant because Spot and Perpetual balances are already pooled automatically.
      * @param toSpot true = transfer from Perp to Spot (toPerp: false), false = transfer from Spot to Perp (toPerp: true)
      */
     suspend fun transferUsdcBetweenPerpAndSpot(
@@ -1440,6 +1473,15 @@ object HyperliquidOrderManager {
         nonce: Long = System.currentTimeMillis()
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         try {
+            val userAddress = EmbeddedWalletManager.getActiveEvmAddress(ctx)
+            if (userAddress.isNotBlank()) {
+                val abstraction = checkUserAbstraction(userAddress)
+                if (abstraction.equals("unifiedAccount", ignoreCase = true) || abstraction.equals("portfolioMargin", ignoreCase = true)) {
+                    Log.i(TAG, "Unified Account active ($abstraction). Bypassing internal transfer as funds are pooled automatically.")
+                    return@withContext true to "Unified Account Active: Spot and Perpetual Futures balances are pooled together automatically. No manual transfer needed."
+                }
+            }
+
             val amountStr = String.format(Locale.US, "%.4f", amountUsdc).trimEnd('0').trimEnd('.')
             val toPerpVal = !toSpot
 
@@ -1501,6 +1543,13 @@ object HyperliquidOrderManager {
             }
 
             Log.i(TAG, "Transfer response ($code): $responseText")
+
+            // Gracefully handle Unified Account active response from exchange
+            if (responseText.contains("unified account is active", ignoreCase = true)) {
+                Log.i(TAG, "Exchange confirmed Unified Account is active. Funds are automatically pooled.")
+                return@withContext true to "Unified Account Active: Spot and Perpetual Futures balances are pooled together automatically. No manual transfer needed."
+            }
+
             val isSuccess = code == 200 && !responseText.contains("\"error\"") && !responseText.contains("\"err\"")
             isSuccess to responseText
         } catch (e: Exception) {
