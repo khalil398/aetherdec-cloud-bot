@@ -359,24 +359,16 @@ class BotStrategyChartView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
-    // Fractal CHoCh (ICT) Structure Paints
-    private val paintActiveStructuralLine = Paint().apply {
-        color = Color.parseColor("#FFD600") // ICT Active Structural Range Yellow
-        strokeWidth = 2.5f
-        style = Paint.Style.STROKE
-        pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
-        isAntiAlias = true
-    }
-
+    // Fractal CHoCh (ICT) Structure Paints (Green for Bullish Fractal Highs, Red for Bearish Fractal Lows)
     private val paintFractalHigh = Paint().apply {
-        color = Color.parseColor("#FF5252") // Coral/Red for Resistance
+        color = Color.parseColor("#00E676") // Green for Bullish Fractal High
         strokeWidth = 2.5f
         style = Paint.Style.STROKE
         isAntiAlias = true
     }
 
     private val paintFractalHighDashed = Paint().apply {
-        color = Color.parseColor("#FF5252")
+        color = Color.parseColor("#00E676") // Green for Bullish Fractal High / CHoCh
         strokeWidth = 2.5f
         style = Paint.Style.STROKE
         pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
@@ -384,14 +376,14 @@ class BotStrategyChartView @JvmOverloads constructor(
     }
 
     private val paintFractalLow = Paint().apply {
-        color = Color.parseColor("#00E676") // Emerald Green for Support
+        color = Color.parseColor("#FF5252") // Red for Bearish Fractal Low
         strokeWidth = 2.5f
         style = Paint.Style.STROKE
         isAntiAlias = true
     }
 
     private val paintFractalLowDashed = Paint().apply {
-        color = Color.parseColor("#00E676")
+        color = Color.parseColor("#FF5252") // Red for Bearish Fractal Low / CHoCh
         strokeWidth = 2.5f
         style = Paint.Style.STROKE
         pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
@@ -724,194 +716,98 @@ class BotStrategyChartView @JvmOverloads constructor(
             return
         }
 
-        val levels = mutableListOf<FractalLevel>()
         val chochArr = IntArray(n)
+        val allCandidateLevels = mutableListOf<FractalLevel>()
 
-        // Track active Major Structural boundaries
-        var majorHigh: FractalLevel? = null
-        var majorLow: FractalLevel? = null
+        // 1. Identify 5-bar swing fractals (Major Structural Swings)
+        for (i in 2 until (n - 2)) {
+            val sc = candles[i]
+            val isSwingHigh = sc.high >= candles[i - 1].high && sc.high >= candles[i - 2].high &&
+                    sc.high >= candles[i + 1].high && sc.high >= candles[i + 2].high
+            val isSwingLow = sc.low <= candles[i - 1].low && sc.low <= candles[i - 2].low &&
+                    sc.low <= candles[i + 1].low && sc.low <= candles[i + 2].low
 
-        // Track pending impulse breakout state for establishing new range base/ceiling
-        var breakoutBarBull: Int = -1
-        var breakoutBarBear: Int = -1
-
-        for (currBar in 0 until n) {
-            val c = candles[currBar]
-
-            // 1. Persistent Ray Line Extension Until Valid Body Break
-            // Rule: "Every active Major Fractal High/Low line must extend continuously across candles to the right.
-            //        Do NOT terminate or hide the structural line at minor wicks or inner pullbacks.
-            //        The line must remain active and visible until a candle bar achieves a definitive body close beyond that exact level."
-
-            // Check definitive body close break of Major High
-            if (majorHigh != null && currBar > majorHigh.startIndex) {
-                if (c.close > majorHigh.price) {
-                    // Valid body close breakout!
-                    majorHigh.isBroken = true
-                    majorHigh.breakIndex = currBar
-                    majorHigh.endIndex = currBar
-                    majorHigh.isChoch = true
-                    chochArr[currBar] = 1 // Bullish CHoCh on definitive body break
-                    breakoutBarBull = currBar
-
-                    // Market shifts out of consolidation into upward impulse.
-                    // The old majorHigh is broken and terminates at currBar.
-                    majorHigh = null
-                }
-            }
-
-            // Check definitive body close break of Major Low
-            if (majorLow != null && currBar > majorLow.startIndex) {
-                if (c.close < majorLow.price) {
-                    // Valid body close breakdown!
-                    majorLow.isBroken = true
-                    majorLow.breakIndex = currBar
-                    majorLow.endIndex = currBar
-                    majorLow.isChoch = true
-                    chochArr[currBar] = -1 // Bearish CHoCh on definitive body break
-                    breakoutBarBear = currBar
-
-                    // Market shifts out of consolidation into downward impulse.
-                    // The old majorLow is broken and terminates at currBar.
-                    majorLow = null
-                }
-            }
-
-            // 2. Identify candidate 5-bar swings confirmed at swingIdx = currBar - 2
-            val swingIdx = currBar - 2
-            if (swingIdx in 2..(n - 3)) {
-                val sc = candles[swingIdx]
-                val isSwingHigh = sc.high >= candles[swingIdx - 1].high && sc.high >= candles[swingIdx + 1].high &&
-                        sc.high >= candles[swingIdx - 2].high && sc.high >= candles[swingIdx + 2].high
-                val isSwingLow = sc.low <= candles[swingIdx - 1].low && sc.low <= candles[swingIdx + 1].low &&
-                        sc.low <= candles[swingIdx - 2].low && sc.low <= candles[swingIdx + 2].low
-
-                // 3. Major vs Minor Fractal Filtering
-                // Rule: "Only draw horizontal dashed ray lines for Major Structural Highs and Lows
-                //        (such as the key base low line in the chart reference).
-                //        Suppress minor inner noise lines formed strictly within an active range."
-
-                if (isSwingHigh) {
-                    val currentRangeHigh = majorHigh?.price
-                    val currentRangeLow = majorLow?.price
-
-                    if (currentRangeHigh == null) {
-                        // Establish new Major High (e.g. after bullish expansion or at chart start)
-                        val newHigh = FractalLevel(
-                            isHigh = true,
-                            price = sc.high,
-                            startIndex = swingIdx,
-                            endIndex = n - 1,
-                            isBroken = false,
-                            breakIndex = -1,
-                            isChoch = false
-                        )
-                        majorHigh = newHigh
-                        levels.add(newHigh)
-                    } else if (currentRangeLow != null && sc.high <= currentRangeHigh && sc.high >= currentRangeLow) {
-                        // MINOR INTERNAL SWING HIGH: formed strictly inside the active range. SUPPRESS!
-                    } else if (sc.high > currentRangeHigh) {
-                        // Higher swing high that formed after breakout
-                        val newHigh = FractalLevel(
-                            isHigh = true,
-                            price = sc.high,
-                            startIndex = swingIdx,
-                            endIndex = n - 1,
-                            isBroken = false,
-                            breakIndex = -1,
-                            isChoch = false
-                        )
-                        majorHigh = newHigh
-                        levels.add(newHigh)
+            if (isSwingHigh) {
+                // Rule: Strictly terminate at the exact candle bar where price closes beyond that level.
+                var breakIdx = -1
+                for (k in (i + 1) until n) {
+                    if (candles[k].close > sc.high) {
+                        breakIdx = k
+                        break
                     }
                 }
-
-                if (isSwingLow) {
-                    val currentRangeHigh = majorHigh?.price
-                    val currentRangeLow = majorLow?.price
-
-                    if (currentRangeLow == null) {
-                        // Establish new Major Low (e.g. after bearish expansion or at chart start)
-                        val newLow = FractalLevel(
-                            isHigh = false,
-                            price = sc.low,
-                            startIndex = swingIdx,
-                            endIndex = n - 1,
-                            isBroken = false,
-                            breakIndex = -1,
-                            isChoch = false
-                        )
-                        majorLow = newLow
-                        levels.add(newLow)
-                    } else if (currentRangeHigh != null && sc.low >= currentRangeLow && sc.low <= currentRangeHigh) {
-                        // Check if this is the Key Base Low right after a bullish impulse breakout:
-                        // If price broke out upwards (breakoutBarBull >= 0), the first swing low formed after
-                        // the breakout candle is the Major Base Low of the new consolidation range!
-                        if (breakoutBarBull >= 0 && swingIdx >= breakoutBarBull) {
-                            // Terminate the old majorLow from the previous lower price regime at the breakout bar
-                            majorLow.isBroken = true
-                            majorLow.breakIndex = breakoutBarBull
-                            majorLow.endIndex = breakoutBarBull
-                            majorLow.isChoch = true
-
-                            // Anchor the new Key Base Low
-                            val newLow = FractalLevel(
-                                isHigh = false,
-                                price = sc.low,
-                                startIndex = swingIdx,
-                                endIndex = n - 1,
-                                isBroken = false,
-                                breakIndex = -1,
-                                isChoch = false
-                            )
-                            majorLow = newLow
-                            levels.add(newLow)
-                            breakoutBarBull = -1 // Consumed! New Major Range is established
-                        } else {
-                            // MINOR INTERNAL SWING LOW: formed strictly inside the active range. SUPPRESS!
-                        }
-                    } else if (sc.low < currentRangeLow) {
-                        // Lower swing low that formed after breakdown
-                        val newLow = FractalLevel(
-                            isHigh = false,
-                            price = sc.low,
-                            startIndex = swingIdx,
-                            endIndex = n - 1,
-                            isBroken = false,
-                            breakIndex = -1,
-                            isChoch = false
-                        )
-                        majorLow = newLow
-                        levels.add(newLow)
-                    }
-                }
-
-                // Symmetrical check for Major Ceiling High right after a bearish impulse breakdown:
-                if (isSwingHigh && majorLow != null && breakoutBarBear >= 0 && swingIdx >= breakoutBarBear) {
-                    majorHigh?.let {
-                        it.isBroken = true
-                        it.breakIndex = breakoutBarBear
-                        it.endIndex = breakoutBarBear
-                        it.isChoch = true
-                    }
-                    val newHigh = FractalLevel(
+                allCandidateLevels.add(
+                    FractalLevel(
                         isHigh = true,
                         price = sc.high,
-                        startIndex = swingIdx,
-                        endIndex = n - 1,
-                        isBroken = false,
-                        breakIndex = -1,
-                        isChoch = false
+                        startIndex = i,
+                        endIndex = if (breakIdx != -1) breakIdx else (n - 1),
+                        isBroken = (breakIdx != -1),
+                        breakIndex = breakIdx,
+                        isChoch = (breakIdx != -1)
                     )
-                    majorHigh = newHigh
-                    levels.add(newHigh)
-                    breakoutBarBear = -1 // Consumed!
+                )
+                if (breakIdx != -1 && chochArr[breakIdx] == 0) {
+                    chochArr[breakIdx] = 1 // Bullish CHoCh on definitive body close
+                }
+            }
+
+            if (isSwingLow) {
+                // Rule: Strictly terminate at the exact candle bar where price closes beyond that level.
+                var breakIdx = -1
+                for (k in (i + 1) until n) {
+                    if (candles[k].close < sc.low) {
+                        breakIdx = k
+                        break
+                    }
+                }
+                allCandidateLevels.add(
+                    FractalLevel(
+                        isHigh = false,
+                        price = sc.low,
+                        startIndex = i,
+                        endIndex = if (breakIdx != -1) breakIdx else (n - 1),
+                        isBroken = (breakIdx != -1),
+                        breakIndex = breakIdx,
+                        isChoch = (breakIdx != -1)
+                    )
+                )
+                if (breakIdx != -1 && chochArr[breakIdx] == 0) {
+                    chochArr[breakIdx] = -1 // Bearish CHoCh on definitive body close
                 }
             }
         }
 
-        levels.sortBy { it.startIndex }
-        fractalLevels = levels
+        // 2. Active Structure Only (Limit Active Lines):
+        // Rule: "At any given time, only the currently active/unbroken primary structural levels should extend to the right edge of the chart.
+        // Clean up expired/broken historical levels from the active drawing loop so the chart stays clean and legible."
+        val latestClose = candles.last().close
+        val unbrokenHighs = allCandidateLevels.filter { it.isHigh && !it.isBroken }
+        val unbrokenLows = allCandidateLevels.filter { !it.isHigh && !it.isBroken }
+
+        // Primary active high: the nearest unbroken resistance at or above current price (or latest unbroken high)
+        val primaryActiveHigh = unbrokenHighs.filter { it.price >= latestClose }.minByOrNull { it.price }
+            ?: unbrokenHighs.maxByOrNull { it.startIndex }
+
+        // Primary active low: the nearest unbroken support at or below current price (or latest unbroken low)
+        val primaryActiveLow = unbrokenLows.filter { it.price <= latestClose }.maxByOrNull { it.price }
+            ?: unbrokenLows.maxByOrNull { it.startIndex }
+
+        val finalLevels = mutableListOf<FractalLevel>()
+
+        // 3. Keep historical broken levels (only significant ones that spanned >= 2 candles to avoid immediate single-bar chop)
+        for (lvl in allCandidateLevels.filter { it.isBroken }) {
+            if (lvl.breakIndex - lvl.startIndex >= 2) {
+                finalLevels.add(lvl)
+            }
+        }
+
+        // 4. Retain ONLY the primary active unbroken levels extending to future/current candles
+        primaryActiveHigh?.let { finalLevels.add(it) }
+        primaryActiveLow?.let { finalLevels.add(it) }
+
+        finalLevels.sortBy { it.startIndex }
+        fractalLevels = finalLevels
         chochSignals = chochArr
     }
 
@@ -1089,14 +985,14 @@ class BotStrategyChartView @JvmOverloads constructor(
                 style = Paint.Style.FILL
             }
             val paintPillBorder = Paint().apply {
-                color = Color.parseColor("#FFD600")
+                color = Color.parseColor("#00E676")
                 style = Paint.Style.STROKE
                 strokeWidth = 1.5f
             }
             canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBg)
             canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBorder)
 
-            val paintDot = Paint().apply { color = Color.parseColor("#FFD600"); style = Paint.Style.FILL; isAntiAlias = true }
+            val paintDot = Paint().apply { color = Color.parseColor("#00E676"); style = Paint.Style.FILL; isAntiAlias = true }
             canvas.drawCircle(legendOffsetX + 10f, legendY - 3f, 3.5f, paintDot)
 
             val paintLbl = Paint(paintStructureLabel).apply {
@@ -1240,24 +1136,14 @@ class BotStrategyChartView @JvmOverloads constructor(
 
                 if (endX <= startX) continue
 
-                val isActive = !lvl.isBroken
-                val paintLine = if (isActive) {
-                    paintActiveStructuralLine // Yellow/dashed format for active persistent ray lines
-                } else {
-                    if (lvl.isHigh) paintFractalHighDashed else paintFractalLowDashed
-                }
+                val themeColor = if (lvl.isHigh) Color.parseColor("#00E676") else Color.parseColor("#FF5252")
+                val paintLine = if (lvl.isHigh) paintFractalHighDashed else paintFractalLowDashed
 
                 // 1. Horizontal structure line extending to termination candle or right edge
                 canvas.drawLine(startX, y, endX, y, paintLine)
 
                 // 2. Anchor Dot at origin
-                paintFractalDot.color = if (isActive) {
-                    Color.parseColor("#FFD600")
-                } else if (lvl.isHigh) {
-                    Color.parseColor("#FF5252")
-                } else {
-                    Color.parseColor("#00E676")
-                }
+                paintFractalDot.color = themeColor
                 canvas.drawCircle(startX, y, 4.5f, paintFractalDot)
 
                 // 3. Termination / Breakpoint rendering
@@ -1292,7 +1178,7 @@ class BotStrategyChartView @JvmOverloads constructor(
                         style = Paint.Style.FILL
                     }
                     val paintLabelBorder = Paint().apply {
-                        color = Color.parseColor("#FFD600") // Yellow border for active structural ray line
+                        color = themeColor
                         style = Paint.Style.STROKE
                         strokeWidth = 1.5f
                     }
@@ -1301,7 +1187,7 @@ class BotStrategyChartView @JvmOverloads constructor(
 
                     val paintTxt = Paint(paintStructureLabel).apply {
                         textSize = 12f
-                        color = Color.parseColor("#FFD600")
+                        color = themeColor
                     }
                     canvas.drawText(labelText, pillX + 6f, pillY + 15f, paintTxt)
                 }
@@ -1452,7 +1338,7 @@ class BotStrategyChartView @JvmOverloads constructor(
                     val lastH = activeFractals.lastOrNull { it.isHigh }?.price
                     val lastL = activeFractals.lastOrNull { !it.isHigh }?.price
                     val chochText = "FH:${if (lastH != null) formatPriceValue(lastH) else "--"} | FL:${if (lastL != null) formatPriceValue(lastL) else "--"}"
-                    val paintChochLegend = Paint(paintTextSec).apply { color = Color.parseColor("#FFD600"); textSize = 18f }
+                    val paintChochLegend = Paint(paintTextSec).apply { color = Color.parseColor("#00E676"); textSize = 18f }
                     canvas.drawText(chochText, boxX + 14f, boxY + 90f, paintChochLegend)
                 }
             }
