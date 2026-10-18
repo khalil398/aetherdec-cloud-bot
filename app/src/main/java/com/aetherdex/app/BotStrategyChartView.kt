@@ -710,278 +710,163 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     private fun calculateFractalsAndChoch() {
         val n = candles.size
-        if (n < 5) {
+        if (n < 4) {
             fractalLevels = emptyList()
             chochSignals = IntArray(n)
             return
         }
 
-        val chochArr = IntArray(n)
-        val allLevels = mutableListOf<FractalLevel>()
+        val allCandidates = mutableListOf<FractalLevel>()
 
-        // Ethan's ICT Mechanical Fractal & Market Structure Shift (MSS) Engine
-        // 1. Initial State Setup
-        var isBullish = candles[1].close >= candles[0].close
-        var legExtremeHigh = kotlin.math.max(candles[0].high, candles[1].high)
-        var legExtremeHighIdx = if (candles[1].high >= candles[0].high) 1 else 0
+        // 1. Identify valid ICT Swing Highs and Swing Lows (Pivots)
+        // A swing high is a local peak with lower highs on both sides.
+        // A swing low is a local trough with higher lows on both sides.
+        for (i in 1 until (n - 1)) {
+            val sc = candles[i]
+            val prev = candles[i - 1]
+            val next = candles[i + 1]
 
-        var legExtremeLow = kotlin.math.min(candles[0].low, candles[1].low)
-        var legExtremeLowIdx = if (candles[1].low <= candles[0].low) 1 else 0
+            // 3-bar basic pivot condition
+            val is3BarHigh = sc.high > prev.high && sc.high >= next.high
+            val is3BarLow = sc.low < prev.low && sc.low <= next.low
 
-        var inPullback = false
-        var pullbackExtremePrice = 0.0
-        var pullbackExtremeIdx = -1
+            // 5-bar confirmation when available for superior structural reliability
+            val is5BarHigh = if (i >= 2 && i < n - 2) {
+                sc.high >= candles[i - 2].high && is3BarHigh && sc.high >= candles[i + 2].high
+            } else is3BarHigh
 
-        var activeHigh: FractalLevel? = null
-        var activeLow: FractalLevel? = null
+            val is5BarLow = if (i >= 2 && i < n - 2) {
+                sc.low <= candles[i - 2].low && is3BarLow && sc.low <= candles[i + 2].low
+            } else is3BarLow
 
-        for (i in 2 until n) {
-            val c = candles[i]
-
-            // -----------------------------------------------------------------
-            // CHoCh (Change of Character) & MSS Validation
-            // Rule: "An official CHoCh / Market Structure Shift occurs only when
-            //        price breaks and closes beyond a confirmed Fractal Low (for bearish shift)
-            //        or Fractal High (for bullish shift)."
-            // -----------------------------------------------------------------
-            var shiftOccurred = false
-
-            // Bullish CHoCh / MSS: Candle body closes above confirmed active Fractal High
-            if (activeHigh != null && !activeHigh.isBroken && c.close > activeHigh.price) {
-                activeHigh.isBroken = true
-                activeHigh.breakIndex = i
-                activeHigh.endIndex = i
-                activeHigh.isChoch = true
-                chochArr[i] = 1 // Bullish CHoCh / MSS
-                shiftOccurred = true
-
-                // Confirm the lowest trough formed prior to this breakout as official Fractal Low
-                if (legExtremeLowIdx >= 0) {
-                    val confirmedLow = FractalLevel(
-                        isHigh = false,
-                        price = legExtremeLow,
-                        startIndex = legExtremeLowIdx,
-                        endIndex = n - 1,
-                        isBroken = false,
-                        breakIndex = -1,
-                        isChoch = false
-                    )
-                    allLevels.add(confirmedLow)
-                    activeLow = confirmedLow
+            if (is5BarHigh) {
+                var breakIdx = -1
+                for (k in (i + 1) until n) {
+                    if (candles[k].close > sc.high) {
+                        breakIdx = k
+                        break
+                    }
                 }
-
-                // Market Structure shifts to Bullish
-                isBullish = true
-                inPullback = false
-                legExtremeHigh = c.high
-                legExtremeHighIdx = i
-            }
-
-            // Bearish CHoCh / MSS: Candle body closes below confirmed active Fractal Low
-            if (activeLow != null && !activeLow.isBroken && c.close < activeLow.price) {
-                activeLow.isBroken = true
-                activeLow.breakIndex = i
-                activeLow.endIndex = i
-                activeLow.isChoch = true
-                chochArr[i] = -1 // Bearish CHoCh / MSS
-                shiftOccurred = true
-
-                // Confirm the highest peak formed prior to this breakdown as official Fractal High
-                if (legExtremeHighIdx >= 0) {
-                    val confirmedHigh = FractalLevel(
+                allCandidates.add(
+                    FractalLevel(
                         isHigh = true,
-                        price = legExtremeHigh,
-                        startIndex = legExtremeHighIdx,
-                        endIndex = n - 1,
-                        isBroken = false,
-                        breakIndex = -1,
+                        price = sc.high,
+                        startIndex = i,
+                        endIndex = if (breakIdx != -1) breakIdx else (n - 1),
+                        isBroken = (breakIdx != -1),
+                        breakIndex = breakIdx,
                         isChoch = false
                     )
-                    allLevels.add(confirmedHigh)
-                    activeHigh = confirmedHigh
-                }
-
-                // Market Structure shifts to Bearish
-                isBullish = false
-                inPullback = false
-                legExtremeLow = c.low
-                legExtremeLowIdx = i
+                )
             }
 
-            if (shiftOccurred) {
-                continue
-            }
-
-            // -----------------------------------------------------------------
-            // Mechanical Momentum Tracking & Inside / Pullback Candle Evaluation
-            // -----------------------------------------------------------------
-            if (isBullish) {
-                // Bullish Momentum Tracking:
-                // Check if candle extends beyond preceding extreme high
-                if (c.high > legExtremeHigh) {
-                    // Subsequent price action takes out the preceding extreme (prior high)
-                    if (inPullback && pullbackExtremeIdx >= 0) {
-                        // Confirm the pullback candle's extreme as the official Fractal Low (Swing Low)!
-                        val confirmedLow = FractalLevel(
-                            isHigh = false,
-                            price = pullbackExtremePrice,
-                            startIndex = pullbackExtremeIdx,
-                            endIndex = n - 1,
-                            isBroken = false,
-                            breakIndex = -1,
-                            isChoch = false
-                        )
-                        allLevels.add(confirmedLow)
-                        activeLow = confirmedLow
-                        inPullback = false
-                    }
-
-                    // Update preceding peak extreme
-                    legExtremeHigh = c.high
-                    legExtremeHighIdx = i
-                } else {
-                    // Inside / Pullback Candle: candle fails to extend beyond previous extreme high (loss of momentum)
-                    if (!inPullback) {
-                        inPullback = true
-                        pullbackExtremePrice = c.low
-                        pullbackExtremeIdx = i
-                    } else {
-                        // Continue tracking the lowest point of this pullback sequence
-                        if (c.low < pullbackExtremePrice) {
-                            pullbackExtremePrice = c.low
-                            pullbackExtremeIdx = i
-                        }
-                    }
-                }
-            } else {
-                // Bearish Momentum Tracking:
-                // Check if candle extends beyond preceding extreme low
-                if (c.low < legExtremeLow) {
-                    // Subsequent price action takes out the preceding extreme (prior low)
-                    if (inPullback && pullbackExtremeIdx >= 0) {
-                        // Confirm the pullback candle's extreme as the official Fractal High (Swing High)!
-                        val confirmedHigh = FractalLevel(
-                            isHigh = true,
-                            price = pullbackExtremePrice,
-                            startIndex = pullbackExtremeIdx,
-                            endIndex = n - 1,
-                            isBroken = false,
-                            breakIndex = -1,
-                            isChoch = false
-                        )
-                        allLevels.add(confirmedHigh)
-                        activeHigh = confirmedHigh
-                        inPullback = false
-                    }
-
-                    // Update preceding trough extreme
-                    legExtremeLow = c.low
-                    legExtremeLowIdx = i
-                } else {
-                    // Inside / Pullback Candle: candle fails to extend beyond previous extreme low (loss of momentum)
-                    if (!inPullback) {
-                        inPullback = true
-                        pullbackExtremePrice = c.high
-                        pullbackExtremeIdx = i
-                    } else {
-                        // Continue tracking the highest point of this pullback sequence
-                        if (c.high > pullbackExtremePrice) {
-                            pullbackExtremePrice = c.high
-                            pullbackExtremeIdx = i
-                        }
-                    }
-                }
-            }
-        }
-
-        // If at the end of the data, the active leg's extreme hasn't been added yet, add it as active structure
-        if (activeHigh == null && legExtremeHighIdx >= 0) {
-            val h = FractalLevel(
-                isHigh = true,
-                price = legExtremeHigh,
-                startIndex = legExtremeHighIdx,
-                endIndex = n - 1,
-                isBroken = false,
-                breakIndex = -1,
-                isChoch = false
-            )
-            allLevels.add(h)
-            activeHigh = h
-        }
-        if (activeLow == null && legExtremeLowIdx >= 0) {
-            val l = FractalLevel(
-                isHigh = false,
-                price = legExtremeLow,
-                startIndex = legExtremeLowIdx,
-                endIndex = n - 1,
-                isBroken = false,
-                breakIndex = -1,
-                isChoch = false
-            )
-            allLevels.add(l)
-            activeLow = l
-        }
-
-        // -----------------------------------------------------------------
-        // Strict Line Termination Verification:
-        // Rule: "At the exact candle bar where price breaks and closes beyond
-        //        the boundary level, stop extending the line at that precise intersection point."
-        // -----------------------------------------------------------------
-        for (lvl in allLevels) {
-            if (!lvl.isBroken) {
-                for (k in (lvl.startIndex + 1) until n) {
-                    val c = candles[k]
-                    if (lvl.isHigh && c.close > lvl.price) {
-                        lvl.isBroken = true
-                        lvl.breakIndex = k
-                        lvl.endIndex = k
-                        lvl.isChoch = true
-                        break
-                    } else if (!lvl.isHigh && c.close < lvl.price) {
-                        lvl.isBroken = true
-                        lvl.breakIndex = k
-                        lvl.endIndex = k
-                        lvl.isChoch = true
+            if (is5BarLow) {
+                var breakIdx = -1
+                for (k in (i + 1) until n) {
+                    if (candles[k].close < sc.low) {
+                        breakIdx = k
                         break
                     }
                 }
+                allCandidates.add(
+                    FractalLevel(
+                        isHigh = false,
+                        price = sc.low,
+                        startIndex = i,
+                        endIndex = if (breakIdx != -1) breakIdx else (n - 1),
+                        isBroken = (breakIdx != -1),
+                        breakIndex = breakIdx,
+                        isChoch = false
+                    )
+                )
             }
         }
 
-        // -----------------------------------------------------------------
-        // Range Filtering & Noise Reduction:
-        // Rule: "When price oscillates within a defined structural range without
-        //        a valid breakout close, suppress minor internal/noisy swing lines
-        //        to prevent chart clutter. Maintain clear visibility of active market boundaries."
-        // -----------------------------------------------------------------
-        val latestClose = candles.last().close
-        val unbrokenHighs = allLevels.filter { it.isHigh && !it.isBroken }
-        val unbrokenLows = allLevels.filter { !it.isHigh && !it.isBroken }
+        // 2. Guarantee inclusion of the absolute High and Low extremes across the dataset
+        val globalMaxCandle = candles.maxByOrNull { it.high }
+        if (globalMaxCandle != null) {
+            val gIdx = candles.indexOf(globalMaxCandle)
+            if (allCandidates.none { it.isHigh && abs(it.price - globalMaxCandle.high) < 1e-4 }) {
+                var breakIdx = -1
+                for (k in (gIdx + 1) until n) {
+                    if (candles[k].close > globalMaxCandle.high) {
+                        breakIdx = k
+                        break
+                    }
+                }
+                allCandidates.add(
+                    FractalLevel(
+                        isHigh = true,
+                        price = globalMaxCandle.high,
+                        startIndex = gIdx,
+                        endIndex = if (breakIdx != -1) breakIdx else (n - 1),
+                        isBroken = (breakIdx != -1),
+                        breakIndex = breakIdx,
+                        isChoch = false
+                    )
+                )
+            }
+        }
 
-        // Primary active high: nearest unbroken resistance at or above current price (or latest unbroken high)
-        val primaryActiveHigh = unbrokenHighs.filter { it.price >= latestClose }.minByOrNull { it.price }
-            ?: unbrokenHighs.maxByOrNull { it.startIndex }
+        val globalMinCandle = candles.minByOrNull { it.low }
+        if (globalMinCandle != null) {
+            val gIdx = candles.indexOf(globalMinCandle)
+            if (allCandidates.none { !it.isHigh && abs(it.price - globalMinCandle.low) < 1e-4 }) {
+                var breakIdx = -1
+                for (k in (gIdx + 1) until n) {
+                    if (candles[k].close < globalMinCandle.low) {
+                        breakIdx = k
+                        break
+                    }
+                }
+                allCandidates.add(
+                    FractalLevel(
+                        isHigh = false,
+                        price = globalMinCandle.low,
+                        startIndex = gIdx,
+                        endIndex = if (breakIdx != -1) breakIdx else (n - 1),
+                        isBroken = (breakIdx != -1),
+                        breakIndex = breakIdx,
+                        isChoch = false
+                    )
+                )
+            }
+        }
 
-        // Primary active low: nearest unbroken support at or below current price (or latest unbroken low)
-        val primaryActiveLow = unbrokenLows.filter { it.price <= latestClose }.maxByOrNull { it.price }
-            ?: unbrokenLows.maxByOrNull { it.startIndex }
+        // 3. Filter and curate levels:
+        val unbrokenHighs = allCandidates.filter { it.isHigh && !it.isBroken }
+        val unbrokenLows = allCandidates.filter { !it.isHigh && !it.isBroken }
+
+        // Deduplicate unbroken highs within 0.15% price proximity (keep higher price)
+        val filteredUnbrokenHighs = mutableListOf<FractalLevel>()
+        for (h in unbrokenHighs.sortedByDescending { it.price }) {
+            if (filteredUnbrokenHighs.none { abs(it.price - h.price) / h.price < 0.0015 }) {
+                filteredUnbrokenHighs.add(h)
+            }
+        }
+
+        // Deduplicate unbroken lows within 0.15% price proximity (keep lower price)
+        val filteredUnbrokenLows = mutableListOf<FractalLevel>()
+        for (l in unbrokenLows.sortedBy { it.price }) {
+            if (filteredUnbrokenLows.none { abs(it.price - l.price) / l.price < 0.0015 }) {
+                filteredUnbrokenLows.add(l)
+            }
+        }
+
+        // Broken levels: keep significant levels that spanned at least 2 bars
+        val filteredBrokenLevels = allCandidates
+            .filter { it.isBroken && (it.breakIndex - it.startIndex >= 2) }
+            .sortedByDescending { it.breakIndex }
+            .take(15) // Limit historical broken lines to recent 15 to keep chart clean and uncluttered
 
         val finalLevels = mutableListOf<FractalLevel>()
-
-        // Historical broken levels: retain significant structure levels (spanned >= 2 candles)
-        for (lvl in allLevels.filter { it.isBroken }) {
-            if (lvl.breakIndex - lvl.startIndex >= 2) {
-                finalLevels.add(lvl)
-            }
-        }
-
-        // Active levels: ONLY primary active unbroken high and low extend across into the future
-        primaryActiveHigh?.let { finalLevels.add(it) }
-        primaryActiveLow?.let { finalLevels.add(it) }
+        finalLevels.addAll(filteredBrokenLevels)
+        finalLevels.addAll(filteredUnbrokenHighs)
+        finalLevels.addAll(filteredUnbrokenLows)
 
         finalLevels.sortBy { it.startIndex }
         fractalLevels = finalLevels
-        chochSignals = chochArr
+        chochSignals = IntArray(n) // Completely suppress CHoCh signal badges
     }
 
     var activeProximity: Int = 0
@@ -1149,7 +1034,7 @@ class BotStrategyChartView @JvmOverloads constructor(
         }
 
         if (showFractalChoch) {
-            val pillText = "ICT FRACTAL CHOCH / MSS"
+            val pillText = "ICT FRACTAL STRUCTURE"
             val textWidth = paintStructureLabel.measureText(pillText)
             val pillWidth = textWidth + 26f
             val pillHeight = 22f
@@ -1322,23 +1207,8 @@ class BotStrategyChartView @JvmOverloads constructor(
 
                 // 3. Termination / Breakpoint rendering
                 if (lvl.isBroken && lvl.breakIndex >= 0) {
-                    // Small vertical termination notch
+                    // Clean vertical termination notch strictly at the breakout bar
                     canvas.drawLine(endX, y - 6f, endX, y + 6f, paintLine)
-
-                    // Draw pill badge on break candle
-                    val labelText = "CHoCh"
-                    val pillWidth = 58f
-                    val pillHeight = 20f
-                    val pillY = if (lvl.isHigh) y - 24f else y + 4f
-                    val pillRect = RectF(endX - 10f, pillY, endX - 10f + pillWidth, pillY + pillHeight)
-                    val paintPillBg = if (lvl.isHigh) paintChochBadgeBull else paintChochBadgeBear
-                    canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBg)
-
-                    val paintLabelText = Paint(paintStructureLabel).apply {
-                        textSize = 12f
-                        color = if (lvl.isHigh) Color.BLACK else Color.WHITE
-                    }
-                    canvas.drawText(labelText, endX - 3f, pillY + 15f, paintLabelText)
                 } else {
                     // Unbroken active structure level extending continuously across into the future (Persistent Ray)
                     val labelText = if (lvl.isHigh) "Fractal High: ${formatPriceValue(lvl.price)}" else "Fractal Low: ${formatPriceValue(lvl.price)}"
@@ -1413,24 +1283,6 @@ class BotStrategyChartView @JvmOverloads constructor(
                     canvas.drawRoundRect(rect, 8f, 8f, paintBadgeSell)
                     val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.WHITE }
                     canvas.drawText("▼ SELL", cx - 30f, badgeY + 20f, paintSignalText)
-                }
-            }
-
-            // Draw Fractal CHoCh Badges on Candles
-            if (showFractalChoch) {
-                val choch = if (i < chochSignals.size) chochSignals[i] else 0
-                if (choch == 1) { // Bullish CHoCh
-                    val badgeY = yLow + (if (showEmaStrategy) 56f else 24f)
-                    val rect = RectF(cx - 42f, badgeY, cx + 42f, badgeY + 28f)
-                    canvas.drawRoundRect(rect, 8f, 8f, paintChochBadgeBull)
-                    val paintSignalText = Paint(paintText).apply { textSize = 16f; color = Color.BLACK }
-                    canvas.drawText("▲ CHoCh", cx - 36f, badgeY + 20f, paintSignalText)
-                } else if (choch == -1) { // Bearish CHoCh
-                    val badgeY = yHigh - (if (showEmaStrategy) 64f else 32f)
-                    val rect = RectF(cx - 44f, badgeY, cx + 44f, badgeY + 28f)
-                    canvas.drawRoundRect(rect, 8f, 8f, paintChochBadgeBear)
-                    val paintSignalText = Paint(paintText).apply { textSize = 16f; color = Color.WHITE }
-                    canvas.drawText("▼ CHoCh", cx - 38f, badgeY + 20f, paintSignalText)
                 }
             }
         }
