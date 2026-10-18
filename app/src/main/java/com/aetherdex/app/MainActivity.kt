@@ -115,6 +115,7 @@ class MainActivity : AppCompatActivity(),
     private lateinit var chipStrategyGrid: Chip
     private lateinit var chipStrategyTrend: Chip
     private lateinit var chipStrategyEmaChannel: Chip
+    private lateinit var chipStrategyFractalChoch: Chip
     private lateinit var layoutSpotBalances: View
     private lateinit var tvSpotUsdcBalance: TextView
     private lateinit var tvSpotAssetBalance: TextView
@@ -625,6 +626,7 @@ class MainActivity : AppCompatActivity(),
             chipStrategyGrid = findViewById(R.id.chipStrategyGrid)
             chipStrategyTrend = findViewById(R.id.chipStrategyTrend)
             chipStrategyEmaChannel = findViewById(R.id.chipStrategyEmaChannel)
+            chipStrategyFractalChoch = findViewById(R.id.chipStrategyFractalChoch)
             layoutSpotBalances = findViewById(R.id.layoutSpotBalances)
             tvSpotUsdcBalance = findViewById(R.id.tvSpotUsdcBalance)
             tvSpotAssetBalance = findViewById(R.id.tvSpotAssetBalance)
@@ -3889,6 +3891,7 @@ class MainActivity : AppCompatActivity(),
                     when (spotBotStrategy) {
                         "Grid Trading" -> chipStrategyGrid.isChecked = true
                         "Trend Following" -> chipStrategyTrend.isChecked = true
+                        "Fractal CHoCh (ICT)", "Fractal CHoCh / Market Structure Shift (ICT)" -> if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = true else chipStrategyTrend.isChecked = true
                         "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
                         else -> chipStrategyDca.isChecked = true
                     }
@@ -3942,6 +3945,7 @@ class MainActivity : AppCompatActivity(),
                     when (futuresBotStrategy) {
                         "Grid Trading" -> chipStrategyGrid.isChecked = true
                         "Trend Following" -> chipStrategyTrend.isChecked = true
+                        "Fractal CHoCh (ICT)", "Fractal CHoCh / Market Structure Shift (ICT)" -> if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = true else chipStrategyTrend.isChecked = true
                         "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
                         else -> chipStrategyDca.isChecked = true
                     }
@@ -4130,6 +4134,7 @@ class MainActivity : AppCompatActivity(),
                 when (initialStrat) {
                     "Grid Trading" -> chipStrategyGrid.isChecked = true
                     "Trend Following" -> chipStrategyTrend.isChecked = true
+                    "Fractal CHoCh (ICT)", "Fractal CHoCh / Market Structure Shift (ICT)" -> if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = true else chipStrategyTrend.isChecked = true
                     "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
                     else -> chipStrategyDca.isChecked = true
                 }
@@ -4192,6 +4197,7 @@ class MainActivity : AppCompatActivity(),
                 val strat = when (id) {
                     R.id.chipStrategyGrid -> "Grid Trading"
                     R.id.chipStrategyTrend -> "Trend Following"
+                    R.id.chipStrategyFractalChoch -> "Fractal CHoCh (ICT)"
                     R.id.chipStrategyEmaChannel -> "30m EMA High/Low"
                     else -> "Smart DCA / Dip Buyer"
                 }
