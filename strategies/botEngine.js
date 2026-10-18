@@ -454,6 +454,10 @@ async function executeBotTick(uid, db, config, botSecret) {
 
   const futuresConfig = config.futures_config || config;
   const futuresStrategy = futuresConfig.strategy || config.strategy || "30m EMA High/Low";
+  const rawFuturesStrats = futuresConfig.strategies || config.futures_strategies || config.strategies || futuresStrategy;
+  const futuresStrategyList = Array.isArray(rawFuturesStrats)
+    ? rawFuturesStrats
+    : (typeof rawFuturesStrats === "string" ? rawFuturesStrats.split(",").map(s => s.trim()) : ["30m EMA High/Low"]);
   const futuresAllocPct = futuresConfig.allocation_pct || config.allocation_pct || 25;
   const configuredLeverage = Math.max(1, Math.min(50, parseInt(futuresConfig.leverage || config.leverage) || 10));
   const marginMode = (futuresConfig.margin_mode || config.margin_mode || (config.is_isolated !== false ? "ISOLATED" : "CROSS")).toUpperCase();
@@ -464,7 +468,7 @@ async function executeBotTick(uid, db, config, botSecret) {
   // DUAL-MARKET ENGINE: 1. PERPETUAL FUTURES MODE
   // =========================================================================
   if (isFuturesActive) {
-    console.log(`[${uid}] ⚡ Running 30m Perpetual Futures Bot Engine '${futuresStrategy}' (Leverage: ${configuredLeverage}x, Margin: ${marginMode}, Direction: ${positionDirection}, Alloc: ${futuresAllocPct}%)...`);
+    console.log(`[${uid}] ⚡ Running 30m Perpetual Futures Bot Engine '${futuresStrategyList.join(" + ")}' (Leverage: ${configuredLeverage}x, Margin: ${marginMode}, Direction: ${positionDirection}, Alloc: ${futuresAllocPct}%)...`);
 
     const perpMarkets = await fetchPerpMetaAndCtxs();
     const perpMarketMap = new Map();
@@ -495,7 +499,9 @@ async function executeBotTick(uid, db, config, botSecret) {
       ...perpAvailableCoins
     ])).filter(Boolean);
 
-    const isEmaStrategyActive = (config.strategy === "30m EMA High/Low" || config.strategy === "5m EMA High/Low" || config.strategy === "Trend Following" || !config.strategy);
+    const isEmaStrategyActive = futuresStrategyList.some(s => 
+      s.includes("EMA") || s.includes("Trend") || s.includes("CHoCh") || s.includes("DCA") || s.includes("Grid")
+    ) || futuresStrategyList.length === 0;
 
     let validResults = [];
 
@@ -779,7 +785,8 @@ async function executeBotTick(uid, db, config, botSecret) {
       pnl_usd: totalPnlUsd,
       pnl_pct: pnlPct,
       active_trades: activeTradesCount,
-      strategy: config.strategy,
+      strategy: futuresStrategyList.join(","),
+      strategies: futuresStrategyList,
       timeframe: "30m",
       market_type: "PERP",
       margin_mode: marginMode,
@@ -805,9 +812,13 @@ async function executeBotTick(uid, db, config, botSecret) {
   if (isSpotActive) {
     const spotConfig = config.spot_config || config;
     const spotStrategy = spotConfig.strategy || config.strategy || "30m EMA High/Low";
+    const rawSpotStrats = spotConfig.strategies || config.spot_strategies || config.strategies || spotStrategy;
+    const spotStrategyList = Array.isArray(rawSpotStrats)
+      ? rawSpotStrats
+      : (typeof rawSpotStrats === "string" ? rawSpotStrats.split(",").map(s => s.trim()) : ["30m EMA High/Low"]);
     const spotAllocPct = spotConfig.allocation_pct || config.allocation_pct || 25;
 
-    console.log(`[${uid}] ⚡ Running 30m Spot Bot Engine '${spotStrategy}' (Alloc: ${spotAllocPct}%)...`);
+    console.log(`[${uid}] ⚡ Running 30m Spot Bot Engine '${spotStrategyList.join(" + ")}' (Alloc: ${spotAllocPct}%)...`);
 
     const scanQueue = Array.from(new Set([
       targetCoin,
@@ -816,7 +827,9 @@ async function executeBotTick(uid, db, config, botSecret) {
     ]));
 
     const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
-    const isEmaStrategyActive = (spotStrategy === "30m EMA High/Low" || spotStrategy === "5m EMA High/Low" || spotStrategy === "Trend Following" || !spotStrategy);
+    const isEmaStrategyActive = spotStrategyList.some(s => 
+      s.includes("EMA") || s.includes("Trend") || s.includes("CHoCh") || s.includes("DCA") || s.includes("Grid")
+    ) || spotStrategyList.length === 0;
 
     if (isEmaStrategyActive) {
       console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Spot pairs (Target: ${targetCoin}, Authorized: ${enabledAssets.length})...`);
@@ -1064,7 +1077,8 @@ async function executeBotTick(uid, db, config, botSecret) {
     pnl_usd: totalPnlUsd,
     pnl_pct: pnlPct,
     active_trades: activeTradesCount,
-    strategy: spotStrategy,
+    strategy: spotStrategyList.join(","),
+    strategies: spotStrategyList,
     timeframe: "30m",
     market_type: "SPOT",
     is_spot_bot_active: isSpotActive,

@@ -41,6 +41,16 @@ class BotStrategyChartView @JvmOverloads constructor(
         val prevEma8Low: Double = 0.0
     )
 
+    data class FractalLevel(
+        val isHigh: Boolean,        // true = Fractal High (Resistance), false = Fractal Low (Support)
+        val price: Double,
+        val startIndex: Int,        // Candle index where the fractal pivot was formed
+        var endIndex: Int = -1,     // Candle index where price breaks through, or -1 if unbroken
+        var isBroken: Boolean = false,
+        var breakIndex: Int = -1,   // Candle index of the break
+        var isChoch: Boolean = false
+    )
+
     enum class BotState { NEUTRAL, IN_BUY, IN_SELL }
     private enum class ChannelState { UNKNOWN, BELOW_OR_INSIDE, FULLY_ABOVE }
 
@@ -170,6 +180,21 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     // Signals: 1 = BUY, -1 = SELL, 0 = NONE
     private var signalSeries: IntArray = IntArray(0)
+
+    // Multi-Strategy Mode Selection
+    var activeStrategies: Set<String> = setOf("30m EMA High/Low")
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    fun setActiveStrategies(strategies: Collection<String>) {
+        activeStrategies = strategies.toSet()
+    }
+
+    // Fractal CHoCh (ICT) Structure & Signals
+    private var fractalLevels: List<FractalLevel> = emptyList()
+    private var chochSignals: IntArray = IntArray(0)
 
     // View State & Touch Control Parameters
     private var zoomFactor: Float = 1.0f // 0.10f to 8.0f (Controls candleWidth and visible candle count)
@@ -331,6 +356,61 @@ class BotStrategyChartView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
         isAntiAlias = true
+    }
+
+    // Fractal CHoCh (ICT) Structure Paints
+    private val paintFractalHigh = Paint().apply {
+        color = Color.parseColor("#FF5252") // Coral/Red for Resistance
+        strokeWidth = 2.5f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintFractalHighDashed = Paint().apply {
+        color = Color.parseColor("#FF5252")
+        strokeWidth = 2f
+        style = Paint.Style.STROKE
+        pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+        isAntiAlias = true
+    }
+
+    private val paintFractalLow = Paint().apply {
+        color = Color.parseColor("#00E676") // Emerald Green for Support
+        strokeWidth = 2.5f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintFractalLowDashed = Paint().apply {
+        color = Color.parseColor("#00E676")
+        strokeWidth = 2f
+        style = Paint.Style.STROKE
+        pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+        isAntiAlias = true
+    }
+
+    private val paintFractalDot = Paint().apply {
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val paintChochBadgeBull = Paint().apply {
+        color = Color.parseColor("#00E676")
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val paintChochBadgeBear = Paint().apply {
+        color = Color.parseColor("#FF5252")
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val paintStructureLabel = Paint().apply {
+        color = Color.WHITE
+        textSize = 18f
+        isAntiAlias = true
+        typeface = Typeface.DEFAULT_BOLD
     }
 
     // Pre-allocated reusable paths
@@ -622,6 +702,178 @@ class BotStrategyChartView @JvmOverloads constructor(
                 snap.prevEma8Low
             )
         }
+
+        // Calculate Ethan's ICT Fractal Highs, Lows and CHoCh structure
+        calculateFractalsAndChoch()
+    }
+
+    private fun calculateFractalsAndChoch() {
+        val n = candles.size
+        if (n < 5) {
+            fractalLevels = emptyList()
+            chochSignals = IntArray(n)
+            return
+        }
+
+        val levels = mutableListOf<FractalLevel>()
+        val chochArr = IntArray(n)
+
+        // 1. Detect Swing Highs & Lows (Ethan's ICT 3-bar and 5-bar confirmation)
+        for (i in 2 until n - 2) {
+            val c = candles[i]
+            val isSwingHigh = c.high >= candles[i - 1].high && c.high >= candles[i - 2].high &&
+                    c.high >= candles[i + 1].high && c.high >= candles[i + 2].high
+            val isSwingLow = c.low <= candles[i - 1].low && c.low <= candles[i - 2].low &&
+                    c.low <= candles[i + 1].low && c.low <= candles[i + 2].low
+
+            if (isSwingHigh) {
+                var breakIdx = -1
+                for (k in (i + 1) until n) {
+                    if (candles[k].high > c.high) {
+                        breakIdx = k
+                        break
+                    }
+                }
+                levels.add(
+                    FractalLevel(
+                        isHigh = true,
+                        price = c.high,
+                        startIndex = i,
+                        endIndex = if (breakIdx != -1) breakIdx else (n - 1),
+                        isBroken = (breakIdx != -1),
+                        breakIndex = breakIdx,
+                        isChoch = (breakIdx != -1)
+                    )
+                )
+                if (breakIdx != -1) {
+                    chochArr[breakIdx] = 1 // Bullish CHoCh on break of Fractal High
+                }
+            }
+
+            if (isSwingLow) {
+                var breakIdx = -1
+                for (k in (i + 1) until n) {
+                    if (candles[k].low < c.low) {
+                        breakIdx = k
+                        break
+                    }
+                }
+                levels.add(
+                    FractalLevel(
+                        isHigh = false,
+                        price = c.low,
+                        startIndex = i,
+                        endIndex = if (breakIdx != -1) breakIdx else (n - 1),
+                        isBroken = (breakIdx != -1),
+                        breakIndex = breakIdx,
+                        isChoch = (breakIdx != -1)
+                    )
+                )
+                if (breakIdx != -1) {
+                    chochArr[breakIdx] = -1 // Bearish CHoCh on break of Fractal Low
+                }
+            }
+        }
+
+        // 2. Ethan's sequential momentum-pullback tracking
+        var seqHigh = candles[0].high
+        var seqHighIdx = 0
+        var inHighPb = false
+        var pbLow = candles[0].low
+        var pbLowIdx = 0
+
+        var seqLow = candles[0].low
+        var seqLowIdx = 0
+        var inLowPb = false
+        var pbHigh = candles[0].high
+        var pbHighIdx = 0
+
+        for (i in 1 until n) {
+            val c = candles[i]
+            // Uptrend tracking
+            if (c.high > seqHigh) {
+                if (inHighPb && pbLowIdx != seqHighIdx) {
+                    val duplicate = levels.any { !it.isHigh && abs(it.price - pbLow) < 1e-7 && abs(it.startIndex - pbLowIdx) <= 2 }
+                    if (!duplicate) {
+                        var bIdx = -1
+                        for (k in i until n) {
+                            if (candles[k].low < pbLow) {
+                                bIdx = k
+                                break
+                            }
+                        }
+                        levels.add(
+                            FractalLevel(
+                                isHigh = false,
+                                price = pbLow,
+                                startIndex = pbLowIdx,
+                                endIndex = if (bIdx != -1) bIdx else (n - 1),
+                                isBroken = (bIdx != -1),
+                                breakIndex = bIdx,
+                                isChoch = (bIdx != -1)
+                            )
+                        )
+                        if (bIdx != -1 && chochArr[bIdx] == 0) chochArr[bIdx] = -1
+                    }
+                }
+                seqHigh = c.high
+                seqHighIdx = i
+                inHighPb = false
+            } else {
+                if (!inHighPb) {
+                    inHighPb = true
+                    pbLow = c.low
+                    pbLowIdx = i
+                } else if (c.low < pbLow) {
+                    pbLow = c.low
+                    pbLowIdx = i
+                }
+            }
+
+            // Downtrend tracking
+            if (c.low < seqLow) {
+                if (inLowPb && pbHighIdx != seqLowIdx) {
+                    val duplicate = levels.any { it.isHigh && abs(it.price - pbHigh) < 1e-7 && abs(it.startIndex - pbHighIdx) <= 2 }
+                    if (!duplicate) {
+                        var bIdx = -1
+                        for (k in i until n) {
+                            if (candles[k].high > pbHigh) {
+                                bIdx = k
+                                break
+                            }
+                        }
+                        levels.add(
+                            FractalLevel(
+                                isHigh = true,
+                                price = pbHigh,
+                                startIndex = pbHighIdx,
+                                endIndex = if (bIdx != -1) bIdx else (n - 1),
+                                isBroken = (bIdx != -1),
+                                breakIndex = bIdx,
+                                isChoch = (bIdx != -1)
+                            )
+                        )
+                        if (bIdx != -1 && chochArr[bIdx] == 0) chochArr[bIdx] = 1
+                    }
+                }
+                seqLow = c.low
+                seqLowIdx = i
+                inLowPb = false
+            } else {
+                if (!inLowPb) {
+                    inLowPb = true
+                    pbHigh = c.high
+                    pbHighIdx = i
+                } else if (c.high > pbHigh) {
+                    pbHigh = c.high
+                    pbHighIdx = i
+                }
+            }
+        }
+
+        levels.sortBy { it.startIndex }
+        fractalLevels = levels
+        chochSignals = chochArr
     }
 
     var activeProximity: Int = 0
@@ -729,119 +981,203 @@ class BotStrategyChartView @JvmOverloads constructor(
             canvas.drawText(pText, paddingLeftPx + chartWidth + 12f, py + 8f, paintTextSec)
         }
 
-        // Reset & Build Paths for EMA Channels & Trend Lines
-        pathWhiteUpper.reset()
-        pathWhiteLower.reset()
-        pathWhiteChannel.reset()
+        val showEmaStrategy = activeStrategies.isEmpty() ||
+                activeStrategies.any { it.contains("EMA", ignoreCase = true) || it.contains("Trend", ignoreCase = true) || it.contains("Grid", ignoreCase = true) || it.contains("DCA", ignoreCase = true) }
+        val showFractalChoch = activeStrategies.any { it.contains("Fractal", ignoreCase = true) || it.contains("CHoCh", ignoreCase = true) }
 
-        pathYellowUpper.reset()
-        pathYellowLower.reset()
-        pathYellowChannel.reset()
+        // Reset & Build Paths for EMA Channels & Trend Lines (if EMA strategy is active)
+        if (showEmaStrategy) {
+            pathWhiteUpper.reset()
+            pathWhiteLower.reset()
+            pathWhiteChannel.reset()
 
-        pathEma200.reset()
-        pathEma233.reset()
+            pathYellowUpper.reset()
+            pathYellowLower.reset()
+            pathYellowChannel.reset()
 
-        var firstPointWhite = true
-        var firstPointYellow = true
-        var firstPoint200 = true
-        var firstPoint233 = true
+            pathEma200.reset()
+            pathEma233.reset()
 
-        for (i in renderStartIndex..renderEndIndex) {
-            val cx = getX(i)
+            var firstPointWhite = true
+            var firstPointYellow = true
+            var firstPoint200 = true
+            var firstPoint233 = true
 
-            if (i < ema8HighSeries.size && ema8HighSeries[i] > 0) {
-                val y8H = getY(ema8HighSeries[i])
-                val y8L = getY(ema8LowSeries[i])
-                if (firstPointWhite) {
-                    pathWhiteUpper.moveTo(cx, y8H)
-                    pathWhiteLower.moveTo(cx, y8L)
-                    firstPointWhite = false
-                } else {
-                    pathWhiteUpper.lineTo(cx, y8H)
-                    pathWhiteLower.lineTo(cx, y8L)
+            for (i in renderStartIndex..renderEndIndex) {
+                val cx = getX(i)
+
+                if (i < ema8HighSeries.size && ema8HighSeries[i] > 0) {
+                    val y8H = getY(ema8HighSeries[i])
+                    val y8L = getY(ema8LowSeries[i])
+                    if (firstPointWhite) {
+                        pathWhiteUpper.moveTo(cx, y8H)
+                        pathWhiteLower.moveTo(cx, y8L)
+                        firstPointWhite = false
+                    } else {
+                        pathWhiteUpper.lineTo(cx, y8H)
+                        pathWhiteLower.lineTo(cx, y8L)
+                    }
+                }
+
+                if (i < ema34HighSeries.size && ema34HighSeries[i] > 0) {
+                    val y34H = getY(ema34HighSeries[i])
+                    val y34L = getY(ema34LowSeries[i])
+                    if (firstPointYellow) {
+                        pathYellowUpper.moveTo(cx, y34H)
+                        pathYellowLower.moveTo(cx, y34L)
+                        firstPointYellow = false
+                    } else {
+                        pathYellowUpper.lineTo(cx, y34H)
+                        pathYellowLower.lineTo(cx, y34L)
+                    }
+                }
+
+                if (i < ema200Series.size && ema200Series[i] > 0) {
+                    val y200 = getY(ema200Series[i])
+                    if (firstPoint200) {
+                        pathEma200.moveTo(cx, y200)
+                        firstPoint200 = false
+                    } else {
+                        pathEma200.lineTo(cx, y200)
+                    }
+                }
+
+                if (i < ema233Series.size && ema233Series[i] > 0) {
+                    val y233 = getY(ema233Series[i])
+                    if (firstPoint233) {
+                        pathEma233.moveTo(cx, y233)
+                        firstPoint233 = false
+                    } else {
+                        pathEma233.lineTo(cx, y233)
+                    }
                 }
             }
 
-            if (i < ema34HighSeries.size && ema34HighSeries[i] > 0) {
-                val y34H = getY(ema34HighSeries[i])
-                val y34L = getY(ema34LowSeries[i])
-                if (firstPointYellow) {
-                    pathYellowUpper.moveTo(cx, y34H)
-                    pathYellowLower.moveTo(cx, y34L)
-                    firstPointYellow = false
-                } else {
-                    pathYellowUpper.lineTo(cx, y34H)
-                    pathYellowLower.lineTo(cx, y34L)
+            // Construct White Channel Fill (EMA 8 High/Low)
+            for (i in renderStartIndex..renderEndIndex) {
+                if (i < ema8HighSeries.size && ema8HighSeries[i] > 0) {
+                    val cx = getX(i)
+                    val y8H = getY(ema8HighSeries[i])
+                    if (i == renderStartIndex) pathWhiteChannel.moveTo(cx, y8H) else pathWhiteChannel.lineTo(cx, y8H)
                 }
             }
-
-            if (i < ema200Series.size && ema200Series[i] > 0) {
-                val y200 = getY(ema200Series[i])
-                if (firstPoint200) {
-                    pathEma200.moveTo(cx, y200)
-                    firstPoint200 = false
-                } else {
-                    pathEma200.lineTo(cx, y200)
+            for (i in renderEndIndex downTo renderStartIndex) {
+                if (i < ema8LowSeries.size && ema8LowSeries[i] > 0) {
+                    val cx = getX(i)
+                    val y8L = getY(ema8LowSeries[i])
+                    pathWhiteChannel.lineTo(cx, y8L)
                 }
             }
+            pathWhiteChannel.close()
 
-            if (i < ema233Series.size && ema233Series[i] > 0) {
-                val y233 = getY(ema233Series[i])
-                if (firstPoint233) {
-                    pathEma233.moveTo(cx, y233)
-                    firstPoint233 = false
+            // Construct Yellow Channel Fill (EMA 34 High/Low)
+            for (i in renderStartIndex..renderEndIndex) {
+                if (i < ema34HighSeries.size && ema34HighSeries[i] > 0) {
+                    val cx = getX(i)
+                    val y34H = getY(ema34HighSeries[i])
+                    if (i == renderStartIndex) pathYellowChannel.moveTo(cx, y34H) else pathYellowChannel.lineTo(cx, y34H)
+                }
+            }
+            for (i in renderEndIndex downTo renderStartIndex) {
+                if (i < ema34LowSeries.size && ema34LowSeries[i] > 0) {
+                    val cx = getX(i)
+                    val y34L = getY(ema34LowSeries[i])
+                    pathYellowChannel.lineTo(cx, y34L)
+                }
+            }
+            pathYellowChannel.close()
+
+            // Draw EMA Channel Fills & Stroke Lines
+            canvas.drawPath(pathYellowChannel, paintYellowFill)
+            canvas.drawPath(pathYellowUpper, paintYellowLine)
+            canvas.drawPath(pathYellowLower, paintYellowLine)
+
+            canvas.drawPath(pathWhiteChannel, paintWhiteFill)
+            canvas.drawPath(pathWhiteUpper, paintWhiteLine)
+            canvas.drawPath(pathWhiteLower, paintWhiteLine)
+
+            // Draw Long-Term Trend Lines (EMA 200 & EMA 233)
+            canvas.drawPath(pathEma200, paintEma200Line)
+            canvas.drawPath(pathEma233, paintEma233Line)
+        }
+
+        // Draw Fractal CHoCh (ICT) Visual Structure Lines (Horizontal structure lines across candles)
+        if (showFractalChoch) {
+            val visibleLevels = fractalLevels.filter { lvl ->
+                lvl.startIndex <= renderEndIndex && (lvl.endIndex >= renderStartIndex || !lvl.isBroken)
+            }
+
+            for (lvl in visibleLevels) {
+                val y = getY(lvl.price)
+                val startX = getX(lvl.startIndex)
+                val endX = if (lvl.isBroken && lvl.breakIndex >= 0) {
+                    getX(lvl.breakIndex)
                 } else {
-                    pathEma233.lineTo(cx, y233)
+                    paddingLeftPx + chartWidth
+                }
+
+                if (endX <= startX) continue
+
+                val paintLine = if (lvl.isHigh) {
+                    if (lvl.isBroken) paintFractalHighDashed else paintFractalHigh
+                } else {
+                    if (lvl.isBroken) paintFractalLowDashed else paintFractalLow
+                }
+
+                // 1. Horizontal structure line extending to termination candle
+                canvas.drawLine(startX, y, endX, y, paintLine)
+
+                // 2. Anchor Dot at origin
+                paintFractalDot.color = if (lvl.isHigh) Color.parseColor("#FF5252") else Color.parseColor("#00E676")
+                canvas.drawCircle(startX, y, 4.5f, paintFractalDot)
+
+                // 3. Termination / Breakpoint rendering
+                if (lvl.isBroken && lvl.breakIndex >= 0) {
+                    // Small vertical termination notch
+                    canvas.drawLine(endX, y - 6f, endX, y + 6f, paintLine)
+
+                    // Draw pill badge on break candle
+                    val labelText = if (lvl.isHigh) "CHoCh" else "CHoCh"
+                    val pillWidth = 64f
+                    val pillHeight = 20f
+                    val pillY = if (lvl.isHigh) y - 24f else y + 4f
+                    val pillRect = RectF(endX - 10f, pillY, endX - 10f + pillWidth, pillY + pillHeight)
+                    val paintPillBg = if (lvl.isHigh) paintChochBadgeBull else paintChochBadgeBear
+                    canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBg)
+
+                    val paintLabelText = Paint(paintStructureLabel).apply {
+                        textSize = 12f
+                        color = if (lvl.isHigh) Color.BLACK else Color.WHITE
+                    }
+                    canvas.drawText(labelText, endX - 3f, pillY + 15f, paintLabelText)
+                } else {
+                    // Unbroken active structure level extending into the future
+                    val labelText = if (lvl.isHigh) "Fractal High: ${formatPriceValue(lvl.price)}" else "Fractal Low: ${formatPriceValue(lvl.price)}"
+                    val pillWidth = 145f
+                    val pillHeight = 20f
+                    val pillX = (paddingLeftPx + chartWidth - pillWidth - 6f).coerceAtLeast(startX + 10f)
+                    val pillY = if (lvl.isHigh) y - 22f else y + 4f
+                    val pillRect = RectF(pillX, pillY, pillX + pillWidth, pillY + pillHeight)
+                    val paintLabelBg = Paint().apply {
+                        color = Color.parseColor("#CC151921")
+                        style = Paint.Style.FILL
+                    }
+                    val paintLabelBorder = Paint().apply {
+                        color = if (lvl.isHigh) Color.parseColor("#FF5252") else Color.parseColor("#00E676")
+                        style = Paint.Style.STROKE
+                        strokeWidth = 1.5f
+                    }
+                    canvas.drawRoundRect(pillRect, 4f, 4f, paintLabelBg)
+                    canvas.drawRoundRect(pillRect, 4f, 4f, paintLabelBorder)
+
+                    val paintTxt = Paint(paintStructureLabel).apply {
+                        textSize = 12f
+                        color = if (lvl.isHigh) Color.parseColor("#FF5252") else Color.parseColor("#00E676")
+                    }
+                    canvas.drawText(labelText, pillX + 6f, pillY + 15f, paintTxt)
                 }
             }
         }
-
-        // Construct White Channel Fill (EMA 8 High/Low)
-        for (i in renderStartIndex..renderEndIndex) {
-            if (i < ema8HighSeries.size && ema8HighSeries[i] > 0) {
-                val cx = getX(i)
-                val y8H = getY(ema8HighSeries[i])
-                if (i == renderStartIndex) pathWhiteChannel.moveTo(cx, y8H) else pathWhiteChannel.lineTo(cx, y8H)
-            }
-        }
-        for (i in renderEndIndex downTo renderStartIndex) {
-            if (i < ema8LowSeries.size && ema8LowSeries[i] > 0) {
-                val cx = getX(i)
-                val y8L = getY(ema8LowSeries[i])
-                pathWhiteChannel.lineTo(cx, y8L)
-            }
-        }
-        pathWhiteChannel.close()
-
-        // Construct Yellow Channel Fill (EMA 34 High/Low)
-        for (i in renderStartIndex..renderEndIndex) {
-            if (i < ema34HighSeries.size && ema34HighSeries[i] > 0) {
-                val cx = getX(i)
-                val y34H = getY(ema34HighSeries[i])
-                if (i == renderStartIndex) pathYellowChannel.moveTo(cx, y34H) else pathYellowChannel.lineTo(cx, y34H)
-            }
-        }
-        for (i in renderEndIndex downTo renderStartIndex) {
-            if (i < ema34LowSeries.size && ema34LowSeries[i] > 0) {
-                val cx = getX(i)
-                val y34L = getY(ema34LowSeries[i])
-                pathYellowChannel.lineTo(cx, y34L)
-            }
-        }
-        pathYellowChannel.close()
-
-        // Draw EMA Channel Fills & Stroke Lines
-        canvas.drawPath(pathYellowChannel, paintYellowFill)
-        canvas.drawPath(pathYellowUpper, paintYellowLine)
-        canvas.drawPath(pathYellowLower, paintYellowLine)
-
-        canvas.drawPath(pathWhiteChannel, paintWhiteFill)
-        canvas.drawPath(pathWhiteUpper, paintWhiteLine)
-        canvas.drawPath(pathWhiteLower, paintWhiteLine)
-
-        // Draw Long-Term Trend Lines (EMA 200 & EMA 233)
-        canvas.drawPath(pathEma200, paintEma200Line)
-        canvas.drawPath(pathEma233, paintEma233Line)
 
         // Draw Candlesticks & Signal Badges
         val bodyWidth = if (candleWidth <= 2.2f) 1f else max(1f, candleWidth * 0.72f)
@@ -871,22 +1207,42 @@ class BotStrategyChartView @JvmOverloads constructor(
             val bodyHeight = max(2f, bottomBody - topBody)
             canvas.drawRect(cx - halfBody, topBody, cx + halfBody, topBody + bodyHeight, paintBody)
 
-            // Draw Signal Markers (BUY / SELL - Single badge per breakout transition state)
-            val sig = if (i < signalSeries.size) signalSeries[i] else 0
-            if (sig == 1) { // BUY Signal
-                val badgeY = yLow + 24f
-                canvas.drawLine(cx, yLow, cx, badgeY, paintSignalLine)
-                val rect = RectF(cx - 38f, badgeY, cx + 38f, badgeY + 28f)
-                canvas.drawRoundRect(rect, 8f, 8f, paintBadgeBuy)
-                val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.BLACK }
-                canvas.drawText("▲ BUY", cx - 28f, badgeY + 20f, paintSignalText)
-            } else if (sig == -1) { // SELL Signal
-                val badgeY = yHigh - 32f
-                canvas.drawLine(cx, yHigh, cx, badgeY + 28f, paintSignalLine)
-                val rect = RectF(cx - 40f, badgeY, cx + 40f, badgeY + 28f)
-                canvas.drawRoundRect(rect, 8f, 8f, paintBadgeSell)
-                val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.WHITE }
-                canvas.drawText("▼ SELL", cx - 30f, badgeY + 20f, paintSignalText)
+            // Draw EMA Strategy Signal Badges (BUY / SELL)
+            if (showEmaStrategy) {
+                val sig = if (i < signalSeries.size) signalSeries[i] else 0
+                if (sig == 1) { // BUY Signal
+                    val badgeY = yLow + 24f
+                    canvas.drawLine(cx, yLow, cx, badgeY, paintSignalLine)
+                    val rect = RectF(cx - 38f, badgeY, cx + 38f, badgeY + 28f)
+                    canvas.drawRoundRect(rect, 8f, 8f, paintBadgeBuy)
+                    val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.BLACK }
+                    canvas.drawText("▲ BUY", cx - 28f, badgeY + 20f, paintSignalText)
+                } else if (sig == -1) { // SELL Signal
+                    val badgeY = yHigh - 32f
+                    canvas.drawLine(cx, yHigh, cx, badgeY + 28f, paintSignalLine)
+                    val rect = RectF(cx - 40f, badgeY, cx + 40f, badgeY + 28f)
+                    canvas.drawRoundRect(rect, 8f, 8f, paintBadgeSell)
+                    val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.WHITE }
+                    canvas.drawText("▼ SELL", cx - 30f, badgeY + 20f, paintSignalText)
+                }
+            }
+
+            // Draw Fractal CHoCh Badges on Candles
+            if (showFractalChoch) {
+                val choch = if (i < chochSignals.size) chochSignals[i] else 0
+                if (choch == 1) { // Bullish CHoCh
+                    val badgeY = yLow + (if (showEmaStrategy) 56f else 24f)
+                    val rect = RectF(cx - 42f, badgeY, cx + 42f, badgeY + 28f)
+                    canvas.drawRoundRect(rect, 8f, 8f, paintChochBadgeBull)
+                    val paintSignalText = Paint(paintText).apply { textSize = 16f; color = Color.BLACK }
+                    canvas.drawText("▲ CHoCh", cx - 36f, badgeY + 20f, paintSignalText)
+                } else if (choch == -1) { // Bearish CHoCh
+                    val badgeY = yHigh - (if (showEmaStrategy) 64f else 32f)
+                    val rect = RectF(cx - 44f, badgeY, cx + 44f, badgeY + 28f)
+                    canvas.drawRoundRect(rect, 8f, 8f, paintChochBadgeBear)
+                    val paintSignalText = Paint(paintText).apply { textSize = 16f; color = Color.WHITE }
+                    canvas.drawText("▼ CHoCh", cx - 38f, badgeY + 20f, paintSignalText)
+                }
             }
         }
 

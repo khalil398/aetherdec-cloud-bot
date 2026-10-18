@@ -324,6 +324,7 @@ class BotStrategyChartFragment : Fragment() {
                 1f
             )
         }
+        syncStrategiesFromPrefs()
         chartContentLayout.addView(botChartView)
         rootFrameLayout.addView(chartContentLayout)
 
@@ -1099,6 +1100,43 @@ class BotStrategyChartFragment : Fragment() {
         pollingJob?.cancel()
         disconnectWebSocket()
         super.onDestroyView()
+    }
+
+    fun updateActiveStrategies(strategies: Set<String>) {
+        if (::botChartView.isInitialized) {
+            botChartView.setActiveStrategies(strategies)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        syncStrategiesFromPrefs()
+    }
+
+    private fun syncStrategiesFromPrefs() {
+        if (!::botChartView.isInitialized) return
+        try {
+            val prefs = requireContext().getSharedPreferences("aetherdex_prefs", Context.MODE_PRIVATE)
+            val isSpotMode = prefs.getBoolean("is_spot_mode", true)
+            val savedSet = if (isSpotMode) {
+                prefs.getStringSet("spot_bot_strategies", null)
+            } else {
+                prefs.getStringSet("futures_bot_strategies", null)
+            }
+            if (savedSet != null && savedSet.isNotEmpty()) {
+                botChartView.setActiveStrategies(savedSet)
+            } else {
+                val singleStrat = if (isSpotMode) {
+                    prefs.getString("spot_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
+                } else {
+                    prefs.getString("futures_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
+                }
+                val set = singleStrat.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                botChartView.setActiveStrategies(if (set.isNotEmpty()) set else setOf("30m EMA High/Low"))
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun roundedBg(bgColor: Int, radiusDp: Float): GradientDrawable {

@@ -129,6 +129,8 @@ class MainActivity : AppCompatActivity(),
     private var isFuturesBotActive: Boolean = false
     private var spotBotStrategy: String = "30m EMA High/Low"
     private var futuresBotStrategy: String = "30m EMA High/Low"
+    private val spotBotStrategies = mutableSetOf<String>("30m EMA High/Low")
+    private val futuresBotStrategies = mutableSetOf<String>("30m EMA High/Low")
     private var spotBotAllocationPct: Int = 25
     private var futuresBotAllocationPct: Int = 25
     private var spotBotTotalPnlUsd: Double = 0.0
@@ -3887,15 +3889,14 @@ class MainActivity : AppCompatActivity(),
                 if (::tvBotAllocationLabel.isInitialized) {
                     tvBotAllocationLabel.text = "Capital Allocation: ${spotBotAllocationPct}%"
                 }
-                if (::chipStrategyGrid.isInitialized && ::chipStrategyTrend.isInitialized && ::chipStrategyDca.isInitialized) {
-                    when (spotBotStrategy) {
-                        "Grid Trading" -> chipStrategyGrid.isChecked = true
-                        "Trend Following" -> chipStrategyTrend.isChecked = true
-                        "Fractal CHoCh (ICT)", "Fractal CHoCh / Market Structure Shift (ICT)" -> if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = true else chipStrategyTrend.isChecked = true
-                        "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
-                        else -> chipStrategyDca.isChecked = true
-                    }
-                }
+                val currentStrats = spotBotStrategies
+                if (::chipStrategyDca.isInitialized) chipStrategyDca.isChecked = currentStrats.contains("Smart DCA / Dip Buyer")
+                if (::chipStrategyGrid.isInitialized) chipStrategyGrid.isChecked = currentStrats.contains("Grid Trading")
+                if (::chipStrategyTrend.isInitialized) chipStrategyTrend.isChecked = currentStrats.contains("Trend Following")
+                if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = currentStrats.contains("30m EMA High/Low")
+                if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = currentStrats.contains("Fractal CHoCh (ICT)")
+                val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
+                botChartFrag?.updateActiveStrategies(currentStrats)
             } finally {
                 isUpdatingBotUiProgrammatically = false
             }
@@ -3941,15 +3942,14 @@ class MainActivity : AppCompatActivity(),
                 if (::tvBotAllocationLabel.isInitialized) {
                     tvBotAllocationLabel.text = "Capital Allocation: ${futuresBotAllocationPct}%"
                 }
-                if (::chipStrategyGrid.isInitialized && ::chipStrategyTrend.isInitialized && ::chipStrategyDca.isInitialized) {
-                    when (futuresBotStrategy) {
-                        "Grid Trading" -> chipStrategyGrid.isChecked = true
-                        "Trend Following" -> chipStrategyTrend.isChecked = true
-                        "Fractal CHoCh (ICT)", "Fractal CHoCh / Market Structure Shift (ICT)" -> if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = true else chipStrategyTrend.isChecked = true
-                        "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
-                        else -> chipStrategyDca.isChecked = true
-                    }
-                }
+                val currentStrats = futuresBotStrategies
+                if (::chipStrategyDca.isInitialized) chipStrategyDca.isChecked = currentStrats.contains("Smart DCA / Dip Buyer")
+                if (::chipStrategyGrid.isInitialized) chipStrategyGrid.isChecked = currentStrats.contains("Grid Trading")
+                if (::chipStrategyTrend.isInitialized) chipStrategyTrend.isChecked = currentStrats.contains("Trend Following")
+                if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = currentStrats.contains("30m EMA High/Low")
+                if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = currentStrats.contains("Fractal CHoCh (ICT)")
+                val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
+                botChartFrag?.updateActiveStrategies(currentStrats)
             } finally {
                 isUpdatingBotUiProgrammatically = false
             }
@@ -4111,7 +4111,10 @@ class MainActivity : AppCompatActivity(),
             spotStrategy = spotBotStrategy,
             spotAllocationPct = spotBotAllocationPct,
             futuresStrategy = futuresBotStrategy,
-            futuresAllocationPct = futuresBotAllocationPct
+            futuresAllocationPct = futuresBotAllocationPct,
+            strategies = if (isSpotMode) spotBotStrategies.toList() else futuresBotStrategies.toList(),
+            spotStrategies = spotBotStrategies.toList(),
+            futuresStrategies = futuresBotStrategies.toList()
         )
     }
 
@@ -4124,21 +4127,20 @@ class MainActivity : AppCompatActivity(),
         try {
             val initialActive = if (isSpotMode) isSpotBotActive else isFuturesBotActive
             val initialAlloc = if (isSpotMode) spotBotAllocationPct else futuresBotAllocationPct
-            val initialStrat = if (isSpotMode) spotBotStrategy else futuresBotStrategy
 
             switchBotActive.isChecked = initialActive
             if (::sliderBotAllocation.isInitialized) sliderBotAllocation.value = initialAlloc.toFloat()
             if (::tvBotAllocationLabel.isInitialized) tvBotAllocationLabel.text = "Capital Allocation: ${initialAlloc}%"
 
-            if (::chipStrategyGrid.isInitialized && ::chipStrategyTrend.isInitialized && ::chipStrategyDca.isInitialized) {
-                when (initialStrat) {
-                    "Grid Trading" -> chipStrategyGrid.isChecked = true
-                    "Trend Following" -> chipStrategyTrend.isChecked = true
-                    "Fractal CHoCh (ICT)", "Fractal CHoCh / Market Structure Shift (ICT)" -> if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = true else chipStrategyTrend.isChecked = true
-                    "30m EMA High/Low", "5m EMA High/Low" -> if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = true else chipStrategyTrend.isChecked = true
-                    else -> chipStrategyDca.isChecked = true
-                }
-            }
+            val currentStrats = if (isSpotMode) spotBotStrategies else futuresBotStrategies
+            if (::chipStrategyDca.isInitialized) chipStrategyDca.isChecked = currentStrats.contains("Smart DCA / Dip Buyer")
+            if (::chipStrategyGrid.isInitialized) chipStrategyGrid.isChecked = currentStrats.contains("Grid Trading")
+            if (::chipStrategyTrend.isInitialized) chipStrategyTrend.isChecked = currentStrats.contains("Trend Following")
+            if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = currentStrats.contains("30m EMA High/Low")
+            if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = currentStrats.contains("Fractal CHoCh (ICT)")
+
+            val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
+            botChartFrag?.updateActiveStrategies(currentStrats)
         } finally {
             isUpdatingBotUiProgrammatically = false
         }
@@ -4193,22 +4195,47 @@ class MainActivity : AppCompatActivity(),
         if (::chipGroupBotStrategy.isInitialized) {
             chipGroupBotStrategy.setOnCheckedStateChangeListener { _, checkedIds ->
                 if (isUpdatingBotUiProgrammatically) return@setOnCheckedStateChangeListener
-                val id = checkedIds.firstOrNull() ?: R.id.chipStrategyDca
-                val strat = when (id) {
-                    R.id.chipStrategyGrid -> "Grid Trading"
-                    R.id.chipStrategyTrend -> "Trend Following"
-                    R.id.chipStrategyFractalChoch -> "Fractal CHoCh (ICT)"
-                    R.id.chipStrategyEmaChannel -> "30m EMA High/Low"
-                    else -> "Smart DCA / Dip Buyer"
+                val selectedStrats = mutableSetOf<String>()
+                for (id in checkedIds) {
+                    when (id) {
+                        R.id.chipStrategyDca -> selectedStrats.add("Smart DCA / Dip Buyer")
+                        R.id.chipStrategyGrid -> selectedStrats.add("Grid Trading")
+                        R.id.chipStrategyTrend -> selectedStrats.add("Trend Following")
+                        R.id.chipStrategyEmaChannel -> selectedStrats.add("30m EMA High/Low")
+                        R.id.chipStrategyFractalChoch -> selectedStrats.add("Fractal CHoCh (ICT)")
+                    }
                 }
+                if (selectedStrats.isEmpty()) {
+                    selectedStrats.add("Smart DCA / Dip Buyer")
+                    isUpdatingBotUiProgrammatically = true
+                    try {
+                        if (::chipStrategyDca.isInitialized) chipStrategyDca.isChecked = true
+                    } finally {
+                        isUpdatingBotUiProgrammatically = false
+                    }
+                }
+
                 if (isSpotMode) {
-                    spotBotStrategy = strat
+                    spotBotStrategies.clear()
+                    spotBotStrategies.addAll(selectedStrats)
+                    spotBotStrategy = spotBotStrategies.joinToString(",")
                 } else {
-                    futuresBotStrategy = strat
+                    futuresBotStrategies.clear()
+                    futuresBotStrategies.addAll(selectedStrats)
+                    futuresBotStrategy = futuresBotStrategies.joinToString(",")
                 }
                 saveBotPrefs()
+
+                val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
+                botChartFrag?.updateActiveStrategies(selectedStrats)
+
                 val mode = if (isSpotMode) "Spot" else "Futures"
-                snackString("$mode Bot Strategy updated: $strat")
+                val stratDesc = if (selectedStrats.size > 1) {
+                    "${selectedStrats.joinToString(" + ")} (Confluence Active)"
+                } else {
+                    selectedStrats.first()
+                }
+                snackString("$mode Bot Strategies: $stratDesc")
                 val active = if (isSpotMode) isSpotBotActive else isFuturesBotActive
                 if (active) {
                     syncCurrentBotConfig()
@@ -4225,8 +4252,29 @@ class MainActivity : AppCompatActivity(),
         val prefs = getSharedPreferences("aetherdex_bot_prefs", MODE_PRIVATE)
         isSpotBotActive = prefs.getBoolean("spot_bot_active", false)
         isFuturesBotActive = prefs.getBoolean("futures_bot_active", false)
-        spotBotStrategy = prefs.getString("spot_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
-        futuresBotStrategy = prefs.getString("futures_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
+
+        val savedSpotStrats = prefs.getStringSet("spot_bot_strategies", null)
+        spotBotStrategies.clear()
+        if (savedSpotStrats != null && savedSpotStrats.isNotEmpty()) {
+            spotBotStrategies.addAll(savedSpotStrats)
+        } else {
+            val s = prefs.getString("spot_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
+            spotBotStrategies.addAll(s.split(",").map { it.trim() }.filter { it.isNotEmpty() })
+        }
+        if (spotBotStrategies.isEmpty()) spotBotStrategies.add("30m EMA High/Low")
+        spotBotStrategy = spotBotStrategies.joinToString(",")
+
+        val savedFuturesStrats = prefs.getStringSet("futures_bot_strategies", null)
+        futuresBotStrategies.clear()
+        if (savedFuturesStrats != null && savedFuturesStrats.isNotEmpty()) {
+            futuresBotStrategies.addAll(savedFuturesStrats)
+        } else {
+            val s = prefs.getString("futures_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
+            futuresBotStrategies.addAll(s.split(",").map { it.trim() }.filter { it.isNotEmpty() })
+        }
+        if (futuresBotStrategies.isEmpty()) futuresBotStrategies.add("30m EMA High/Low")
+        futuresBotStrategy = futuresBotStrategies.joinToString(",")
+
         spotBotAllocationPct = prefs.getInt("spot_bot_allocation_pct", 25)
         futuresBotAllocationPct = prefs.getInt("futures_bot_allocation_pct", 25)
         spotBotTotalPnlUsd = prefs.getFloat("spot_bot_pnl_usd", 0.0f).toDouble()
@@ -4241,8 +4289,10 @@ class MainActivity : AppCompatActivity(),
             .putBoolean("spot_bot_active", isSpotBotActive)
             .putBoolean("futures_bot_active", isFuturesBotActive)
             .putBoolean("bot_active", isSpotBotActive || isFuturesBotActive)
-            .putString("spot_bot_strategy", spotBotStrategy)
-            .putString("futures_bot_strategy", futuresBotStrategy)
+            .putStringSet("spot_bot_strategies", spotBotStrategies)
+            .putStringSet("futures_bot_strategies", futuresBotStrategies)
+            .putString("spot_bot_strategy", spotBotStrategies.joinToString(","))
+            .putString("futures_bot_strategy", futuresBotStrategies.joinToString(","))
             .putInt("spot_bot_allocation_pct", spotBotAllocationPct)
             .putInt("futures_bot_allocation_pct", futuresBotAllocationPct)
             .putFloat("spot_bot_pnl_usd", spotBotTotalPnlUsd.toFloat())

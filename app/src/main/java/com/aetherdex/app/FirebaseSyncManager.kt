@@ -168,7 +168,10 @@ object FirebaseSyncManager {
         spotStrategy: String = strategy,
         spotAllocationPct: Int = allocationPct,
         futuresStrategy: String = strategy,
-        futuresAllocationPct: Int = allocationPct
+        futuresAllocationPct: Int = allocationPct,
+        strategies: List<String> = emptyList(),
+        spotStrategies: List<String> = emptyList(),
+        futuresStrategies: List<String> = emptyList()
     ) {
         if (!isOnline(context)) {
             Log.d(TAG, "Device is offline. Skipping bot_config sync.")
@@ -185,9 +188,14 @@ object FirebaseSyncManager {
             val enabledAssetsList = currentEnabled.toList()
             val isAnyActive = isSpotBotActive || isFuturesBotActive || active
 
+            val finalSpotStrats = if (spotStrategies.isNotEmpty()) spotStrategies else (if (spotStrategy.contains(",")) spotStrategy.split(",").map { it.trim() } else listOf(spotStrategy))
+            val finalFuturesStrats = if (futuresStrategies.isNotEmpty()) futuresStrategies else (if (futuresStrategy.contains(",")) futuresStrategy.split(",").map { it.trim() } else listOf(futuresStrategy))
+            val finalAllStrats = if (strategies.isNotEmpty()) strategies else (if (strategy.contains(",")) strategy.split(",").map { it.trim() } else listOf(strategy))
+
             val spotConfigMap = hashMapOf<String, Any>(
                 "active" to isSpotBotActive,
                 "strategy" to spotStrategy,
+                "strategies" to finalSpotStrats,
                 "allocation_pct" to spotAllocationPct,
                 "target_coin" to (if (cleanTarget.isNotBlank()) cleanTarget else "BTC"),
                 "market_type" to "SPOT",
@@ -197,6 +205,7 @@ object FirebaseSyncManager {
             val futuresConfigMap = hashMapOf<String, Any>(
                 "active" to isFuturesBotActive,
                 "strategy" to futuresStrategy,
+                "strategies" to finalFuturesStrats,
                 "allocation_pct" to futuresAllocationPct,
                 "target_coin" to (if (cleanTarget.isNotBlank()) cleanTarget else "BTC"),
                 "market_type" to "PERP",
@@ -214,6 +223,9 @@ object FirebaseSyncManager {
                 "spot_active" to isSpotBotActive,
                 "futures_active" to isFuturesBotActive,
                 "strategy" to strategy,
+                "strategies" to finalAllStrats,
+                "spot_strategies" to finalSpotStrats,
+                "futures_strategies" to finalFuturesStrats,
                 "allocation_pct" to allocationPct,
                 "target_coin" to (if (cleanTarget.isNotBlank()) cleanTarget else "BTC"),
                 "enabled_assets" to enabledAssetsList,

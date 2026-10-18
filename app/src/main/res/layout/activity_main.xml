@@ -210,8 +210,8 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
-                    app:selectionRequired="true"
-                    app:singleSelection="true">
+                    app:selectionRequired="false"
+                    app:singleSelection="false">
 
                     <com.google.android.material.chip.Chip
                         android:id="@+id/chipStrategyDca"
