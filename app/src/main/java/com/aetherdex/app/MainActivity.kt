@@ -3895,6 +3895,7 @@ class MainActivity : AppCompatActivity(),
                 if (::chipStrategyTrend.isInitialized) chipStrategyTrend.isChecked = currentStrats.contains("Trend Following")
                 if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = currentStrats.contains("30m EMA High/Low")
                 if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = currentStrats.contains("Fractal CHoCh (ICT)")
+                BotStrategyChartFragment.activeStrategiesState = currentStrats
                 val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
                 botChartFrag?.updateActiveStrategies(currentStrats)
             } finally {
@@ -3948,6 +3949,7 @@ class MainActivity : AppCompatActivity(),
                 if (::chipStrategyTrend.isInitialized) chipStrategyTrend.isChecked = currentStrats.contains("Trend Following")
                 if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = currentStrats.contains("30m EMA High/Low")
                 if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = currentStrats.contains("Fractal CHoCh (ICT)")
+                BotStrategyChartFragment.activeStrategiesState = currentStrats
                 val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
                 botChartFrag?.updateActiveStrategies(currentStrats)
             } finally {
@@ -4139,6 +4141,7 @@ class MainActivity : AppCompatActivity(),
             if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = currentStrats.contains("30m EMA High/Low")
             if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = currentStrats.contains("Fractal CHoCh (ICT)")
 
+            BotStrategyChartFragment.activeStrategiesState = currentStrats
             val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
             botChartFrag?.updateActiveStrategies(currentStrats)
         } finally {
@@ -4226,6 +4229,7 @@ class MainActivity : AppCompatActivity(),
                 }
                 saveBotPrefs()
 
+                BotStrategyChartFragment.activeStrategiesState = selectedStrats
                 val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
                 botChartFrag?.updateActiveStrategies(selectedStrats)
 

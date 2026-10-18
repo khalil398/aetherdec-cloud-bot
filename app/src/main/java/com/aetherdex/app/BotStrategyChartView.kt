@@ -185,11 +185,12 @@ class BotStrategyChartView @JvmOverloads constructor(
     var activeStrategies: Set<String> = setOf("30m EMA High/Low")
         set(value) {
             field = value
-            invalidate()
+            postInvalidate()
         }
 
     fun setActiveStrategies(strategies: Collection<String>) {
         activeStrategies = strategies.toSet()
+        postInvalidate()
     }
 
     // Fractal CHoCh (ICT) Structure & Signals
@@ -368,9 +369,9 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     private val paintFractalHighDashed = Paint().apply {
         color = Color.parseColor("#FF5252")
-        strokeWidth = 2f
+        strokeWidth = 2.5f
         style = Paint.Style.STROKE
-        pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+        pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
         isAntiAlias = true
     }
 
@@ -383,9 +384,9 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     private val paintFractalLowDashed = Paint().apply {
         color = Color.parseColor("#00E676")
-        strokeWidth = 2f
+        strokeWidth = 2.5f
         style = Paint.Style.STROKE
-        pathEffect = DashPathEffect(floatArrayOf(10f, 8f), 0f)
+        pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
         isAntiAlias = true
     }
 
@@ -926,6 +927,16 @@ class BotStrategyChartView @JvmOverloads constructor(
         val renderStartIndex = max(0, (floatStartIndex - 1f).toInt())
         val renderEndIndex = min(totalCandles - 1, (floatEndIndex + 1f).toInt())
 
+        val showEmaStrategy = activeStrategies.any {
+            it.equals("30m EMA High/Low", ignoreCase = true) ||
+            it.contains("EMA High/Low", ignoreCase = true) ||
+            it.contains("EMA Channel", ignoreCase = true)
+        }
+        val showFractalChoch = activeStrategies.any {
+            it.contains("Fractal", ignoreCase = true) ||
+            it.contains("CHoCh", ignoreCase = true)
+        }
+
         // Compute Min & Max price in visible range
         var minPrice = Double.MAX_VALUE
         var maxPrice = Double.MIN_VALUE
@@ -935,14 +946,29 @@ class BotStrategyChartView @JvmOverloads constructor(
             if (c.low < minPrice) minPrice = c.low
             if (c.high > maxPrice) maxPrice = c.high
 
-            if (i < ema8LowSeries.size && ema8LowSeries[i] > 0 && ema8LowSeries[i] < minPrice) minPrice = ema8LowSeries[i]
-            if (i < ema8HighSeries.size && ema8HighSeries[i] > maxPrice) maxPrice = ema8HighSeries[i]
-            if (i < ema34LowSeries.size && ema34LowSeries[i] > 0 && ema34LowSeries[i] < minPrice) minPrice = ema34LowSeries[i]
-            if (i < ema34HighSeries.size && ema34HighSeries[i] > maxPrice) maxPrice = ema34HighSeries[i]
-            if (i < ema200Series.size && ema200Series[i] > 0 && ema200Series[i] < minPrice) minPrice = ema200Series[i]
-            if (i < ema200Series.size && ema200Series[i] > maxPrice) maxPrice = ema200Series[i]
-            if (i < ema233Series.size && ema233Series[i] > 0 && ema233Series[i] < minPrice) minPrice = ema233Series[i]
-            if (i < ema233Series.size && ema233Series[i] > maxPrice) maxPrice = ema233Series[i]
+            if (showEmaStrategy) {
+                if (i < ema8LowSeries.size && ema8LowSeries[i] > 0 && ema8LowSeries[i] < minPrice) minPrice = ema8LowSeries[i]
+                if (i < ema8HighSeries.size && ema8HighSeries[i] > maxPrice) maxPrice = ema8HighSeries[i]
+                if (i < ema34LowSeries.size && ema34LowSeries[i] > 0 && ema34LowSeries[i] < minPrice) minPrice = ema34LowSeries[i]
+                if (i < ema34HighSeries.size && ema34HighSeries[i] > maxPrice) maxPrice = ema34HighSeries[i]
+                if (i < ema200Series.size && ema200Series[i] > 0 && ema200Series[i] < minPrice) minPrice = ema200Series[i]
+                if (i < ema200Series.size && ema200Series[i] > maxPrice) maxPrice = ema200Series[i]
+                if (i < ema233Series.size && ema233Series[i] > 0 && ema233Series[i] < minPrice) minPrice = ema233Series[i]
+                if (i < ema233Series.size && ema233Series[i] > maxPrice) maxPrice = ema233Series[i]
+            }
+        }
+
+        if (showFractalChoch && candles.isNotEmpty()) {
+            val visibleLevels = fractalLevels.filter { lvl ->
+                lvl.startIndex <= calcEndIndex && (lvl.endIndex >= calcStartIndex || !lvl.isBroken)
+            }
+            val candleSpan = maxOf(maxPrice - minPrice, 1.0)
+            for (lvl in visibleLevels) {
+                if (lvl.price in (minPrice - candleSpan * 0.35)..(maxPrice + candleSpan * 0.35)) {
+                    if (lvl.price < minPrice) minPrice = lvl.price
+                    if (lvl.price > maxPrice) maxPrice = lvl.price
+                }
+            }
         }
 
         if (minPrice >= maxPrice) {
@@ -981,9 +1007,67 @@ class BotStrategyChartView @JvmOverloads constructor(
             canvas.drawText(pText, paddingLeftPx + chartWidth + 12f, py + 8f, paintTextSec)
         }
 
-        val showEmaStrategy = activeStrategies.isEmpty() ||
-                activeStrategies.any { it.contains("EMA", ignoreCase = true) || it.contains("Trend", ignoreCase = true) || it.contains("Grid", ignoreCase = true) || it.contains("DCA", ignoreCase = true) }
-        val showFractalChoch = activeStrategies.any { it.contains("Fractal", ignoreCase = true) || it.contains("CHoCh", ignoreCase = true) }
+        // ── Visual Strategy Mode Indicator Overlay (Top-Left of Chart) ──
+        var legendOffsetX = paddingLeftPx + 14f
+        val legendY = paddingTopPx + 22f
+
+        if (showEmaStrategy) {
+            val pillText = "30M EMA RIBBON"
+            val textWidth = paintStructureLabel.measureText(pillText)
+            val pillWidth = textWidth + 26f
+            val pillHeight = 22f
+            val pillRect = RectF(legendOffsetX, legendY - 14f, legendOffsetX + pillWidth, legendY - 14f + pillHeight)
+            val paintPillBg = Paint().apply {
+                color = Color.parseColor("#E6151921")
+                style = Paint.Style.FILL
+            }
+            val paintPillBorder = Paint().apply {
+                color = colorYellowChannel
+                style = Paint.Style.STROKE
+                strokeWidth = 1.5f
+            }
+            canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBg)
+            canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBorder)
+
+            val paintDot = Paint().apply { color = colorYellowChannel; style = Paint.Style.FILL; isAntiAlias = true }
+            canvas.drawCircle(legendOffsetX + 10f, legendY - 3f, 3.5f, paintDot)
+
+            val paintLbl = Paint(paintStructureLabel).apply {
+                textSize = 11f
+                color = Color.WHITE
+            }
+            canvas.drawText(pillText, legendOffsetX + 18f, legendY + 1f, paintLbl)
+            legendOffsetX += pillWidth + 8f
+        }
+
+        if (showFractalChoch) {
+            val pillText = "ICT FRACTAL CHOCH"
+            val textWidth = paintStructureLabel.measureText(pillText)
+            val pillWidth = textWidth + 26f
+            val pillHeight = 22f
+            val pillRect = RectF(legendOffsetX, legendY - 14f, legendOffsetX + pillWidth, legendY - 14f + pillHeight)
+            val paintPillBg = Paint().apply {
+                color = Color.parseColor("#E6151921")
+                style = Paint.Style.FILL
+            }
+            val paintPillBorder = Paint().apply {
+                color = Color.parseColor("#00E676")
+                style = Paint.Style.STROKE
+                strokeWidth = 1.5f
+            }
+            canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBg)
+            canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBorder)
+
+            val paintDot = Paint().apply { color = Color.parseColor("#00E676"); style = Paint.Style.FILL; isAntiAlias = true }
+            canvas.drawCircle(legendOffsetX + 10f, legendY - 3f, 3.5f, paintDot)
+
+            val paintLbl = Paint(paintStructureLabel).apply {
+                textSize = 11f
+                color = Color.WHITE
+            }
+            canvas.drawText(pillText, legendOffsetX + 18f, legendY + 1f, paintLbl)
+            legendOffsetX += pillWidth + 8f
+        }
 
         // Reset & Build Paths for EMA Channels & Trend Lines (if EMA strategy is active)
         if (showEmaStrategy) {
@@ -1118,11 +1202,7 @@ class BotStrategyChartView @JvmOverloads constructor(
 
                 if (endX <= startX) continue
 
-                val paintLine = if (lvl.isHigh) {
-                    if (lvl.isBroken) paintFractalHighDashed else paintFractalHigh
-                } else {
-                    if (lvl.isBroken) paintFractalLowDashed else paintFractalLow
-                }
+                val paintLine = if (lvl.isHigh) paintFractalHighDashed else paintFractalLowDashed
 
                 // 1. Horizontal structure line extending to termination candle
                 canvas.drawLine(startX, y, endX, y, paintLine)
@@ -1312,11 +1392,20 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val ohlcText = "O:${formatPriceValue(hc.open)} H:${formatPriceValue(hc.high)} L:${formatPriceValue(hc.low)} C:${formatPriceValue(hc.close)}"
                 canvas.drawText(ohlcText, boxX + 14f, boxY + 62f, paintTextSec)
 
-                val e8H = if (hoverIndex < ema8HighSeries.size) ema8HighSeries[hoverIndex] else 0.0
-                val e34H = if (hoverIndex < ema34HighSeries.size) ema34HighSeries[hoverIndex] else 0.0
-                val emaText = "EMA8:${formatPriceValue(e8H)} | EMA34:${formatPriceValue(e34H)}"
-                val paintEmaLegend = Paint(paintTextSec).apply { color = colorYellowChannel; textSize = 18f }
-                canvas.drawText(emaText, boxX + 14f, boxY + 90f, paintEmaLegend)
+                if (showEmaStrategy) {
+                    val e8H = if (hoverIndex < ema8HighSeries.size) ema8HighSeries[hoverIndex] else 0.0
+                    val e34H = if (hoverIndex < ema34HighSeries.size) ema34HighSeries[hoverIndex] else 0.0
+                    val emaText = "EMA8:${formatPriceValue(e8H)} | EMA34:${formatPriceValue(e34H)}"
+                    val paintEmaLegend = Paint(paintTextSec).apply { color = colorYellowChannel; textSize = 18f }
+                    canvas.drawText(emaText, boxX + 14f, boxY + 90f, paintEmaLegend)
+                } else if (showFractalChoch) {
+                    val activeFractals = fractalLevels.filter { !it.isBroken }
+                    val lastH = activeFractals.lastOrNull { it.isHigh }?.price
+                    val lastL = activeFractals.lastOrNull { !it.isHigh }?.price
+                    val chochText = "FH:${if (lastH != null) formatPriceValue(lastH) else "--"} | FL:${if (lastL != null) formatPriceValue(lastL) else "--"}"
+                    val paintChochLegend = Paint(paintTextSec).apply { color = Color.parseColor("#00E676"); textSize = 18f }
+                    canvas.drawText(chochText, boxX + 14f, boxY + 90f, paintChochLegend)
+                }
             }
         }
     }

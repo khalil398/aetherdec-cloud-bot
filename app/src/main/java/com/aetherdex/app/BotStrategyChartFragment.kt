@@ -30,6 +30,10 @@ import java.util.concurrent.TimeUnit
 
 class BotStrategyChartFragment : Fragment() {
 
+    companion object {
+        var activeStrategiesState: Set<String> = setOf("30m EMA High/Low")
+    }
+
     private val defaultSpotPairs = listOf(
         "BTC/USDC", "ETH/USDC", "SOL/USDC", "HYPE/USDC",
         "PURR/USDC", "HFUN/USDC", "LICK/USDC", "MANLET/USDC", "JEFF/USDC", "SIX/USDC",
@@ -1103,6 +1107,7 @@ class BotStrategyChartFragment : Fragment() {
     }
 
     fun updateActiveStrategies(strategies: Set<String>) {
+        activeStrategiesState = strategies
         if (::botChartView.isInitialized) {
             botChartView.setActiveStrategies(strategies)
         }
@@ -1116,26 +1121,36 @@ class BotStrategyChartFragment : Fragment() {
     private fun syncStrategiesFromPrefs() {
         if (!::botChartView.isInitialized) return
         try {
-            val prefs = requireContext().getSharedPreferences("aetherdex_prefs", Context.MODE_PRIVATE)
-            val isSpotMode = prefs.getBoolean("is_spot_mode", true)
+            val botPrefs = requireContext().getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
+            val spotPrefs = requireContext().getSharedPreferences("aetherdex_prefs", Context.MODE_PRIVATE)
+            val isSpotMode = spotPrefs.getBoolean("is_spot_mode", true)
             val savedSet = if (isSpotMode) {
-                prefs.getStringSet("spot_bot_strategies", null)
+                botPrefs.getStringSet("spot_bot_strategies", null)
             } else {
-                prefs.getStringSet("futures_bot_strategies", null)
+                botPrefs.getStringSet("futures_bot_strategies", null)
             }
             if (savedSet != null && savedSet.isNotEmpty()) {
+                activeStrategiesState = savedSet
                 botChartView.setActiveStrategies(savedSet)
             } else {
                 val singleStrat = if (isSpotMode) {
-                    prefs.getString("spot_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
+                    botPrefs.getString("spot_bot_strategy", null)
                 } else {
-                    prefs.getString("futures_bot_strategy", "30m EMA High/Low") ?: "30m EMA High/Low"
+                    botPrefs.getString("futures_bot_strategy", null)
                 }
-                val set = singleStrat.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
-                botChartView.setActiveStrategies(if (set.isNotEmpty()) set else setOf("30m EMA High/Low"))
+                if (singleStrat != null && singleStrat.isNotEmpty()) {
+                    val set = singleStrat.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                    if (set.isNotEmpty()) {
+                        activeStrategiesState = set
+                        botChartView.setActiveStrategies(set)
+                        return
+                    }
+                }
+                botChartView.setActiveStrategies(activeStrategiesState)
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            botChartView.setActiveStrategies(activeStrategiesState)
         }
     }
 
