@@ -284,6 +284,179 @@ async function evaluateEmaRibbonStrategy(coin = "BTC", candles) {
 }
 
 /**
+ * Evaluates ICT Market Structure (HH, HL, LH, LL) and Structural Ray Breakouts (CHoCh)
+ * - Fractal Highs & Lows: Williams/ICT 5-bar pivots
+ * - Classification:
+ *     HH: new Fractal High > previous Fractal High
+ *     HL: new Fractal Low > previous Fractal Low (Uptrend)
+ *     LH: new Fractal High < previous Fractal High
+ *     LL: new Fractal Low < previous Fractal Low (Downtrend)
+ * - Trend & Range Context:
+ *     Uptrend: continuous HH and HL formation
+ *     Downtrend: continuous LH and LL formation
+ *     Range / Sideways: overlapping swings without creating new highs or lows
+ * - Clean Ray Lines & Termination:
+ *     Active structural boundaries extend until broken by a valid body close
+ */
+async function evaluateIctMarketStructure(coin = "BTC", candles) {
+  if (!candles || candles.length < 15) {
+    console.warn(`[ICT Strategy] Insufficient 30m candles for ${coin} (${candles?.length || 0}/15 required)`);
+    return {
+      isUptrend: false,
+      isBuySignal: false,
+      isSellSignal: false,
+      marketState: "RANGE",
+      lastHighType: "",
+      lastLowType: "",
+      proximityScore: 0,
+      breakoutCandleOffset: -1,
+      exitCandleOffset: -1,
+      currentPositionState: "NEUTRAL",
+      metrics: {}
+    };
+  }
+
+  const n = candles.length;
+  const highPrices = candles.map(c => parseFloat(c.h));
+  const lowPrices = candles.map(c => parseFloat(c.l));
+  const closePrices = candles.map(c => parseFloat(c.c));
+
+  // 1. Identify 5-bar confirmed Fractal Highs and Fractal Lows
+  const allCandidates = [];
+  for (let i = 2; i < n - 2; i++) {
+    const isHigh = highPrices[i] >= highPrices[i - 2] &&
+                   highPrices[i] >= highPrices[i - 1] &&
+                   highPrices[i] >= highPrices[i + 1] &&
+                   highPrices[i] >= highPrices[i + 2];
+
+    const isLow = lowPrices[i] <= lowPrices[i - 2] &&
+                  lowPrices[i] <= lowPrices[i - 1] &&
+                  lowPrices[i] <= lowPrices[i + 1] &&
+                  lowPrices[i] <= lowPrices[i + 2];
+
+    if (isHigh) {
+      let breakIdx = -1;
+      for (let k = i + 1; k < n; k++) {
+        // Valid body close breaks the level
+        if (closePrices[k] > highPrices[i]) {
+          breakIdx = k;
+          break;
+        }
+      }
+      allCandidates.push({
+        isHigh: true,
+        price: highPrices[i],
+        startIndex: i,
+        breakIndex: breakIdx,
+        isBroken: breakIdx !== -1,
+        endIndex: breakIdx !== -1 ? breakIdx : (n - 1)
+      });
+    }
+
+    if (isLow) {
+      let breakIdx = -1;
+      for (let k = i + 1; k < n; k++) {
+        // Valid body close breaks the level
+        if (closePrices[k] < lowPrices[i]) {
+          breakIdx = k;
+          break;
+        }
+      }
+      allCandidates.push({
+        isHigh: false,
+        price: lowPrices[i],
+        startIndex: i,
+        breakIndex: breakIdx,
+        isBroken: breakIdx !== -1,
+        endIndex: breakIdx !== -1 ? breakIdx : (n - 1)
+      });
+    }
+  }
+
+  // 2. Classify Swings into HH, HL, LH, LL
+  const highCandidates = allCandidates.filter(c => c.isHigh).sort((a, b) => a.startIndex - b.startIndex);
+  let prevHigh = null;
+  highCandidates.forEach(h => {
+    if (prevHigh === null) {
+      h.swingType = "HH";
+    } else if (h.price > prevHigh) {
+      h.swingType = "HH"; // Higher High
+    } else {
+      h.swingType = "LH"; // Lower High
+    }
+    prevHigh = h.price;
+  });
+
+  const lowCandidates = allCandidates.filter(c => !c.isHigh).sort((a, b) => a.startIndex - b.startIndex);
+  let prevLow = null;
+  lowCandidates.forEach(l => {
+    if (prevLow === null) {
+      l.swingType = "LL";
+    } else if (l.price > prevLow) {
+      l.swingType = "HL"; // Higher Low
+    } else {
+      l.swingType = "LL"; // Lower Low
+    }
+    prevLow = l.price;
+  });
+
+  // 3. Trend & Range Contextual Rules
+  const lastHigh = highCandidates.length > 0 ? highCandidates[highCandidates.length - 1] : null;
+  const lastLow = lowCandidates.length > 0 ? lowCandidates[lowCandidates.length - 1] : null;
+
+  let marketState = "RANGE"; // "UPTREND", "DOWNTREND", "RANGE"
+  if (lastHigh && lastLow) {
+    if (lastHigh.swingType === "HH" && lastLow.swingType === "HL") {
+      marketState = "UPTREND"; // Continuous HH and HL formation
+    } else if (lastHigh.swingType === "LH" && lastLow.swingType === "LL") {
+      marketState = "DOWNTREND"; // Continuous LH and LL formation
+    } else {
+      marketState = "RANGE"; // Swings overlap without creating new highs or lows
+    }
+  }
+
+  // Active unbroken structural boundary levels
+  const activeHighs = highCandidates.filter(h => !h.isBroken);
+  const activeLows = lowCandidates.filter(l => !l.isBroken);
+  const lastActiveHigh = activeHighs.length > 0 ? activeHighs[activeHighs.length - 1] : null;
+  const lastActiveLow = activeLows.length > 0 ? activeLows[activeLows.length - 1] : null;
+
+  // Break of structure / body close breakout confirmation
+  const isBreakoutHigh = lastHigh && lastHigh.isBroken && lastHigh.breakIndex >= n - 2;
+  const isBreakdownLow = lastLow && lastLow.isBroken && lastLow.breakIndex >= n - 2;
+
+  const isBuySignal = marketState === "UPTREND" || isBreakoutHigh;
+  const isSellSignal = marketState === "DOWNTREND" || isBreakdownLow;
+
+  const proximityScore = marketState === "UPTREND" ? 100 : (marketState === "DOWNTREND" ? 0 : 50);
+
+  const metrics = {
+    marketState,
+    lastHighType: lastHigh ? lastHigh.swingType : "",
+    lastHighPrice: lastHigh ? lastHigh.price : 0,
+    lastLowType: lastLow ? lastLow.swingType : "",
+    lastLowPrice: lastLow ? lastLow.price : 0,
+    activeHighPrice: lastActiveHigh ? lastActiveHigh.price : 0,
+    activeLowPrice: lastActiveLow ? lastActiveLow.price : 0,
+    proximityScore
+  };
+
+  return {
+    isUptrend: marketState === "UPTREND",
+    isBuySignal,
+    isSellSignal,
+    marketState,
+    lastHighType: lastHigh ? lastHigh.swingType : "",
+    lastLowType: lastLow ? lastLow.swingType : "",
+    proximityScore,
+    breakoutCandleOffset: isBreakoutHigh ? 0 : -1,
+    exitCandleOffset: isBreakdownLow ? 0 : -1,
+    currentPositionState: isBuySignal ? "IN_BUY" : (isSellSignal ? "IN_SELL" : "NEUTRAL"),
+    metrics
+  };
+}
+
+/**
  * Executes a 24/7 algorithmic strategy tick cycle for a specific user.
  */
 async function executeBotTick(uid, db, config, botSecret) {
@@ -526,7 +699,12 @@ async function executeBotTick(uid, db, config, botSecret) {
             const candles30m = await fetchCandleSnapshot(querySymbol, "30m", 1000);
             if (!candles30m || candles30m.length < 35) return null;
 
-            const signalResult = await evaluateEmaRibbonStrategy(cleanCoin, candles30m);
+            const isChochActive = futuresStrategyList.some(s => 
+              s.toLowerCase().includes("choch") || s.toLowerCase().includes("fractal") || s.toLowerCase().includes("ict")
+            );
+            const signalResult = isChochActive
+              ? await evaluateIctMarketStructure(cleanCoin, candles30m)
+              : await evaluateEmaRibbonStrategy(cleanCoin, candles30m);
             return { coin: cleanCoin, coinPrice, market, ...signalResult };
           } catch (e) {
             console.error(`[${uid}] Error evaluating perp ${coin}:`, e.message);
@@ -846,7 +1024,12 @@ async function executeBotTick(uid, db, config, botSecret) {
           const candles30m = await fetchCandleSnapshot(querySymbol, "30m", 1000);
           if (!candles30m || candles30m.length < 35) return null;
 
-          const signalResult = await evaluateEmaRibbonStrategy(coin, candles30m);
+          const isChochActive = spotStrategyList.some(s => 
+            s.toLowerCase().includes("choch") || s.toLowerCase().includes("fractal") || s.toLowerCase().includes("ict")
+          );
+          const signalResult = isChochActive
+            ? await evaluateIctMarketStructure(coin, candles30m)
+            : await evaluateEmaRibbonStrategy(coin, candles30m);
           return { coin, coinPrice, market, ...signalResult };
         } catch (e) {
           console.error(`[${uid}] Error evaluating ${coin}:`, e.message);
@@ -1095,6 +1278,7 @@ async function executeBotTick(uid, db, config, botSecret) {
 module.exports = {
   executeBotTick,
   evaluateEmaRibbonStrategy,
+  evaluateIctMarketStructure,
   calculateBreakoutProximity,
   calculateEMA,
   formatSizeForHyperliquid,
