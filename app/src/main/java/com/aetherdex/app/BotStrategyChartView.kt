@@ -727,123 +727,77 @@ class BotStrategyChartView @JvmOverloads constructor(
         val levels = mutableListOf<FractalLevel>()
         val chochArr = IntArray(n)
 
-        // Internal helper data structure for candidate 5-bar swings
-        data class RawSwing(val isHigh: Boolean, val price: Double, val index: Int)
-        val allSwings = mutableListOf<RawSwing>()
+        // Track active Major Structural boundaries
+        var majorHigh: FractalLevel? = null
+        var majorLow: FractalLevel? = null
 
-        // Track active structural range boundary lines
-        var activeHigh: FractalLevel? = null
-        var activeLow: FractalLevel? = null
+        // Track pending impulse breakout state for establishing new range base/ceiling
+        var breakoutBarBull: Int = -1
+        var breakoutBarBear: Int = -1
 
         for (currBar in 0 until n) {
             val c = candles[currBar]
 
-            // 1. Check for Definitive Breakout Close of Active Boundaries
-            // Rule: "The line must NOT prematurely terminate at minor internal pullbacks or wicks inside the range.
-            //        It must persist uninterrupted until a candle actually breaks and closes beyond that boundary level."
-            // Rule: "Only terminate or re-anchor the structural boundary line at the exact candle bar where a definitive
-            //        breakout close occurs, shifting market state out of the consolidation range."
+            // 1. Persistent Ray Line Extension Until Valid Body Break
+            // Rule: "Every active Major Fractal High/Low line must extend continuously across candles to the right.
+            //        Do NOT terminate or hide the structural line at minor wicks or inner pullbacks.
+            //        The line must remain active and visible until a candle bar achieves a definitive body close beyond that exact level."
 
-            // Bullish Breakout Close above active Range High
-            if (activeHigh != null && currBar > activeHigh.startIndex) {
-                if (c.close > activeHigh.price) {
-                    // Valid breakout close confirmed at currBar
-                    activeHigh.isBroken = true
-                    activeHigh.breakIndex = currBar
-                    activeHigh.endIndex = currBar
-                    activeHigh.isChoch = true
-                    chochArr[currBar] = 1 // Bullish CHoCh on definitive break of Fractal High
+            // Check definitive body close break of Major High
+            if (majorHigh != null && currBar > majorHigh.startIndex) {
+                if (c.close > majorHigh.price) {
+                    // Valid body close breakout!
+                    majorHigh.isBroken = true
+                    majorHigh.breakIndex = currBar
+                    majorHigh.endIndex = currBar
+                    majorHigh.isChoch = true
+                    chochArr[currBar] = 1 // Bullish CHoCh on definitive body break
+                    breakoutBarBull = currBar
 
-                    // Re-anchor support boundary: find the most recent swing low prior to the breakout (launchpad higher low)
-                    val higherLowSwing = allSwings.filter { !it.isHigh && it.index > activeHigh.startIndex && it.index < currBar }
-                        .maxByOrNull { it.index }
-                    if (higherLowSwing != null && higherLowSwing.price > (activeLow?.price ?: Double.MIN_VALUE)) {
-                        activeLow?.let {
-                            it.isBroken = true
-                            it.breakIndex = currBar
-                            it.endIndex = currBar
-                        }
-                        val newLowLvl = FractalLevel(
-                            isHigh = false,
-                            price = higherLowSwing.price,
-                            startIndex = higherLowSwing.index,
-                            endIndex = n - 1,
-                            isBroken = false,
-                            breakIndex = -1,
-                            isChoch = false
-                        )
-                        activeLow = newLowLvl
-                        levels.add(newLowLvl)
-                    }
-
-                    // Shift market state out of consolidation: high boundary is broken and waiting for next expansion peak
-                    activeHigh = null
+                    // Market shifts out of consolidation into upward impulse.
+                    // The old majorHigh is broken and terminates at currBar.
+                    majorHigh = null
                 }
             }
 
-            // Bearish Breakdown Close below active Range Low
-            if (activeLow != null && currBar > activeLow.startIndex) {
-                if (c.close < activeLow.price) {
-                    // Valid breakdown close confirmed at currBar
-                    activeLow.isBroken = true
-                    activeLow.breakIndex = currBar
-                    activeLow.endIndex = currBar
-                    activeLow.isChoch = true
-                    chochArr[currBar] = -1 // Bearish CHoCh on definitive break of Fractal Low
+            // Check definitive body close break of Major Low
+            if (majorLow != null && currBar > majorLow.startIndex) {
+                if (c.close < majorLow.price) {
+                    // Valid body close breakdown!
+                    majorLow.isBroken = true
+                    majorLow.breakIndex = currBar
+                    majorLow.endIndex = currBar
+                    majorLow.isChoch = true
+                    chochArr[currBar] = -1 // Bearish CHoCh on definitive body break
+                    breakoutBarBear = currBar
 
-                    // Re-anchor resistance boundary: find the most recent swing high prior to breakdown (lower high)
-                    val lowerHighSwing = allSwings.filter { it.isHigh && it.index > activeLow.startIndex && it.index < currBar }
-                        .maxByOrNull { it.index }
-                    if (lowerHighSwing != null && lowerHighSwing.price < (activeHigh?.price ?: Double.MAX_VALUE)) {
-                        activeHigh?.let {
-                            it.isBroken = true
-                            it.breakIndex = currBar
-                            it.endIndex = currBar
-                        }
-                        val newHighLvl = FractalLevel(
-                            isHigh = true,
-                            price = lowerHighSwing.price,
-                            startIndex = lowerHighSwing.index,
-                            endIndex = n - 1,
-                            isBroken = false,
-                            breakIndex = -1,
-                            isChoch = false
-                        )
-                        activeHigh = newHighLvl
-                        levels.add(newHighLvl)
-                    }
-
-                    // Shift market state out of consolidation: low boundary is broken and waiting for next expansion trough
-                    activeLow = null
+                    // Market shifts out of consolidation into downward impulse.
+                    // The old majorLow is broken and terminates at currBar.
+                    majorLow = null
                 }
             }
 
-            // 2. Identify newly confirmed 5-bar fractal at swingIdx = currBar - 2
+            // 2. Identify candidate 5-bar swings confirmed at swingIdx = currBar - 2
             val swingIdx = currBar - 2
             if (swingIdx in 2..(n - 3)) {
                 val sc = candles[swingIdx]
-                val isSwingHigh = sc.high >= candles[swingIdx - 1].high && sc.high >= candles[swingIdx - 2].high &&
-                        sc.high >= candles[swingIdx + 1].high && sc.high >= candles[swingIdx + 2].high
-                val isSwingLow = sc.low <= candles[swingIdx - 1].low && sc.low <= candles[swingIdx - 2].low &&
-                        sc.low <= candles[swingIdx + 1].low && sc.low <= candles[swingIdx + 2].low
+                val isSwingHigh = sc.high >= candles[swingIdx - 1].high && sc.high >= candles[swingIdx + 1].high &&
+                        sc.high >= candles[swingIdx - 2].high && sc.high >= candles[swingIdx + 2].high
+                val isSwingLow = sc.low <= candles[swingIdx - 1].low && sc.low <= candles[swingIdx + 1].low &&
+                        sc.low <= candles[swingIdx - 2].low && sc.low <= candles[swingIdx + 2].low
+
+                // 3. Major vs Minor Fractal Filtering
+                // Rule: "Only draw horizontal dashed ray lines for Major Structural Highs and Lows
+                //        (such as the key base low line in the chart reference).
+                //        Suppress minor inner noise lines formed strictly within an active range."
 
                 if (isSwingHigh) {
-                    allSwings.add(RawSwing(isHigh = true, price = sc.high, index = swingIdx))
-                }
-                if (isSwingLow) {
-                    allSwings.add(RawSwing(isHigh = false, price = sc.low, index = swingIdx))
-                }
+                    val currentRangeHigh = majorHigh?.price
+                    val currentRangeLow = majorLow?.price
 
-                // Rule: "Fractal Range Suppression (No Inner Lines in Consolidation):
-                // Once a primary Fractal High and Fractal Low define a structural range,
-                // suppress the creation of new inner fractal high/low lines while price oscillates inside this range.
-                // Do not plot intermediate or noisy internal swing lines until price achieves a valid breakout close
-                // outside the established range boundaries."
-
-                if (isSwingHigh) {
-                    if (activeHigh == null) {
-                        // Establish primary Fractal High
-                        val newLvl = FractalLevel(
+                    if (currentRangeHigh == null) {
+                        // Establish new Major High (e.g. after bullish expansion or at chart start)
+                        val newHigh = FractalLevel(
                             isHigh = true,
                             price = sc.high,
                             startIndex = swingIdx,
@@ -852,18 +806,33 @@ class BotStrategyChartView @JvmOverloads constructor(
                             breakIndex = -1,
                             isChoch = false
                         )
-                        activeHigh = newLvl
-                        levels.add(newLvl)
+                        majorHigh = newHigh
+                        levels.add(newHigh)
+                    } else if (currentRangeLow != null && sc.high <= currentRangeHigh && sc.high >= currentRangeLow) {
+                        // MINOR INTERNAL SWING HIGH: formed strictly inside the active range. SUPPRESS!
+                    } else if (sc.high > currentRangeHigh) {
+                        // Higher swing high that formed after breakout
+                        val newHigh = FractalLevel(
+                            isHigh = true,
+                            price = sc.high,
+                            startIndex = swingIdx,
+                            endIndex = n - 1,
+                            isBroken = false,
+                            breakIndex = -1,
+                            isChoch = false
+                        )
+                        majorHigh = newHigh
+                        levels.add(newHigh)
                     }
-                    // Else: activeHigh already exists.
-                    // If price oscillates inside the range (sc.high <= activeHigh.price), suppress!
-                    // If wick sweep occurred without close breakout, the primary ray line persists uninterrupted!
                 }
 
                 if (isSwingLow) {
-                    if (activeLow == null) {
-                        // Establish primary Fractal Low
-                        val newLvl = FractalLevel(
+                    val currentRangeHigh = majorHigh?.price
+                    val currentRangeLow = majorLow?.price
+
+                    if (currentRangeLow == null) {
+                        // Establish new Major Low (e.g. after bearish expansion or at chart start)
+                        val newLow = FractalLevel(
                             isHigh = false,
                             price = sc.low,
                             startIndex = swingIdx,
@@ -872,12 +841,71 @@ class BotStrategyChartView @JvmOverloads constructor(
                             breakIndex = -1,
                             isChoch = false
                         )
-                        activeLow = newLvl
-                        levels.add(newLvl)
+                        majorLow = newLow
+                        levels.add(newLow)
+                    } else if (currentRangeHigh != null && sc.low >= currentRangeLow && sc.low <= currentRangeHigh) {
+                        // Check if this is the Key Base Low right after a bullish impulse breakout:
+                        // If price broke out upwards (breakoutBarBull >= 0), the first swing low formed after
+                        // the breakout candle is the Major Base Low of the new consolidation range!
+                        if (breakoutBarBull >= 0 && swingIdx >= breakoutBarBull) {
+                            // Terminate the old majorLow from the previous lower price regime at the breakout bar
+                            majorLow.isBroken = true
+                            majorLow.breakIndex = breakoutBarBull
+                            majorLow.endIndex = breakoutBarBull
+                            majorLow.isChoch = true
+
+                            // Anchor the new Key Base Low
+                            val newLow = FractalLevel(
+                                isHigh = false,
+                                price = sc.low,
+                                startIndex = swingIdx,
+                                endIndex = n - 1,
+                                isBroken = false,
+                                breakIndex = -1,
+                                isChoch = false
+                            )
+                            majorLow = newLow
+                            levels.add(newLow)
+                            breakoutBarBull = -1 // Consumed! New Major Range is established
+                        } else {
+                            // MINOR INTERNAL SWING LOW: formed strictly inside the active range. SUPPRESS!
+                        }
+                    } else if (sc.low < currentRangeLow) {
+                        // Lower swing low that formed after breakdown
+                        val newLow = FractalLevel(
+                            isHigh = false,
+                            price = sc.low,
+                            startIndex = swingIdx,
+                            endIndex = n - 1,
+                            isBroken = false,
+                            breakIndex = -1,
+                            isChoch = false
+                        )
+                        majorLow = newLow
+                        levels.add(newLow)
                     }
-                    // Else: activeLow already exists.
-                    // If price oscillates inside the range (sc.low >= activeLow.price), suppress!
-                    // If wick sweep occurred without close breakdown, the primary ray line persists uninterrupted!
+                }
+
+                // Symmetrical check for Major Ceiling High right after a bearish impulse breakdown:
+                if (isSwingHigh && majorLow != null && breakoutBarBear >= 0 && swingIdx >= breakoutBarBear) {
+                    majorHigh?.let {
+                        it.isBroken = true
+                        it.breakIndex = breakoutBarBear
+                        it.endIndex = breakoutBarBear
+                        it.isChoch = true
+                    }
+                    val newHigh = FractalLevel(
+                        isHigh = true,
+                        price = sc.high,
+                        startIndex = swingIdx,
+                        endIndex = n - 1,
+                        isBroken = false,
+                        breakIndex = -1,
+                        isChoch = false
+                    )
+                    majorHigh = newHigh
+                    levels.add(newHigh)
+                    breakoutBarBear = -1 // Consumed!
                 }
             }
         }
