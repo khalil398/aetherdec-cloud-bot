@@ -457,6 +457,146 @@ async function evaluateIctMarketStructure(coin = "BTC", candles) {
 }
 
 /**
+ * Evaluates 5-Minute Dual-Ribbon Strategy (Combined Ribbon):
+ * 
+ * 1. Ribbon 1 (134 EMA Green Band):
+ *    - EMA 134 High: ta.ema(high, 134)
+ *    - EMA 134 Low:  ta.ema(low, 134)
+ *    - Thick green structural boundary band (#00E676)
+ * 
+ * 2. Ribbon 2 (Krypt Fast EMAs):
+ *    - 8 EMAs on close: lengths [20, 25, 30, 35, 40, 45, 50, 55]
+ *    - Fastest MA-1 (length 20, color #F5EB5D) acts as primary yellow reference line
+ *    - Colors: #F5EB5D (20), #F5B771 (25), #F5B056 (30), #F57B4E (35), #F56D58 (40), #F57D51 (45), #F55151 (50), #AA2707 (55)
+ * 
+ * 3. Signal & State Logic:
+ *    - BUY Signal (▲ BUY):
+ *      MA-1 (length 20) and Krypt Ribbon break strictly ABOVE the 134 EMA High Band (ta.ema(high, 134)).
+ *    - SELL Signal (▼ SELL):
+ *      MA-1 (length 20) breaks strictly BELOW the 134 EMA Low Band (ta.ema(low, 134)).
+ *    - State persistence: NEUTRAL, IN_BUY, IN_SELL with clean non-churning transitions.
+ *    - Proximity Score (0 - 100%):
+ *      Tracks progression towards and above the 134 Green Band for target scanner radar.
+ */
+async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
+  if (!candles || candles.length < 136) {
+    console.warn(`[Dual-Ribbon Strategy] Insufficient 5m candles for ${coin} (${candles?.length || 0}/136 required)`);
+    return {
+      isUptrend: false,
+      isBuySignal: false,
+      isSellSignal: false,
+      breakoutCandleOffset: -1,
+      exitCandleOffset: -1,
+      proximityScore: 0,
+      currentPositionState: "NEUTRAL",
+      metrics: {}
+    };
+  }
+
+  const n = candles.length;
+  const highPrices = candles.map(c => parseFloat(c.h));
+  const lowPrices = candles.map(c => parseFloat(c.l));
+  const closePrices = candles.map(c => parseFloat(c.c));
+
+  // Ribbon 1: 134 EMA High & Low Bands
+  const r1Ema134High = calculateEMA(highPrices, 134);
+  const r1Ema134Low = calculateEMA(lowPrices, 134);
+
+  // Ribbon 2: Krypt Fast EMAs (20, 25, 30, 35, 40, 45, 50, 55)
+  const KRYPT_LENGTHS = [20, 25, 30, 35, 40, 45, 50, 55];
+  const kryptEmaSeries = KRYPT_LENGTHS.map(len => calculateEMA(closePrices, len));
+
+  const ma1_20 = kryptEmaSeries[0]; // Primary yellow reference line (length 20)
+  const ma8_55 = kryptEmaSeries[7]; // Slowest Krypt line (length 55)
+
+  let currentPositionState = "NEUTRAL";
+  let lastBuySignalIdx = -1;
+  let lastSellSignalIdx = -1;
+
+  for (let i = 0; i < n; i++) {
+    const e134H = r1Ema134High[i];
+    const e134L = r1Ema134Low[i];
+    const e20 = ma1_20[i];
+    const c = closePrices[i];
+
+    // Bullish Expansion: MA-1 (20) & candle above Ribbon 1 (134 High)
+    const isBullishBreakout = (e20 > e134H && c > e134H);
+    // Bearish Breakdown: MA-1 (20) & candle below Ribbon 1 (134 Low)
+    const isBearishBreakdown = (e20 < e134L && c < e134L);
+
+    if (isBullishBreakout) {
+      if (currentPositionState !== "IN_BUY") {
+        currentPositionState = "IN_BUY";
+        lastBuySignalIdx = i;
+      }
+    } else if (isBearishBreakdown) {
+      if (currentPositionState !== "IN_SELL") {
+        currentPositionState = "IN_SELL";
+        lastSellSignalIdx = i;
+      }
+    }
+  }
+
+  const idx = n - 1;
+  const currentE134H = r1Ema134High[idx];
+  const currentE134L = r1Ema134Low[idx];
+  const currentE20 = ma1_20[idx];
+  const currentE55 = ma8_55[idx];
+
+  const isBuySignal = (currentPositionState === "IN_BUY");
+  const isSellSignal = (currentPositionState === "IN_SELL");
+  const isUptrend = (currentE20 > currentE134H && currentE20 > currentE55);
+
+  const breakoutCandleOffset = lastBuySignalIdx >= 0 ? (idx - lastBuySignalIdx) : -1;
+  const exitCandleOffset = lastSellSignalIdx >= 0 ? (idx - lastSellSignalIdx) : -1;
+
+  // Proximity Calculation (0 - 100%)
+  let proximityScore = 0;
+  if (isBuySignal || currentE20 >= currentE134H) {
+    proximityScore = 100;
+  } else if (currentE20 <= currentE134L) {
+    const bandHeight = Math.max(currentE134H - currentE134L, 1e-6);
+    const distBelow = currentE134L - currentE20;
+    const prevE20 = idx >= 1 ? ma1_20[idx - 1] : currentE20;
+    const isMovingUp = currentE20 > prevE20;
+    if (distBelow >= bandHeight * 2 || !isMovingUp) {
+      proximityScore = Math.max(0, Math.min(25, Math.floor((bandHeight / (bandHeight + distBelow)) * 25)));
+    } else {
+      const prog = ((bandHeight * 2 - distBelow) / (bandHeight * 2)) * 50;
+      proximityScore = Math.max(10, Math.min(49, Math.floor(prog)));
+    }
+  } else {
+    // Inside 134 Green Band [r1Ema134Low, r1Ema134High]
+    const bandHeight = Math.max(currentE134H - currentE134L, 1e-6);
+    const insideProg = (currentE20 - currentE134L) / bandHeight;
+    proximityScore = Math.max(50, Math.min(99, Math.floor(50 + insideProg * 49)));
+  }
+
+  const metrics = {
+    r1Ema134High: currentE134H,
+    r1Ema134Low: currentE134L,
+    kryptMa1_20: currentE20,
+    kryptMa8_55: currentE55,
+    isUptrend,
+    currentPositionState,
+    breakoutCandleOffset,
+    exitCandleOffset,
+    proximityScore
+  };
+
+  return {
+    isUptrend,
+    isBuySignal,
+    isSellSignal,
+    breakoutCandleOffset,
+    exitCandleOffset,
+    proximityScore,
+    currentPositionState,
+    metrics
+  };
+}
+
+/**
  * Executes a 24/7 algorithmic strategy tick cycle for a specific user.
  */
 async function executeBotTick(uid, db, config, botSecret) {
@@ -672,14 +812,27 @@ async function executeBotTick(uid, db, config, botSecret) {
       ...perpAvailableCoins
     ])).filter(Boolean);
 
-    const isEmaStrategyActive = futuresStrategyList.some(s => 
-      s.includes("EMA") || s.includes("Trend") || s.includes("CHoCh") || s.includes("DCA") || s.includes("Grid")
+    const isDualRibbonActive = futuresStrategyList.some(s =>
+      s.toLowerCase().includes("dual-ribbon") ||
+      s.toLowerCase().includes("combined ribbon") ||
+      s.toLowerCase().includes("krypt") ||
+      s.toLowerCase().includes("5m ribbon") ||
+      s.toLowerCase().includes("dual ribbon")
+    );
+    const isChochActive = !isDualRibbonActive && futuresStrategyList.some(s => 
+      s.toLowerCase().includes("choch") || s.toLowerCase().includes("fractal") || s.toLowerCase().includes("ict")
+    );
+    const futuresInterval = isDualRibbonActive ? "5m" : "30m";
+    const minCandlesReq = isDualRibbonActive ? 136 : (isChochActive ? 15 : 35);
+
+    const isEmaStrategyActive = isDualRibbonActive || isChochActive || futuresStrategyList.some(s => 
+      s.includes("EMA") || s.includes("Trend") || s.includes("DCA") || s.includes("Grid")
     ) || futuresStrategyList.length === 0;
 
     let validResults = [];
 
     if (isEmaStrategyActive) {
-      console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Perpetual Futures pairs (Target: ${targetCoin}, Authorized: ${enabledAssets.length}, Margin: ${marginMode})...`);
+      console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Perpetual Futures pairs on ${futuresInterval} (Strategy: ${futuresStrategyList.join("+")}, Target: ${targetCoin}, Authorized: ${enabledAssets.length}, Margin: ${marginMode})...`);
 
       const scanResults = await Promise.all(
         scanQueue.map(async (coin) => {
@@ -695,16 +848,15 @@ async function executeBotTick(uid, db, config, botSecret) {
             const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || 0);
             if (coinPrice <= 0) return null;
 
-            // Strategy execution engine is strictly locked to 30m candles
-            const candles30m = await fetchCandleSnapshot(querySymbol, "30m", 1000);
-            if (!candles30m || candles30m.length < 35) return null;
+            // Strategy execution engine queries targeted candle timeframe (5m for Dual-Ribbon, 30m for EMA/ICT)
+            const candles = await fetchCandleSnapshot(querySymbol, futuresInterval, 1000);
+            if (!candles || candles.length < minCandlesReq) return null;
 
-            const isChochActive = futuresStrategyList.some(s => 
-              s.toLowerCase().includes("choch") || s.toLowerCase().includes("fractal") || s.toLowerCase().includes("ict")
-            );
-            const signalResult = isChochActive
-              ? await evaluateIctMarketStructure(cleanCoin, candles30m)
-              : await evaluateEmaRibbonStrategy(cleanCoin, candles30m);
+            const signalResult = isDualRibbonActive
+              ? await evaluateDualRibbonStrategy(cleanCoin, candles)
+              : (isChochActive
+                ? await evaluateIctMarketStructure(cleanCoin, candles)
+                : await evaluateEmaRibbonStrategy(cleanCoin, candles));
             return { coin: cleanCoin, coinPrice, market, ...signalResult };
           } catch (e) {
             console.error(`[${uid}] Error evaluating perp ${coin}:`, e.message);
@@ -965,7 +1117,7 @@ async function executeBotTick(uid, db, config, botSecret) {
       active_trades: activeTradesCount,
       strategy: futuresStrategyList.join(","),
       strategies: futuresStrategyList,
-      timeframe: "30m",
+      timeframe: futuresInterval,
       market_type: "PERP",
       margin_mode: marginMode,
       leverage: configuredLeverage,
@@ -1005,14 +1157,27 @@ async function executeBotTick(uid, db, config, botSecret) {
     ]));
 
     const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
-    const isEmaStrategyActive = spotStrategyList.some(s => 
-      s.includes("EMA") || s.includes("Trend") || s.includes("CHoCh") || s.includes("DCA") || s.includes("Grid")
+    const isDualRibbonActive = spotStrategyList.some(s =>
+      s.toLowerCase().includes("dual-ribbon") ||
+      s.toLowerCase().includes("combined ribbon") ||
+      s.toLowerCase().includes("krypt") ||
+      s.toLowerCase().includes("5m ribbon") ||
+      s.toLowerCase().includes("dual ribbon")
+    );
+    const isChochActive = !isDualRibbonActive && spotStrategyList.some(s => 
+      s.toLowerCase().includes("choch") || s.toLowerCase().includes("fractal") || s.toLowerCase().includes("ict")
+    );
+    const spotInterval = isDualRibbonActive ? "5m" : "30m";
+    const minCandlesReq = isDualRibbonActive ? 136 : (isChochActive ? 15 : 35);
+
+    const isEmaStrategyActive = isDualRibbonActive || isChochActive || spotStrategyList.some(s => 
+      s.includes("EMA") || s.includes("Trend") || s.includes("DCA") || s.includes("Grid")
     ) || spotStrategyList.length === 0;
 
     if (isEmaStrategyActive) {
-      console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Spot pairs (Target: ${targetCoin}, Authorized: ${enabledAssets.length})...`);
+      console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Spot pairs on ${spotInterval} (Strategy: ${spotStrategyList.join("+")}, Target: ${targetCoin}, Authorized: ${enabledAssets.length})...`);
 
-    // Simultaneous Parallel 30m Candle Snapshot Queries across spot pairs
+    // Parallel Candle Snapshot Queries across spot pairs
     const scanResults = await Promise.all(
       scanQueue.map(async (coin) => {
         try {
@@ -1021,15 +1186,14 @@ async function executeBotTick(uid, db, config, botSecret) {
           const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || allMids[coin] || 0);
           if (coinPrice <= 0) return null;
 
-          const candles30m = await fetchCandleSnapshot(querySymbol, "30m", 1000);
-          if (!candles30m || candles30m.length < 35) return null;
+          const candles = await fetchCandleSnapshot(querySymbol, spotInterval, 1000);
+          if (!candles || candles.length < minCandlesReq) return null;
 
-          const isChochActive = spotStrategyList.some(s => 
-            s.toLowerCase().includes("choch") || s.toLowerCase().includes("fractal") || s.toLowerCase().includes("ict")
-          );
-          const signalResult = isChochActive
-            ? await evaluateIctMarketStructure(coin, candles30m)
-            : await evaluateEmaRibbonStrategy(coin, candles30m);
+          const signalResult = isDualRibbonActive
+            ? await evaluateDualRibbonStrategy(coin, candles)
+            : (isChochActive
+              ? await evaluateIctMarketStructure(coin, candles)
+              : await evaluateEmaRibbonStrategy(coin, candles));
           return { coin, coinPrice, market, ...signalResult };
         } catch (e) {
           console.error(`[${uid}] Error evaluating ${coin}:`, e.message);
@@ -1262,7 +1426,7 @@ async function executeBotTick(uid, db, config, botSecret) {
     active_trades: activeTradesCount,
     strategy: spotStrategyList.join(","),
     strategies: spotStrategyList,
-    timeframe: "30m",
+    timeframe: spotInterval,
     market_type: "SPOT",
     is_spot_bot_active: isSpotActive,
     is_futures_bot_active: isFuturesActive,
@@ -1279,6 +1443,7 @@ module.exports = {
   executeBotTick,
   evaluateEmaRibbonStrategy,
   evaluateIctMarketStructure,
+  evaluateDualRibbonStrategy,
   calculateBreakoutProximity,
   calculateEMA,
   formatSizeForHyperliquid,
