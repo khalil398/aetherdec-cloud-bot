@@ -772,6 +772,9 @@ class BotStrategyChartView @JvmOverloads constructor(
 
         var ribbonSetupState = 0 // 0 = NEUTRAL, 1 = LONG_SETUP, -1 = SHORT_SETUP
         var hasPulledBackRibbon = false
+        var currentRibbonPositionState = 0 // Strict state: 0 = NEUTRAL, 1 = IN_BUY, -1 = IN_SELL
+        var activeRibbonSl = 0.0
+        var activeRibbonTp = 0.0
 
         if (n > 0 && kryptEmaSeries.size == 8) {
             val ma1 = kryptEmaSeries[0] // EMA 20 (yellow reference line)
@@ -786,6 +789,29 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val h = highs[i]
                 val l = lows[i]
                 val c = closes[i]
+
+                // Position closing check for active positions (SL/TP hit or structural invalidation)
+                if (currentRibbonPositionState == 1) {
+                    if ((activeRibbonSl > 0.0 && l <= activeRibbonSl) || 
+                        (activeRibbonTp > 0.0 && h >= activeRibbonTp) || 
+                        (c < e134L && e20 < e134L)) {
+                        currentRibbonPositionState = 0
+                        ribbonSetupState = 0
+                        hasPulledBackRibbon = false
+                        activeRibbonSl = 0.0
+                        activeRibbonTp = 0.0
+                    }
+                } else if (currentRibbonPositionState == -1) {
+                    if ((activeRibbonSl > 0.0 && h >= activeRibbonSl) || 
+                        (activeRibbonTp > 0.0 && l <= activeRibbonTp) || 
+                        (c > e134H && e20 > e134H)) {
+                        currentRibbonPositionState = 0
+                        ribbonSetupState = 0
+                        hasPulledBackRibbon = false
+                        activeRibbonSl = 0.0
+                        activeRibbonTp = 0.0
+                    }
+                }
 
                 val ribbonTop = max(e20, e55)
                 val ribbonBottom = min(e20, e55)
@@ -821,7 +847,6 @@ class BotStrategyChartView @JvmOverloads constructor(
                     // Long Position Entry Setup (Upside Reversal):
                     // Step 2 (Pullback): Price pulls back into Krypt ribbon space without full candle body closing entirely below ribbon
                     if (bodyTop < ribbonBottom) {
-                        // Invalidation: complete candle body closed entirely below ribbon
                         hasPulledBackRibbon = false
                         ribbonSetupState = 0
                     } else {
@@ -833,15 +858,27 @@ class BotStrategyChartView @JvmOverloads constructor(
                         val isGreen = c > o
                         val closesAboveYellow = c > e20
 
-                        if (hasPulledBackRibbon && isGreen && closesAboveYellow) {
+                        // Strict Single-Signal Control: Suppress subsequent BUY signals if already IN_BUY
+                        if (currentRibbonPositionState != 1 && hasPulledBackRibbon && isGreen && closesAboveYellow) {
                             dualRibbonSignals[i] = 1
-                            hasPulledBackRibbon = false // reset for subsequent pullbacks in ongoing trend
+                            currentRibbonPositionState = 1 // Lock in IN_BUY
+                            hasPulledBackRibbon = false
 
-                            // Risk Management & Targets (SL / TP):
-                            // Stop Loss (SL): Automatically placed outside 134 EMA green band below
-                            val sl = min(e134L * 0.999, c * 0.99)
+                            // Accurate SL: Directly below bottom edge of 134 EMA green band (just beneath ema134Low)
+                            var sl = e134L * 0.9995
+                            if (sl >= c) {
+                                sl = c * 0.997
+                            }
+                            // Cap risk to maximum 3% to avoid excessive distance if green band is lagging
+                            if (c - sl > c * 0.03) {
+                                sl = c * 0.97
+                            }
+
                             val risk = c - sl
-                            val tp = c + (risk * 2.0) // Minimum 1:2 Risk-to-Reward Ratio
+                            val tp = c + (risk * 2.0) // Exact 1:2 RRR
+
+                            activeRibbonSl = sl
+                            activeRibbonTp = tp
 
                             dualRibbonEntrySeries[i] = c
                             dualRibbonSlSeries[i] = sl
@@ -852,7 +889,6 @@ class BotStrategyChartView @JvmOverloads constructor(
                     // Short Position Entry Setup (Downside Reversal):
                     // Step 2 (Pullback): Price pulls back into Krypt ribbon space without full candle body closing entirely above ribbon
                     if (bodyBottom > ribbonTop) {
-                        // Invalidation: complete candle body closed entirely above ribbon
                         hasPulledBackRibbon = false
                         ribbonSetupState = 0
                     } else {
@@ -864,15 +900,27 @@ class BotStrategyChartView @JvmOverloads constructor(
                         val isRed = c < o
                         val closesBelowYellow = c < e20
 
-                        if (hasPulledBackRibbon && isRed && closesBelowYellow) {
+                        // Strict Single-Signal Control: Suppress subsequent SELL signals if already IN_SELL
+                        if (currentRibbonPositionState != -1 && hasPulledBackRibbon && isRed && closesBelowYellow) {
                             dualRibbonSignals[i] = -1
-                            hasPulledBackRibbon = false // reset for subsequent pullbacks in ongoing trend
+                            currentRibbonPositionState = -1 // Lock in IN_SELL
+                            hasPulledBackRibbon = false
 
-                            // Risk Management & Targets (SL / TP):
-                            // Stop Loss (SL): Automatically placed outside 134 EMA green band above
-                            val sl = max(e134H * 1.001, c * 1.01)
+                            // Accurate SL: Directly above top edge of 134 EMA green band (just above ema134High)
+                            var sl = e134H * 1.0005
+                            if (sl <= c) {
+                                sl = c * 1.003
+                            }
+                            // Cap risk to maximum 3% to avoid excessive distance if green band is lagging
+                            if (sl - c > c * 0.03) {
+                                sl = c * 1.03
+                            }
+
                             val risk = sl - c
-                            val tp = c - (risk * 2.0) // Minimum 1:2 Risk-to-Reward Ratio
+                            val tp = c - (risk * 2.0) // Exact 1:2 RRR
+
+                            activeRibbonSl = sl
+                            activeRibbonTp = tp
 
                             dualRibbonEntrySeries[i] = c
                             dualRibbonSlSeries[i] = sl
@@ -1674,44 +1722,6 @@ class BotStrategyChartView @JvmOverloads constructor(
                 canvas.drawRoundRect(rect, 8f, 8f, paintBadgeBuy)
                 val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.BLACK }
                 canvas.drawText("▲ BUY", cx - 28f, badgeY + 20f, paintSignalText)
-
-                // Render dynamic Stop Loss & Take Profit (1:2 RRR) for Dual-Ribbon
-                if (showDualRibbon && i < dualRibbonSlSeries.size && dualRibbonSlSeries[i] > 0) {
-                    val sl = dualRibbonSlSeries[i]
-                    val tp = dualRibbonTpSeries[i]
-                    val ySl = getY(sl)
-                    val yTp = getY(tp)
-                    val isLatestSignal = (i == lastDualRibbonSigIdx)
-                    val endX = if (isLatestSignal) {
-                        paddingLeftPx + chartWidth
-                    } else {
-                        minOf(cx + (candleWidth * 16f), paddingLeftPx + chartWidth)
-                    }
-
-                    // TP Target line & pill badge (Green)
-                    canvas.drawLine(cx, yTp, endX, yTp, paintRibbonTp)
-                    val tpLabel = "TP " + formatPriceValue(tp) + " (1:2)"
-                    val tpW = paintRiskPillText.measureText(tpLabel) + 16f
-                    val tpRect = RectF(endX - tpW, yTp - 14f, endX - 2f, yTp + 5f)
-                    paintRiskPillBg.color = Color.parseColor("#E60D2517")
-                    paintRiskPillBorder.color = Color.parseColor("#00E676")
-                    canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBg)
-                    canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBorder)
-                    paintRiskPillText.color = Color.parseColor("#00E676")
-                    canvas.drawText(tpLabel, endX - tpW + 8f, yTp - 1f, paintRiskPillText)
-
-                    // SL Stop Loss line & pill badge (Red)
-                    canvas.drawLine(cx, ySl, endX, ySl, paintRibbonSl)
-                    val slLabel = "SL " + formatPriceValue(sl)
-                    val slW = paintRiskPillText.measureText(slLabel) + 16f
-                    val slRect = RectF(endX - slW, ySl - 5f, endX - 2f, ySl + 14f)
-                    paintRiskPillBg.color = Color.parseColor("#E6290D0D")
-                    paintRiskPillBorder.color = Color.parseColor("#FF5252")
-                    canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBg)
-                    canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBorder)
-                    paintRiskPillText.color = Color.parseColor("#FF5252")
-                    canvas.drawText(slLabel, endX - slW + 8f, ySl + 8f, paintRiskPillText)
-                }
             } else if (sig == -1) { // SELL Signal
                 val badgeY = yHigh - 32f
                 canvas.drawLine(cx, yHigh, cx, badgeY + 28f, paintSignalLine)
@@ -1719,43 +1729,71 @@ class BotStrategyChartView @JvmOverloads constructor(
                 canvas.drawRoundRect(rect, 8f, 8f, paintBadgeSell)
                 val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.WHITE }
                 canvas.drawText("▼ SELL", cx - 30f, badgeY + 20f, paintSignalText)
+            }
+        }
 
-                // Render dynamic Stop Loss & Take Profit (1:2 RRR) for Dual-Ribbon
-                if (showDualRibbon && i < dualRibbonSlSeries.size && dualRibbonSlSeries[i] > 0) {
-                    val sl = dualRibbonSlSeries[i]
-                    val tp = dualRibbonTpSeries[i]
-                    val ySl = getY(sl)
-                    val yTp = getY(tp)
-                    val isLatestSignal = (i == lastDualRibbonSigIdx)
-                    val endX = if (isLatestSignal) {
-                        paddingLeftPx + chartWidth
-                    } else {
-                        minOf(cx + (candleWidth * 16f), paddingLeftPx + chartWidth)
+        // Render Clean Active SL / TP Risk Management for Dual-Ribbon (Only for latest active signal, avoiding historical clutter)
+        if (showDualRibbon && lastDualRibbonSigIdx >= 0 && lastDualRibbonSigIdx < dualRibbonSlSeries.size) {
+            val lastSig = dualRibbonSignals[lastDualRibbonSigIdx]
+            val sl = dualRibbonSlSeries[lastDualRibbonSigIdx]
+            val tp = dualRibbonTpSeries[lastDualRibbonSigIdx]
+
+            if (sl > 0.0 && tp > 0.0) {
+                val ySl = getY(sl)
+                val yTp = getY(tp)
+                val startX = max(paddingLeftPx, getX(lastDualRibbonSigIdx))
+                val endX = paddingLeftPx + chartWidth
+
+                if (endX > startX) {
+                    if (lastSig == 1) { // Active BUY Position
+                        // TP Target line & pill badge (Green)
+                        canvas.drawLine(startX, yTp, endX, yTp, paintRibbonTp)
+                        val tpLabel = "TP " + formatPriceValue(tp) + " (1:2)"
+                        val tpW = paintRiskPillText.measureText(tpLabel) + 16f
+                        val tpRect = RectF(endX - tpW, yTp - 14f, endX - 2f, yTp + 5f)
+                        paintRiskPillBg.color = Color.parseColor("#E60D2517")
+                        paintRiskPillBorder.color = Color.parseColor("#00E676")
+                        canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBg)
+                        canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBorder)
+                        paintRiskPillText.color = Color.parseColor("#00E676")
+                        canvas.drawText(tpLabel, endX - tpW + 8f, yTp - 1f, paintRiskPillText)
+
+                        // SL Stop Loss line & pill badge (Red)
+                        canvas.drawLine(startX, ySl, endX, ySl, paintRibbonSl)
+                        val slLabel = "SL " + formatPriceValue(sl)
+                        val slW = paintRiskPillText.measureText(slLabel) + 16f
+                        val slRect = RectF(endX - slW, ySl - 5f, endX - 2f, ySl + 14f)
+                        paintRiskPillBg.color = Color.parseColor("#E6290D0D")
+                        paintRiskPillBorder.color = Color.parseColor("#FF5252")
+                        canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBg)
+                        canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBorder)
+                        paintRiskPillText.color = Color.parseColor("#FF5252")
+                        canvas.drawText(slLabel, endX - slW + 8f, ySl + 8f, paintRiskPillText)
+                    } else if (lastSig == -1) { // Active SELL Position
+                        // SL Stop Loss line & pill badge (Red, above price for Short)
+                        canvas.drawLine(startX, ySl, endX, ySl, paintRibbonSl)
+                        val slLabel = "SL " + formatPriceValue(sl)
+                        val slW = paintRiskPillText.measureText(slLabel) + 16f
+                        val slRect = RectF(endX - slW, ySl - 14f, endX - 2f, ySl + 5f)
+                        paintRiskPillBg.color = Color.parseColor("#E6290D0D")
+                        paintRiskPillBorder.color = Color.parseColor("#FF5252")
+                        canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBg)
+                        canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBorder)
+                        paintRiskPillText.color = Color.parseColor("#FF5252")
+                        canvas.drawText(slLabel, endX - slW + 8f, ySl - 1f, paintRiskPillText)
+
+                        // TP Target line & pill badge (Green, below price for Short)
+                        canvas.drawLine(startX, yTp, endX, yTp, paintRibbonTp)
+                        val tpLabel = "TP " + formatPriceValue(tp) + " (1:2)"
+                        val tpW = paintRiskPillText.measureText(tpLabel) + 16f
+                        val tpRect = RectF(endX - tpW, yTp - 5f, endX - 2f, yTp + 14f)
+                        paintRiskPillBg.color = Color.parseColor("#E60D2517")
+                        paintRiskPillBorder.color = Color.parseColor("#00E676")
+                        canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBg)
+                        canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBorder)
+                        paintRiskPillText.color = Color.parseColor("#00E676")
+                        canvas.drawText(tpLabel, endX - tpW + 8f, yTp + 8f, paintRiskPillText)
                     }
-
-                    // SL Stop Loss line & pill badge (Red, above price for Short)
-                    canvas.drawLine(cx, ySl, endX, ySl, paintRibbonSl)
-                    val slLabel = "SL " + formatPriceValue(sl)
-                    val slW = paintRiskPillText.measureText(slLabel) + 16f
-                    val slRect = RectF(endX - slW, ySl - 14f, endX - 2f, ySl + 5f)
-                    paintRiskPillBg.color = Color.parseColor("#E6290D0D")
-                    paintRiskPillBorder.color = Color.parseColor("#FF5252")
-                    canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBg)
-                    canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBorder)
-                    paintRiskPillText.color = Color.parseColor("#FF5252")
-                    canvas.drawText(slLabel, endX - slW + 8f, ySl - 1f, paintRiskPillText)
-
-                    // TP Target line & pill badge (Green, below price for Short)
-                    canvas.drawLine(cx, yTp, endX, yTp, paintRibbonTp)
-                    val tpLabel = "TP " + formatPriceValue(tp) + " (1:2)"
-                    val tpW = paintRiskPillText.measureText(tpLabel) + 16f
-                    val tpRect = RectF(endX - tpW, yTp - 5f, endX - 2f, yTp + 14f)
-                    paintRiskPillBg.color = Color.parseColor("#E60D2517")
-                    paintRiskPillBorder.color = Color.parseColor("#00E676")
-                    canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBg)
-                    canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBorder)
-                    paintRiskPillText.color = Color.parseColor("#00E676")
-                    canvas.drawText(tpLabel, endX - tpW + 8f, yTp + 8f, paintRiskPillText)
                 }
             }
         }
