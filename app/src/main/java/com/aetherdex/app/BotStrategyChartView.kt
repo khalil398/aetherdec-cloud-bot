@@ -239,6 +239,7 @@ class BotStrategyChartView @JvmOverloads constructor(
     private val paddingTopPx = 70f
     private val paddingBottomPx = 60f
     private val paddingLeftPx = 10f
+    private val rightMarginRatio = 0.30f // 30% breathing room gap between latest candle and right price scale
 
     // Colors
     private val colorBg = Color.parseColor("#0B0E14")
@@ -575,10 +576,8 @@ class BotStrategyChartView @JvmOverloads constructor(
                     val relativeFocusX = (currentFocusX - paddingLeftPx).coerceIn(0f, chartWidth)
                     val focusRatio = relativeFocusX / chartWidth
 
-                    // Anchor zoom strictly at touch focus point without viewport jumps:
-                    // As zoomFactor increases (zooming in), newVisible < oldVisible.
-                    // (oldVisible - newVisible) > 0, so scrollOffset increases, keeping focal candle stationary.
-                    val zoomDelta = (oldVisible - newVisible) * (1f - focusRatio)
+                    // Anchor zoom strictly at touch focus point with right margin:
+                    val zoomDelta = (oldVisible - newVisible) * (1f - rightMarginRatio - focusRatio)
 
                     // Smooth pan along with touch point if fingers move horizontally while zooming:
                     val deltaFocusX = currentFocusX - lastFocusX
@@ -1181,9 +1180,10 @@ class BotStrategyChartView @JvmOverloads constructor(
 
         if (chartWidth <= 0 || chartHeight <= 0) return
 
-        // Compute visible range with time scale zoom factor
+        // Compute visible range with time scale zoom factor and generous right margin
         val visibleCandleCount = (baseVisibleCount / zoomFactor).coerceIn(5f, max(45f, totalCandles.toFloat()))
-        val floatEndIndex = (totalCandles - 1).toFloat() - scrollOffsetFloat
+        val rightMarginOffset = (visibleCandleCount * rightMarginRatio).coerceAtLeast(3f)
+        val floatEndIndex = (totalCandles - 1).toFloat() + rightMarginOffset - scrollOffsetFloat
         val floatStartIndex = floatEndIndex - visibleCandleCount + 1f
 
         val calcStartIndex = max(0, floatStartIndex.toInt())
