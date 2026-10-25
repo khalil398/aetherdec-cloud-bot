@@ -1,0 +1,27 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper function to check if user is authenticated with Firebase Auth
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Rules for User Profile, Trading State, and Bot Config/Status subcollections
+    match /users/{userId} {
+      // Allow read and write for authenticated users
+      allow read, write: if isAuthenticated();
+
+      // Allow read and write for all subcollections (bot/bot_config, bot/bot_status, bot/bot_secret, etc.)
+      match /{subcollection=**} {
+        allow read, write: if isAuthenticated();
+      }
+    }
+
+    // Default fallback: deny unauthenticated public internet access to any other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

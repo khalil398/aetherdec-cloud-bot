@@ -1,0 +1,63 @@
+[versions]
+agp = "9.2.1"
+coreKtx = "1.19.0"
+junit = "4.13.2"
+junitVersion = "1.3.0"
+espressoCore = "3.7.0"
+appcompat = "1.7.1"
+material = "1.14.0"
+activityKtx = "1.13.0"
+constraintlayout = "2.2.1"
+
+# Reown (formerly WalletConnect) — Kotlin SDK on Maven Central.
+#
+# AGP 9.2.1 bundles Kotlin 2.2.0, and Reown 9.x rejects the kotlin-android
+# plugin. The Kotlin compiler version is therefore locked at 2.2.0, so we
+# must use a Reown release that was compiled with Kotlin <= 2.2.0.
+#
+# 1.6.16 (latest) was compiled with Kotlin 2.4.0 and is NOT readable.
+# 1.0.0 is the earliest stable release, predating Kotlin 2.3.0 — the
+# safest pick for AGP 9.2.1 + bundled Kotlin 2.2.0.
+reownCore = "1.0.0"
+reownSign = "1.0.0"
+reownAppkit = "1.0.0"
+navigation = "2.8.9"
+googleServices = "4.4.2"
+firebaseBom = "33.8.0"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+androidx-activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref = "activityKtx" }
+androidx-constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
+
+# ----- Firebase -----
+firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
+firebase-auth = { group = "com.google.firebase", name = "firebase-auth-ktx" }
+firebase-firestore = { group = "com.google.firebase", name = "firebase-firestore-ktx" }
+
+# MPAndroidChart is OPTIONAL — uncomment to enable live candlesticks.
+# mpandroidchart = { group = "com.github.PhilJay", name = "MPAndroidChart", version = "v3.1.0" }
+
+# ----- Reown (WalletConnect v2) -----
+# Core = relay client. Sign = session proposal + approval + signing protocol.
+# Package `com.reown.*` replaces the legacy `com.walletconnect.*` namespace.
+reown-android-core = { group = "com.reown", name = "android-core", version.ref = "reownCore" }
+reown-sign         = { group = "com.reown", name = "sign",         version.ref = "reownSign" }
+reown-appkit       = { group = "com.reown", name = "appkit",       version.ref = "reownAppkit" }
+androidx-navigation-fragment = { group = "androidx.navigation", name = "navigation-fragment-ktx", version.ref = "navigation" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version = "2024.08.00" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-material = { group = "androidx.compose.material", name = "material" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityKtx" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
+# kotlin-android intentionally NOT declared — AGP 9.0+ rejects it and
+# bundles Kotlin natively. The kotlin alias above is preserved only as
+# a historical marker; do not re-introduce it as a plugin alias.
