@@ -538,6 +538,7 @@ class BotStrategyChartView @JvmOverloads constructor(
     // Smooth Kinetic Fling Scroller
     private val scroller = OverScroller(context)
     private var lastFlingX = 0
+    private var lastFocusX = 0f
 
     // Touch gesture detectors
     private val scaleGestureDetector: ScaleGestureDetector
@@ -549,19 +550,44 @@ class BotStrategyChartView @JvmOverloads constructor(
         setLayerType(LAYER_TYPE_HARDWARE, null)
 
         scaleGestureDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                lastFocusX = detector.focusX
+                return true
+            }
+
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 val oldZoom = zoomFactor
-                zoomFactor = (zoomFactor * detector.scaleFactor).coerceIn(0.10f, 8.0f)
+                val scaleFactor = detector.scaleFactor
+                if (scaleFactor.isNaN() || scaleFactor.isInfinite() || scaleFactor == 1.0f) {
+                    return true
+                }
+
+                zoomFactor = (zoomFactor * scaleFactor).coerceIn(0.10f, 8.0f)
 
                 val chartWidth = width.toFloat() - paddingLeftPx - paddingRightPx
                 if (chartWidth > 0f && candles.isNotEmpty()) {
-                    val focusX = (detector.focusX - paddingLeftPx).coerceIn(0f, chartWidth)
-                    val focusRatio = focusX / chartWidth
-                    val oldVisible = baseVisibleCount / oldZoom
-                    val newVisible = baseVisibleCount / zoomFactor
-                    val candleDelta = (newVisible - oldVisible) * (1f - focusRatio)
+                    val minVisible = 5f
+                    val maxVisible = max(45f, candles.size.toFloat())
+                    val oldVisible = (baseVisibleCount / oldZoom).coerceIn(minVisible, maxVisible)
+                    val newVisible = (baseVisibleCount / zoomFactor).coerceIn(minVisible, maxVisible)
+
+                    val currentFocusX = detector.focusX
+                    val relativeFocusX = (currentFocusX - paddingLeftPx).coerceIn(0f, chartWidth)
+                    val focusRatio = relativeFocusX / chartWidth
+
+                    // Anchor zoom strictly at touch focus point without viewport jumps:
+                    // As zoomFactor increases (zooming in), newVisible < oldVisible.
+                    // (oldVisible - newVisible) > 0, so scrollOffset increases, keeping focal candle stationary.
+                    val zoomDelta = (oldVisible - newVisible) * (1f - focusRatio)
+
+                    // Smooth pan along with touch point if fingers move horizontally while zooming:
+                    val deltaFocusX = currentFocusX - lastFocusX
+                    lastFocusX = currentFocusX
+                    val currentCandleWidth = max(0.5f, chartWidth / newVisible)
+                    val panDelta = deltaFocusX / currentCandleWidth
+
                     val maxScroll = max(0f, (candles.size - 6).toFloat())
-                    scrollOffsetFloat = (scrollOffsetFloat + candleDelta).coerceIn(-6f, maxScroll)
+                    scrollOffsetFloat = (scrollOffsetFloat + zoomDelta + panDelta).coerceIn(-6f, maxScroll)
                 }
 
                 invalidate()
@@ -669,9 +695,20 @@ class BotStrategyChartView @JvmOverloads constructor(
 
         scaleGestureDetector.onTouchEvent(event)
 
-        if (scaleGestureDetector.isInProgress) {
-            lastTouchX = event.x
-            lastTouchY = event.y
+        // Seamlessly transfer lastTouch coordinates to remaining finger on pointer lift
+        if (event.actionMasked == MotionEvent.ACTION_POINTER_UP) {
+            val pointerIndex = event.actionIndex
+            val remainingIndex = if (pointerIndex == 0) 1 else 0
+            if (remainingIndex < event.pointerCount) {
+                lastTouchX = event.getX(remainingIndex)
+                lastTouchY = event.getY(remainingIndex)
+            }
+        }
+
+        if (scaleGestureDetector.isInProgress || event.pointerCount > 1) {
+            isDraggingChart = false
+            isDraggingPriceAxis = false
+            isDraggingTimeAxis = false
             parent?.requestDisallowInterceptTouchEvent(true)
             return true
         }
