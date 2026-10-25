@@ -453,10 +453,6 @@ async function evaluateIctMarketStructure(coin = "BTC", candles) {
     exitCandleOffset: isBreakdownLow ? 0 : -1,
     currentPositionState: isBuySignal ? "IN_BUY" : (isSellSignal ? "IN_SELL" : "NEUTRAL"),
     metrics
-  };
-}
-
-/**
  * Evaluates 5-Minute Dual-Ribbon Strategy (Combined Ribbon):
  * 
  * 1. Ribbon 1 (134 EMA Green Band):
@@ -467,16 +463,20 @@ async function evaluateIctMarketStructure(coin = "BTC", candles) {
  * 2. Ribbon 2 (Krypt Fast EMAs):
  *    - 8 EMAs on close: lengths [20, 25, 30, 35, 40, 45, 50, 55]
  *    - Fastest MA-1 (length 20, color #F5EB5D) acts as primary yellow reference line
- *    - Colors: #F5EB5D (20), #F5B771 (25), #F5B056 (30), #F57B4E (35), #F56D58 (40), #F57D51 (45), #F55151 (50), #AA2707 (55)
  * 
- * 3. Signal & State Logic:
- *    - BUY Signal (▲ BUY):
- *      MA-1 (length 20) and Krypt Ribbon break strictly ABOVE the 134 EMA High Band (ta.ema(high, 134)).
- *    - SELL Signal (▼ SELL):
- *      MA-1 (length 20) breaks strictly BELOW the 134 EMA Low Band (ta.ema(low, 134)).
- *    - State persistence: NEUTRAL, IN_BUY, IN_SELL with clean non-churning transitions.
- *    - Proximity Score (0 - 100%):
- *      Tracks progression towards and above the 134 Green Band for target scanner radar.
+ * 3. Core Entry Signals & Pullback Rules:
+ *    Long Position Entry Setup (Upside Reversal):
+ *      Step 1 (Cross): EMA 20 and price cross and trade above both 134 EMA high and low green band.
+ *      Step 2 (Pullback): Price pulls back into Krypt ribbon space without a complete candle body closing entirely below the ribbon.
+ *      Step 3 (Confirmation): Trigger Buy Signal when a green candle closes above yellow line (EMA 20).
+ *    Short Position Entry Setup (Downside Reversal):
+ *      Step 1 (Cross): EMA 20 and price cross and trade below both 134 EMA high and low green band.
+ *      Step 2 (Pullback): Price pulls back into Krypt ribbon space without a complete candle body closing entirely above the ribbon.
+ *      Step 3 (Confirmation): Trigger Sell Signal when a red candle closes below yellow line (EMA 20).
+ * 
+ * 4. Risk Management & Targets (SL / TP):
+ *    - Stop Loss (SL): Automatically placed outside 134 EMA green band (below for long, above for short).
+ *    - Take Profit (TP): Set dynamically to achieve a minimum 1:2 Risk-to-Reward Ratio (RRR).
  */
 async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   if (!candles || candles.length < 136) {
@@ -485,8 +485,14 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
       isUptrend: false,
       isBuySignal: false,
       isSellSignal: false,
+      isBuyTriggered: false,
+      isSellTriggered: false,
       breakoutCandleOffset: -1,
       exitCandleOffset: -1,
+      stopLoss: 0,
+      takeProfit: 0,
+      entryPrice: 0,
+      riskRewardRatio: 2.0,
       proximityScore: 0,
       currentPositionState: "NEUTRAL",
       metrics: {}
@@ -494,6 +500,7 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   }
 
   const n = candles.length;
+  const openPrices = candles.map(c => parseFloat(c.o !== undefined ? c.o : c.c));
   const highPrices = candles.map(c => parseFloat(c.h));
   const lowPrices = candles.map(c => parseFloat(c.l));
   const closePrices = candles.map(c => parseFloat(c.c));
@@ -509,30 +516,123 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   const ma1_20 = kryptEmaSeries[0]; // Primary yellow reference line (length 20)
   const ma8_55 = kryptEmaSeries[7]; // Slowest Krypt line (length 55)
 
+  let setupState = "NEUTRAL"; // "LONG_SETUP", "SHORT_SETUP", or "NEUTRAL"
+  let hasPulledBack = false;
   let currentPositionState = "NEUTRAL";
   let lastBuySignalIdx = -1;
   let lastSellSignalIdx = -1;
+
+  const buySignals = new Array(n).fill(false);
+  const sellSignals = new Array(n).fill(false);
+  const slSeries = new Array(n).fill(0);
+  const tpSeries = new Array(n).fill(0);
 
   for (let i = 0; i < n; i++) {
     const e134H = r1Ema134High[i];
     const e134L = r1Ema134Low[i];
     const e20 = ma1_20[i];
+    const e55 = ma8_55[i];
+    const o = openPrices[i];
+    const h = highPrices[i];
+    const l = lowPrices[i];
     const c = closePrices[i];
 
-    // Bullish Expansion: MA-1 (20) & candle above Ribbon 1 (134 High)
-    const isBullishBreakout = (e20 > e134H && c > e134H);
-    // Bearish Breakdown: MA-1 (20) & candle below Ribbon 1 (134 Low)
-    const isBearishBreakdown = (e20 < e134L && c < e134L);
+    // Krypt Ribbon space boundaries
+    const ribbonTop = Math.max(e20, e55);
+    const ribbonBottom = Math.min(e20, e55);
 
-    if (isBullishBreakout) {
-      if (currentPositionState !== "IN_BUY") {
-        currentPositionState = "IN_BUY";
-        lastBuySignalIdx = i;
+    // Candle body boundaries
+    const bodyTop = Math.max(o, c);
+    const bodyBottom = Math.min(o, c);
+
+    // Step 1: Fast yellow line (EMA 20) and price cross and trade above/below both 134 EMA green bands
+    const isAboveGreenBand = (e20 > e134H && c > e134H);
+    const isBelowGreenBand = (e20 < e134L && c < e134L);
+
+    if (isAboveGreenBand) {
+      if (setupState !== "LONG_SETUP") {
+        setupState = "LONG_SETUP";
+        hasPulledBack = false;
       }
-    } else if (isBearishBreakdown) {
-      if (currentPositionState !== "IN_SELL") {
-        currentPositionState = "IN_SELL";
-        lastSellSignalIdx = i;
+    } else if (isBelowGreenBand) {
+      if (setupState !== "SHORT_SETUP") {
+        setupState = "SHORT_SETUP";
+        hasPulledBack = false;
+      }
+    } else {
+      // Invalidation when price/EMA 20 crosses through to opposite side of 134 green band
+      if (setupState === "LONG_SETUP" && (c < e134L || e20 < e134L)) {
+        setupState = "NEUTRAL";
+        hasPulledBack = false;
+      } else if (setupState === "SHORT_SETUP" && (c > e134H || e20 > e134H)) {
+        setupState = "NEUTRAL";
+        hasPulledBack = false;
+      }
+    }
+
+    if (setupState === "LONG_SETUP") {
+      // Step 2 (Pullback): Price pulls back into Krypt ribbon space
+      // Invalidation Rule: without a complete candle body closing entirely below the ribbon
+      if (bodyTop < ribbonBottom) {
+        // Invalidation: candle body completely below ribbon
+        hasPulledBack = false;
+        setupState = "NEUTRAL";
+      } else {
+        if (l <= e20) {
+          hasPulledBack = true;
+        }
+
+        // Step 3 (Confirmation): Green candle closes above yellow line (EMA 20)
+        const isGreenCandle = c > o;
+        const closesAboveEma20 = c > e20;
+
+        if (hasPulledBack && isGreenCandle && closesAboveEma20) {
+          buySignals[i] = true;
+          lastBuySignalIdx = i;
+          currentPositionState = "IN_BUY";
+          hasPulledBack = false; // Reset to await next pullback in ongoing trend
+
+          // Risk Management & Targets (SL / TP):
+          // SL outside 134 EMA green band below
+          const sl = Math.min(e134L * 0.999, c * 0.99);
+          const risk = c - sl;
+          const tp = c + (risk * 2.0); // Minimum 1:2 Risk-to-Reward Ratio
+
+          slSeries[i] = sl;
+          tpSeries[i] = tp;
+        }
+      }
+    } else if (setupState === "SHORT_SETUP") {
+      // Step 2 (Pullback): Price pulls back into Krypt ribbon space
+      // Invalidation Rule: without a complete candle body closing entirely above the ribbon
+      if (bodyBottom > ribbonTop) {
+        // Invalidation: candle body completely above ribbon
+        hasPulledBack = false;
+        setupState = "NEUTRAL";
+      } else {
+        if (h >= e20) {
+          hasPulledBack = true;
+        }
+
+        // Step 3 (Confirmation): Red candle closes below yellow line (EMA 20)
+        const isRedCandle = c < o;
+        const closesBelowEma20 = c < e20;
+
+        if (hasPulledBack && isRedCandle && closesBelowEma20) {
+          sellSignals[i] = true;
+          lastSellSignalIdx = i;
+          currentPositionState = "IN_SELL";
+          hasPulledBack = false; // Reset to await next pullback in ongoing trend
+
+          // Risk Management & Targets (SL / TP):
+          // SL outside 134 EMA green band above
+          const sl = Math.max(e134H * 1.001, c * 1.01);
+          const risk = sl - c;
+          const tp = c - (risk * 2.0); // Minimum 1:2 Risk-to-Reward Ratio
+
+          slSeries[i] = sl;
+          tpSeries[i] = tp;
+        }
       }
     }
   }
@@ -543,12 +643,38 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   const currentE20 = ma1_20[idx];
   const currentE55 = ma8_55[idx];
 
-  const isBuySignal = (currentPositionState === "IN_BUY");
-  const isSellSignal = (currentPositionState === "IN_SELL");
+  const isBuyTriggeredNow = buySignals[idx] || (lastBuySignalIdx >= n - 2);
+  const isSellTriggeredNow = sellSignals[idx] || (lastSellSignalIdx >= n - 2);
+
+  const isBuySignal = (currentPositionState === "IN_BUY") || isBuyTriggeredNow;
+  const isSellSignal = (currentPositionState === "IN_SELL") || isSellTriggeredNow;
   const isUptrend = (currentE20 > currentE134H && currentE20 > currentE55);
 
   const breakoutCandleOffset = lastBuySignalIdx >= 0 ? (idx - lastBuySignalIdx) : -1;
   const exitCandleOffset = lastSellSignalIdx >= 0 ? (idx - lastSellSignalIdx) : -1;
+
+  // Derive active dynamic Stop Loss & Take Profit levels
+  let activeEntry = 0;
+  let activeSl = 0;
+  let activeTp = 0;
+
+  if (currentPositionState === "IN_BUY" && lastBuySignalIdx >= 0) {
+    activeEntry = closePrices[lastBuySignalIdx];
+    activeSl = slSeries[lastBuySignalIdx];
+    activeTp = tpSeries[lastBuySignalIdx];
+  } else if (currentPositionState === "IN_SELL" && lastSellSignalIdx >= 0) {
+    activeEntry = closePrices[lastSellSignalIdx];
+    activeSl = slSeries[lastSellSignalIdx];
+    activeTp = tpSeries[lastSellSignalIdx];
+  } else if (currentE20 > currentE134H) {
+    activeEntry = closePrices[idx];
+    activeSl = Math.min(currentE134L * 0.999, activeEntry * 0.99);
+    activeTp = activeEntry + ((activeEntry - activeSl) * 2.0);
+  } else if (currentE20 < currentE134L) {
+    activeEntry = closePrices[idx];
+    activeSl = Math.max(currentE134H * 1.001, activeEntry * 1.01);
+    activeTp = activeEntry - ((activeSl - activeEntry) * 2.0);
+  }
 
   // Proximity Calculation (0 - 100%)
   let proximityScore = 0;
@@ -577,6 +703,10 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
     r1Ema134Low: currentE134L,
     kryptMa1_20: currentE20,
     kryptMa8_55: currentE55,
+    stopLoss: activeSl,
+    takeProfit: activeTp,
+    entryPrice: activeEntry,
+    riskRewardRatio: 2.0,
     isUptrend,
     currentPositionState,
     breakoutCandleOffset,
@@ -588,8 +718,14 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
     isUptrend,
     isBuySignal,
     isSellSignal,
+    isBuyTriggered: isBuyTriggeredNow,
+    isSellTriggered: isSellTriggeredNow,
     breakoutCandleOffset,
     exitCandleOffset,
+    stopLoss: activeSl,
+    takeProfit: activeTp,
+    entryPrice: activeEntry,
+    riskRewardRatio: 2.0,
     proximityScore,
     currentPositionState,
     metrics
@@ -879,7 +1015,7 @@ async function executeBotTick(uid, db, config, botSecret) {
 
       // 1. Process EXITS for active positions
       for (const res of validResults) {
-        const { coin, coinPrice, isSellSignal, isBuySignal, market } = res;
+        const { coin, coinPrice, isSellSignal, isBuySignal, market, stopLoss, takeProfit } = res;
         const currentPos = currentPositionsMap.get(coin);
         if (!currentPos) continue;
 
@@ -891,11 +1027,37 @@ async function executeBotTick(uid, db, config, botSecret) {
 
         if (assetIdx < 0) continue;
 
-        // Two-Way Futures: Exit Long on 30m SELL breakout (close Long to prepare for Short)
-        if (isCurrentlyLong && isSellSignal && isFuturesActive) {
+        // Check SL/TP triggers for Dual-Ribbon Risk Management
+        let isDualRibbonLongExit = false;
+        let isDualRibbonShortExit = false;
+        let exitReason = "";
+
+        if (isDualRibbonActive && stopLoss > 0 && takeProfit > 0) {
+          if (isCurrentlyLong) {
+            if (coinPrice <= stopLoss) {
+              isDualRibbonLongExit = true;
+              exitReason = `Dual-Ribbon Stop Loss Triggered (${coinPrice} <= SL: ${stopLoss})`;
+            } else if (coinPrice >= takeProfit) {
+              isDualRibbonLongExit = true;
+              exitReason = `Dual-Ribbon Take Profit (1:2 RRR) Triggered (${coinPrice} >= TP: ${takeProfit})`;
+            }
+          } else if (isCurrentlyShort) {
+            if (coinPrice >= stopLoss) {
+              isDualRibbonShortExit = true;
+              exitReason = `Dual-Ribbon Stop Loss Triggered (${coinPrice} >= SL: ${stopLoss})`;
+            } else if (coinPrice <= takeProfit) {
+              isDualRibbonShortExit = true;
+              exitReason = `Dual-Ribbon Take Profit (1:2 RRR) Triggered (${coinPrice} <= TP: ${takeProfit})`;
+            }
+          }
+        }
+
+        // Two-Way Futures: Exit Long on SELL breakdown or SL/TP trigger
+        if (isCurrentlyLong && (isSellSignal || isDualRibbonLongExit) && isFuturesActive) {
           const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
           const limitPx = formatPriceForHyperliquid(coinPrice * 0.98); // 2% market slippage buffer
-          console.log(`[${uid}] 🔻 TWO-WAY FUTURES: Closing LONG on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on 30m BEARISH SELL breakout`);
+          const reasonStr = exitReason || "30m/5m BEARISH SELL breakdown";
+          console.log(`[${uid}] 🔻 TWO-WAY FUTURES: Closing LONG on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on ${reasonStr}`);
           try {
             const exitResult = await placeAgentOrder({
               agentPrivateKey,
@@ -913,11 +1075,12 @@ async function executeBotTick(uid, db, config, botSecret) {
           }
         }
 
-        // Two-Way Futures: Exit Short on 30m BUY breakout (close Short to prepare for Long)
-        if (isCurrentlyShort && isBuySignal && isFuturesActive) {
+        // Two-Way Futures: Exit Short on BUY breakout or SL/TP trigger
+        if (isCurrentlyShort && (isBuySignal || isDualRibbonShortExit) && isFuturesActive) {
           const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
           const limitPx = formatPriceForHyperliquid(coinPrice * 1.02); // 2% market slippage buffer
-          console.log(`[${uid}] 🔺 TWO-WAY FUTURES: Closing SHORT on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on 30m BULLISH BUY breakout`);
+          const reasonStr = exitReason || "30m/5m BULLISH BUY breakout";
+          console.log(`[${uid}] 🔺 TWO-WAY FUTURES: Closing SHORT on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on ${reasonStr}`);
           try {
             const exitResult = await placeAgentOrder({
               agentPrivateKey,
@@ -1086,6 +1249,9 @@ async function executeBotTick(uid, db, config, botSecret) {
                       status: "SUCCESS",
                       size: formattedSz,
                       price: limitPx,
+                      stop_loss: bestEntrySignal.stopLoss || 0,
+                      take_profit: bestEntrySignal.takeProfit || 0,
+                      risk_reward_ratio: bestEntrySignal.riskRewardRatio || 2.0,
                       asset_index: assetIdx
                     }
                   }, { merge: true });
@@ -1106,7 +1272,11 @@ async function executeBotTick(uid, db, config, botSecret) {
         targetRadarTelemetry[r.coin] = {
           score: r.proximityScore || 0,
           isBuySignal: r.isBuySignal || false,
-          price: r.coinPrice || 0
+          isSellSignal: r.isSellSignal || false,
+          price: r.coinPrice || 0,
+          stopLoss: r.stopLoss || 0,
+          takeProfit: r.takeProfit || 0,
+          riskRewardRatio: r.riskRewardRatio || 2.0
         };
       });
     }
