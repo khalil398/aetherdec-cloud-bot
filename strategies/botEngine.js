@@ -516,14 +516,11 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   const ma1_20 = kryptEmaSeries[0]; // Primary yellow reference line (length 20)
   const ma8_55 = kryptEmaSeries[7]; // Slowest Krypt line (length 55)
 
-  let setupState = "NEUTRAL"; // "LONG_SETUP", "SHORT_SETUP", or "NEUTRAL"
+  let lastSignalDirection = 0; // 0 = none, 1 = BUY, -1 = SELL (Strict lock: cannot fire same signal consecutively)
   let hasPulledBack = false;
-  let currentPositionState = "NEUTRAL"; // Strict state: "NEUTRAL", "IN_BUY", "IN_SELL"
+  let currentPositionState = "NEUTRAL";
   let lastBuySignalIdx = -1;
   let lastSellSignalIdx = -1;
-  let activeSl = 0;
-  let activeTp = 0;
-  let activeEntry = 0;
 
   const buySignals = new Array(n).fill(false);
   const sellSignals = new Array(n).fill(false);
@@ -540,30 +537,9 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
     const l = lowPrices[i];
     const c = closePrices[i];
 
-    // Check position closing for active positions (SL/TP hit or structural invalidation)
-    if (currentPositionState === "IN_BUY") {
-      if ((activeSl > 0 && l <= activeSl) || (activeTp > 0 && h >= activeTp) || (c < e134L && e20 < e134L)) {
-        currentPositionState = "NEUTRAL";
-        setupState = "NEUTRAL";
-        hasPulledBack = false;
-        activeSl = 0;
-        activeTp = 0;
-      }
-    } else if (currentPositionState === "IN_SELL") {
-      if ((activeSl > 0 && h >= activeSl) || (activeTp > 0 && l <= activeTp) || (c > e134H && e20 > e134H)) {
-        currentPositionState = "NEUTRAL";
-        setupState = "NEUTRAL";
-        hasPulledBack = false;
-        activeSl = 0;
-        activeTp = 0;
-      }
-    }
-
     // Krypt Ribbon space boundaries
     const ribbonTop = Math.max(e20, e55);
     const ribbonBottom = Math.min(e20, e55);
-
-    // Candle body boundaries
     const bodyTop = Math.max(o, c);
     const bodyBottom = Math.min(o, c);
 
@@ -571,111 +547,72 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
     const isAboveGreenBand = (e20 > e134H && c > e134H);
     const isBelowGreenBand = (e20 < e134L && c < e134L);
 
-    if (isAboveGreenBand) {
-      if (setupState !== "LONG_SETUP") {
-        setupState = "LONG_SETUP";
-        hasPulledBack = false;
-      }
-    } else if (isBelowGreenBand) {
-      if (setupState !== "SHORT_SETUP") {
-        setupState = "SHORT_SETUP";
-        hasPulledBack = false;
-      }
-    } else {
-      // Invalidation when price/EMA 20 crosses through to opposite side of 134 green band
-      if (setupState === "LONG_SETUP" && (c < e134L || e20 < e134L)) {
-        setupState = "NEUTRAL";
-        hasPulledBack = false;
-      } else if (setupState === "SHORT_SETUP" && (c > e134H || e20 > e134H)) {
-        setupState = "NEUTRAL";
-        hasPulledBack = false;
+    // BUY Signal Check: Strictly blocked if already locked in BUY (lastSignalDirection === 1)
+    if (lastSignalDirection !== 1) {
+      if (isAboveGreenBand) {
+        if (bodyTop >= ribbonBottom) {
+          if (l <= e20) {
+            hasPulledBack = true;
+          }
+
+          const isGreenCandle = c > o;
+          const closesAboveEma20 = c > e20;
+
+          if (hasPulledBack && isGreenCandle && closesAboveEma20) {
+            buySignals[i] = true;
+            lastBuySignalIdx = i;
+            lastSignalDirection = 1; // STRICT SINGLE-SIGNAL LOCK: Blocks all BUY signals until opposite SELL!
+            currentPositionState = "IN_BUY";
+            hasPulledBack = false;
+
+            // Stop Loss sits snugly right against 134 EMA Low green band boundary
+            let sl = e134L;
+            if (sl >= c) {
+              sl = c * 0.999;
+            }
+            const risk = Math.max(c - sl, c * 0.001);
+            const tp = c + (risk * 2.0); // Exact 1:2 RRR
+
+            slSeries[i] = sl;
+            tpSeries[i] = tp;
+          }
+        } else {
+          hasPulledBack = false;
+        }
       }
     }
 
-    if (setupState === "LONG_SETUP") {
-      // Step 2 (Pullback): Price pulls back into Krypt ribbon space
-      // Invalidation Rule: without a complete candle body closing entirely below the ribbon
-      if (bodyTop < ribbonBottom) {
-        hasPulledBack = false;
-        setupState = "NEUTRAL";
-      } else {
-        if (l <= e20) {
-          hasPulledBack = true;
-        }
+    // SELL Signal Check: Strictly blocked if already locked in SELL (lastSignalDirection === -1)
+    if (lastSignalDirection !== -1) {
+      if (isBelowGreenBand) {
+        if (bodyBottom <= ribbonTop) {
+          if (h >= e20) {
+            hasPulledBack = true;
+          }
 
-        // Step 3 (Confirmation): Green candle closes above yellow line (EMA 20)
-        const isGreenCandle = c > o;
-        const closesAboveEma20 = c > e20;
+          const isRedCandle = c < o;
+          const closesBelowEma20 = c < e20;
 
-        // Strict Single-Signal Control: Suppress subsequent BUY signals if already IN_BUY
-        if (currentPositionState !== "IN_BUY" && hasPulledBack && isGreenCandle && closesAboveEma20) {
-          buySignals[i] = true;
-          lastBuySignalIdx = i;
-          currentPositionState = "IN_BUY"; // Enters IN_BUY state (locks until exit or reversal)
+          if (hasPulledBack && isRedCandle && closesBelowEma20) {
+            sellSignals[i] = true;
+            lastSellSignalIdx = i;
+            lastSignalDirection = -1; // STRICT SINGLE-SIGNAL LOCK: Blocks all SELL signals until opposite BUY!
+            currentPositionState = "IN_SELL";
+            hasPulledBack = false;
+
+            // Stop Loss sits snugly right against 134 EMA High green band boundary
+            let sl = e134H;
+            if (sl <= c) {
+              sl = c * 1.001;
+            }
+            const risk = Math.max(sl - c, c * 0.001);
+            const tp = c - (risk * 2.0); // Exact 1:2 RRR
+
+            slSeries[i] = sl;
+            tpSeries[i] = tp;
+          }
+        } else {
           hasPulledBack = false;
-
-          // Stop Loss directly below bottom edge of 134 EMA green band (just beneath ema134Low)
-          let sl = e134L * 0.9995;
-          if (sl >= c) {
-            sl = c * 0.997;
-          }
-          // Cap risk to maximum 3% to avoid excessive distance if green band is lagging
-          if (c - sl > c * 0.03) {
-            sl = c * 0.97;
-          }
-
-          const risk = c - sl;
-          const tp = c + (risk * 2.0); // Exact 1:2 RRR
-
-          activeSl = sl;
-          activeTp = tp;
-          activeEntry = c;
-
-          slSeries[i] = sl;
-          tpSeries[i] = tp;
-        }
-      }
-    } else if (setupState === "SHORT_SETUP") {
-      // Step 2 (Pullback): Price pulls back into Krypt ribbon space
-      // Invalidation Rule: without a complete candle body closing entirely above the ribbon
-      if (bodyBottom > ribbonTop) {
-        hasPulledBack = false;
-        setupState = "NEUTRAL";
-      } else {
-        if (h >= e20) {
-          hasPulledBack = true;
-        }
-
-        // Step 3 (Confirmation): Red candle closes below yellow line (EMA 20)
-        const isRedCandle = c < o;
-        const closesBelowEma20 = c < e20;
-
-        // Strict Single-Signal Control: Suppress subsequent SELL signals if already IN_SELL
-        if (currentPositionState !== "IN_SELL" && hasPulledBack && isRedCandle && closesBelowEma20) {
-          sellSignals[i] = true;
-          lastSellSignalIdx = i;
-          currentPositionState = "IN_SELL"; // Enters IN_SELL state (locks until exit or reversal)
-          hasPulledBack = false;
-
-          // Stop Loss directly above top edge of 134 EMA green band (just above ema134High)
-          let sl = e134H * 1.0005;
-          if (sl <= c) {
-            sl = c * 1.003;
-          }
-          // Cap risk to maximum 3% to avoid excessive distance if green band is lagging
-          if (sl - c > c * 0.03) {
-            sl = c * 1.03;
-          }
-
-          const risk = sl - c;
-          const tp = c - (risk * 2.0); // Exact 1:2 RRR
-
-          activeSl = sl;
-          activeTp = tp;
-          activeEntry = c;
-
-          slSeries[i] = sl;
-          tpSeries[i] = tp;
         }
       }
     }
@@ -690,34 +627,34 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   const isBuyTriggeredNow = buySignals[idx];
   const isSellTriggeredNow = sellSignals[idx];
 
-  const isBuySignal = (currentPositionState === "IN_BUY");
-  const isSellSignal = (currentPositionState === "IN_SELL");
+  const isBuySignal = (lastSignalDirection === 1);
+  const isSellSignal = (lastSignalDirection === -1);
   const isUptrend = (currentE20 > currentE134H && currentE20 > currentE55);
 
-  const breakoutCandleOffset = (currentPositionState === "IN_BUY" && lastBuySignalIdx >= 0) ? (idx - lastBuySignalIdx) : -1;
-  const exitCandleOffset = (currentPositionState === "IN_SELL" && lastSellSignalIdx >= 0) ? (idx - lastSellSignalIdx) : -1;
+  const breakoutCandleOffset = (lastSignalDirection === 1 && lastBuySignalIdx >= 0) ? (idx - lastBuySignalIdx) : -1;
+  const exitCandleOffset = (lastSignalDirection === -1 && lastSellSignalIdx >= 0) ? (idx - lastSellSignalIdx) : -1;
 
   // Derive active dynamic Stop Loss & Take Profit levels
   let returnEntry = 0;
   let returnSl = 0;
   let returnTp = 0;
 
-  if (currentPositionState === "IN_BUY" && lastBuySignalIdx >= 0) {
+  if (lastSignalDirection === 1 && lastBuySignalIdx >= 0) {
     returnEntry = closePrices[lastBuySignalIdx];
     returnSl = slSeries[lastBuySignalIdx];
     returnTp = tpSeries[lastBuySignalIdx];
-  } else if (currentPositionState === "IN_SELL" && lastSellSignalIdx >= 0) {
+  } else if (lastSignalDirection === -1 && lastSellSignalIdx >= 0) {
     returnEntry = closePrices[lastSellSignalIdx];
     returnSl = slSeries[lastSellSignalIdx];
     returnTp = tpSeries[lastSellSignalIdx];
   } else if (currentE20 > currentE134H) {
     returnEntry = closePrices[idx];
-    returnSl = Math.max(currentE134L * 0.9995, returnEntry * 0.97);
-    returnTp = returnEntry + ((returnEntry - returnSl) * 2.0);
+    returnSl = currentE134L;
+    returnTp = returnEntry + (Math.max(returnEntry - returnSl, returnEntry * 0.001) * 2.0);
   } else if (currentE20 < currentE134L) {
     returnEntry = closePrices[idx];
-    returnSl = Math.min(currentE134H * 1.0005, returnEntry * 1.03);
-    returnTp = returnEntry - ((returnSl - returnEntry) * 2.0);
+    returnSl = currentE134H;
+    returnTp = returnEntry - (Math.max(returnSl - returnEntry, returnEntry * 0.001) * 2.0);
   }
 
   // Proximity Calculation (0 - 100%)
