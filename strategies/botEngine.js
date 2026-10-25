@@ -517,7 +517,10 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   const ma8_55 = kryptEmaSeries[7]; // Slowest Krypt line (length 55)
 
   let lastSignalDirection = 0; // 0 = none, 1 = BUY, -1 = SELL (Strict lock: cannot fire same signal consecutively)
-  let hasPulledBack = false;
+  let hasExpandedLong = false;
+  let pullbackConfirmedLong = false;
+  let hasExpandedShort = false;
+  let pullbackConfirmedShort = false;
   let currentPositionState = "NEUTRAL";
   let lastBuySignalIdx = -1;
   let lastSellSignalIdx = -1;
@@ -543,76 +546,99 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
     const bodyTop = Math.max(o, c);
     const bodyBottom = Math.min(o, c);
 
-    // Step 1: Fast yellow line (EMA 20) and price cross and trade above/below both 134 EMA green bands
     const isAboveGreenBand = (e20 > e134H && c > e134H);
     const isBelowGreenBand = (e20 < e134L && c < e134L);
 
-    // BUY Signal Check: Strictly blocked if already locked in BUY (lastSignalDirection === 1)
+    // LONG 3-STEP CONFIRMATION SEQUENCE:
+    // Step 1: Regime filter established completely above 134 green band & price expands above yellow line (EMA 20).
+    // Step 2: Clear retracement/pullback into Krypt ribbon (touching/entering between EMA 20 & 55, no body below ribbon).
+    // Step 3: Trigger ▲ BUY strictly on close of first green candle that closes back above yellow line (EMA 20).
     if (lastSignalDirection !== 1) {
-      if (isAboveGreenBand) {
-        if (bodyTop >= ribbonBottom) {
-          if (l <= e20) {
-            hasPulledBack = true;
-          }
-
-          const isGreenCandle = c > o;
-          const closesAboveEma20 = c > e20;
-
-          if (hasPulledBack && isGreenCandle && closesAboveEma20) {
-            buySignals[i] = true;
-            lastBuySignalIdx = i;
-            lastSignalDirection = 1; // STRICT SINGLE-SIGNAL LOCK: Blocks all BUY signals until opposite SELL!
-            currentPositionState = "IN_BUY";
-            hasPulledBack = false;
-
-            // Stop Loss sits snugly right against 134 EMA Low green band boundary
-            let sl = e134L;
-            if (sl >= c) {
-              sl = c * 0.999;
-            }
-            const risk = Math.max(c - sl, c * 0.001);
-            const tp = c + (risk * 2.0); // Exact 1:2 RRR
-
-            slSeries[i] = sl;
-            tpSeries[i] = tp;
+      if (c < e134L || e20 < e134L || bodyTop < ribbonBottom) {
+        hasExpandedLong = false;
+        pullbackConfirmedLong = false;
+      } else if (isAboveGreenBand) {
+        if (!hasExpandedLong) {
+          if (c > e20) {
+            hasExpandedLong = true;
           }
         } else {
-          hasPulledBack = false;
+          if (!pullbackConfirmedLong) {
+            const touchesOrEntersRibbon = (l <= ribbonTop && bodyTop >= ribbonBottom);
+            if (touchesOrEntersRibbon && (c <= e20 || c < o)) {
+              pullbackConfirmedLong = true;
+            }
+          } else {
+            const isGreenCandle = c > o;
+            const closesAboveEma20 = c > e20;
+
+            if (isGreenCandle && closesAboveEma20) {
+              buySignals[i] = true;
+              lastBuySignalIdx = i;
+              lastSignalDirection = 1; // STRICT SINGLE-SIGNAL LOCK: Blocks all BUY signals until opposite SELL!
+              currentPositionState = "IN_BUY";
+              hasExpandedLong = false;
+              pullbackConfirmedLong = false;
+
+              // Stop Loss sits snugly right against 134 EMA Low green band boundary
+              let sl = e134L;
+              if (sl >= c) {
+                sl = c * 0.999;
+              }
+              const risk = Math.max(c - sl, c * 0.001);
+              const tp = c + (risk * 2.0); // Exact 1:2 RRR
+
+              slSeries[i] = sl;
+              tpSeries[i] = tp;
+            }
+          }
         }
       }
     }
 
-    // SELL Signal Check: Strictly blocked if already locked in SELL (lastSignalDirection === -1)
+    // SHORT 3-STEP CONFIRMATION SEQUENCE:
+    // Step 1: Regime filter established completely below 134 green band & price expands below yellow line (EMA 20).
+    // Step 2: Clear retracement/pullback up into Krypt ribbon (touching/entering between EMA 20 & 55, no body above ribbon).
+    // Step 3: Trigger ▼ SELL strictly on close of first red candle that closes back below yellow line (EMA 20).
     if (lastSignalDirection !== -1) {
-      if (isBelowGreenBand) {
-        if (bodyBottom <= ribbonTop) {
-          if (h >= e20) {
-            hasPulledBack = true;
-          }
-
-          const isRedCandle = c < o;
-          const closesBelowEma20 = c < e20;
-
-          if (hasPulledBack && isRedCandle && closesBelowEma20) {
-            sellSignals[i] = true;
-            lastSellSignalIdx = i;
-            lastSignalDirection = -1; // STRICT SINGLE-SIGNAL LOCK: Blocks all SELL signals until opposite BUY!
-            currentPositionState = "IN_SELL";
-            hasPulledBack = false;
-
-            // Stop Loss sits snugly right against 134 EMA High green band boundary
-            let sl = e134H;
-            if (sl <= c) {
-              sl = c * 1.001;
-            }
-            const risk = Math.max(sl - c, c * 0.001);
-            const tp = c - (risk * 2.0); // Exact 1:2 RRR
-
-            slSeries[i] = sl;
-            tpSeries[i] = tp;
+      if (c > e134H || e20 > e134H || bodyBottom > ribbonTop) {
+        hasExpandedShort = false;
+        pullbackConfirmedShort = false;
+      } else if (isBelowGreenBand) {
+        if (!hasExpandedShort) {
+          if (c < e20) {
+            hasExpandedShort = true;
           }
         } else {
-          hasPulledBack = false;
+          if (!pullbackConfirmedShort) {
+            const touchesOrEntersRibbon = (h >= ribbonBottom && bodyBottom <= ribbonTop);
+            if (touchesOrEntersRibbon && (c >= e20 || c > o)) {
+              pullbackConfirmedShort = true;
+            }
+          } else {
+            const isRedCandle = c < o;
+            const closesBelowEma20 = c < e20;
+
+            if (isRedCandle && closesBelowEma20) {
+              sellSignals[i] = true;
+              lastSellSignalIdx = i;
+              lastSignalDirection = -1; // STRICT SINGLE-SIGNAL LOCK: Blocks all SELL signals until opposite BUY!
+              currentPositionState = "IN_SELL";
+              hasExpandedShort = false;
+              pullbackConfirmedShort = false;
+
+              // Stop Loss sits snugly right against 134 EMA High green band boundary
+              let sl = e134H;
+              if (sl <= c) {
+                sl = c * 1.001;
+              }
+              const risk = Math.max(sl - c, c * 0.001);
+              const tp = c - (risk * 2.0); // Exact 1:2 RRR
+
+              slSeries[i] = sl;
+              tpSeries[i] = tp;
+            }
+          }
         }
       }
     }
