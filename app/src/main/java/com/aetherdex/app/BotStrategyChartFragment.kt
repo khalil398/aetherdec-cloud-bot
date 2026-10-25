@@ -397,6 +397,11 @@ class BotStrategyChartFragment : Fragment() {
         currentTimeframe = timeframe
         botChartView.timeframeLabel = timeframe
         updateTimeframeButtonsUi()
+        // ── Persist timeframe so it survives app restart ──
+        try {
+            requireContext().getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
+                .edit().putString("bot_chart_timeframe", timeframe).apply()
+        } catch (_: Exception) { }
         fetchCandleHistory(currentPair, currentTimeframe)
         val hlCoin = getHyperliquidCoin(currentPair)
         connectHyperliquidWebSocket(currentPair, hlCoin)
@@ -1131,6 +1136,14 @@ class BotStrategyChartFragment : Fragment() {
         if (::botChartView.isInitialized) {
             botChartView.setActiveStrategies(strategies)
         }
+        // ── Persist to dedicated mode-independent key so syncStrategiesFromPrefs ──
+        // ── can restore reliably without depending on is_spot_mode timing         ──
+        if (strategies.isNotEmpty()) {
+            try {
+                requireContext().getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
+                    .edit().putStringSet("bot_chart_active_strategies", strategies).apply()
+            } catch (_: Exception) { }
+        }
         if (strategies.any { it.contains("Dual-Ribbon", ignoreCase = true) || it.contains("5m", ignoreCase = true) }) {
             if (currentTimeframe != "5m") {
                 selectTimeframe("5m")
@@ -1147,37 +1160,60 @@ class BotStrategyChartFragment : Fragment() {
         if (!::botChartView.isInitialized) return
         try {
             val botPrefs = requireContext().getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
+
+            // ── PRIORITY 1: Dedicated bot-chart key (written by updateActiveStrategies /
+            //   saveBotPrefs). This is mode-independent and always reflects the user's
+            //   LAST actual selection — no is_spot_mode timing dependency. ──────────────
+            val ownStrategies = botPrefs.getStringSet("bot_chart_active_strategies", null)
+            if (!ownStrategies.isNullOrEmpty()) {
+                val ownTimeframe = botPrefs.getString("bot_chart_timeframe", null)
+                activeStrategiesState = ownStrategies
+                botChartView.setActiveStrategies(ownStrategies)
+                // Determine target timeframe: saved value wins; else infer from strategy name
+                val targetTf = ownTimeframe ?: if (ownStrategies.any {
+                    it.contains("Dual-Ribbon", ignoreCase = true) ||
+                    it.contains("5m", ignoreCase = true)
+                }) "5m" else currentTimeframe
+                if (currentTimeframe != targetTf) {
+                    selectTimeframe(targetTf)
+                }
+                return
+            }
+
+            // ── PRIORITY 2: Mode-specific prefs (backward-compat / first run after update) ──
             val spotPrefs = requireContext().getSharedPreferences("aetherdex_prefs", Context.MODE_PRIVATE)
             val isSpotMode = spotPrefs.getBoolean("is_spot_mode", true)
 
-            // Resolve persisted strategy set (prefer StringSet, fall back to comma-string)
             val resolvedSet: Set<String> = run {
-                val savedSet = if (isSpotMode) {
-                    botPrefs.getStringSet("spot_bot_strategies", null)
-                } else {
-                    botPrefs.getStringSet("futures_bot_strategies", null)
-                }
-                if (savedSet != null && savedSet.isNotEmpty()) return@run savedSet
+                // Try both modes and pick the one with a real (non-default) strategy
+                val spotSet  = botPrefs.getStringSet("spot_bot_strategies",    null)
+                val futSet   = botPrefs.getStringSet("futures_bot_strategies", null)
+                val modeSet  = if (isSpotMode) spotSet else futSet
+                val otherSet = if (isSpotMode) futSet  else spotSet
 
-                val singleStrat = if (isSpotMode) {
-                    botPrefs.getString("spot_bot_strategy", null)
-                } else {
-                    botPrefs.getString("futures_bot_strategy", null)
+                // Prefer the current mode's set; if absent fall back to the other mode's set
+                // (covers the case where is_spot_mode was read before MainActivity set it)
+                val candidateSet = when {
+                    !modeSet.isNullOrEmpty()  -> modeSet
+                    !otherSet.isNullOrEmpty() -> otherSet
+                    else -> null
                 }
-                if (!singleStrat.isNullOrBlank()) {
-                    val parsed = singleStrat.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                if (candidateSet != null) return@run candidateSet
+
+                // Try string fallbacks
+                val spotStr = botPrefs.getString("spot_bot_strategy", null)
+                val futStr  = botPrefs.getString("futures_bot_strategy", null)
+                val modeStr = if (isSpotMode) spotStr else futStr
+                val otherStr = if (isSpotMode) futStr else spotStr
+                listOfNotNull(modeStr, otherStr).firstOrNull { it.isNotBlank() }?.let { s ->
+                    val parsed = s.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
                     if (parsed.isNotEmpty()) return@run parsed
                 }
 
-                // Absolute fallback — if nothing was ever saved, use the companion state
-                // (which MainActivity also populates from prefs at setupBotEngine time).
-                // Avoid the hard-coded "30m EMA High/Low" default so the chart never
-                // overrides a user-saved selection.
                 if (activeStrategiesState.isNotEmpty()) activeStrategiesState
                 else setOf("30m EMA High/Low")
             }
 
-            // Apply — updateActiveStrategies also auto-switches timeframe to 5m for Dual-Ribbon
             activeStrategiesState = resolvedSet
             updateActiveStrategies(resolvedSet)
         } catch (e: Exception) {

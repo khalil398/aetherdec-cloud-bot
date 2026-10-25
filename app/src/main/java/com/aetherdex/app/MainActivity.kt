@@ -4295,6 +4295,10 @@ class MainActivity : AppCompatActivity(),
 
     private fun saveBotPrefs() {
         val prefs = getSharedPreferences("aetherdex_bot_prefs", MODE_PRIVATE)
+        // The currently-active mode's strategies are written to the dedicated
+        // bot_chart_active_strategies key so BotStrategyChartFragment can restore
+        // the correct strategy on app restart without any is_spot_mode timing issues.
+        val activeStrats = if (isSpotMode) spotBotStrategies else futuresBotStrategies
         prefs.edit()
             .putBoolean("spot_bot_active", isSpotBotActive)
             .putBoolean("futures_bot_active", isFuturesBotActive)
@@ -4309,6 +4313,7 @@ class MainActivity : AppCompatActivity(),
             .putFloat("futures_bot_pnl_usd", futuresBotTotalPnlUsd.toFloat())
             .putInt("spot_bot_active_trades", spotBotActiveTradesCount)
             .putInt("futures_bot_active_trades", futuresBotActiveTradesCount)
+            .putStringSet("bot_chart_active_strategies", activeStrats)
             .apply()
     }
 
