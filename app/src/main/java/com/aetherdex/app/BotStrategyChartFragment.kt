@@ -329,6 +329,11 @@ class BotStrategyChartFragment : Fragment() {
             )
         }
         syncStrategiesFromPrefs()
+        try {
+            val bal = MainActivity.activeFuturesBalance
+            val lev = MainActivity.activeFuturesLeverage
+            botChartView.setFuturesAccountMetrics(bal, lev)
+        } catch (_: Exception) {}
         chartContentLayout.addView(botChartView)
         rootFrameLayout.addView(chartContentLayout)
 
@@ -1154,6 +1159,19 @@ class BotStrategyChartFragment : Fragment() {
     override fun onResume() {
         super.onResume()
         syncStrategiesFromPrefs()
+        try {
+            val bal = MainActivity.activeFuturesBalance
+            val lev = MainActivity.activeFuturesLeverage
+            if (::botChartView.isInitialized) {
+                botChartView.setFuturesAccountMetrics(bal, lev)
+            }
+        } catch (_: Exception) {}
+    }
+
+    fun updateFuturesMetrics(balance: Double, leverage: Int) {
+        if (::botChartView.isInitialized) {
+            botChartView.setFuturesAccountMetrics(balance, leverage)
+        }
     }
 
     private fun syncStrategiesFromPrefs() {

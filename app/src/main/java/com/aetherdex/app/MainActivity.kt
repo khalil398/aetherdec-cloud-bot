@@ -62,6 +62,8 @@ class MainActivity : AppCompatActivity(),
 
     companion object {
         const val TAG = "MainActivity"
+        var activeFuturesBalance: Double = 0.0
+        var activeFuturesLeverage: Int = 10
     }
 
     // Chart handles
@@ -924,10 +926,17 @@ class MainActivity : AppCompatActivity(),
 
         sliderLeverage.addOnChangeListener { _, value, _ ->
             val v = value.toInt()
+            activeFuturesLeverage = v
+            try {
+                getSharedPreferences("aetherdex_prefs", MODE_PRIVATE).edit()
+                    .putInt("futures_selected_leverage", v)
+                    .apply()
+            } catch (_: Exception) {}
             tvLeverageValue.text = getString(R.string.leverage_value).replace("10x", "${v}x")
             syncChipFromSlider(v)
             updatePositionSizeHint()
             updateTpSlEstUi()
+            notifyBotChartMetricsUpdated()
             if (isFuturesBotActive && !isSpotMode) {
                 syncCurrentBotConfig()
             }
@@ -3172,7 +3181,17 @@ class MainActivity : AppCompatActivity(),
             supportFragmentManager.beginTransaction()
                 .replace(R.id.botChartSection, fragment)
                 .commitAllowingStateLoss()
+            val lev = if (::sliderLeverage.isInitialized) sliderLeverage.value.toInt() else activeFuturesLeverage
+            fragment.updateFuturesMetrics(activeFuturesBalance, lev)
         }
+    }
+
+    fun notifyBotChartMetricsUpdated() {
+        try {
+            val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
+            val lev = if (::sliderLeverage.isInitialized) sliderLeverage.value.toInt() else activeFuturesLeverage
+            botChartFrag?.updateFuturesMetrics(activeFuturesBalance, lev)
+        } catch (_: Exception) {}
     }
 
     // -------------------------------------------------------------------- //
@@ -5282,6 +5301,13 @@ class MainActivity : AppCompatActivity(),
         }
         val unifiedTag = if (isUnifiedAccountActive && !isDemoModeActive) " (Unified)" else ""
         tvAvailableBalance.text = String.format(java.util.Locale.US, "Avail: $%.2f USDC%s", bal, unifiedTag)
+        activeFuturesBalance = bal
+        try {
+            getSharedPreferences("aetherdex_prefs", MODE_PRIVATE).edit()
+                .putFloat("futures_available_balance", bal.toFloat())
+                .apply()
+        } catch (_: Exception) {}
+        notifyBotChartMetricsUpdated()
     }
 
     private fun fetchHyperliquidBalance(showToast: Boolean = false) {

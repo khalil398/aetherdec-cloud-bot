@@ -212,6 +212,57 @@ class BotStrategyChartView @JvmOverloads constructor(
     private var chochSignals: IntArray = IntArray(0)
     private var marketSwings: List<FractalLevel> = emptyList()
 
+    // Active Futures Account Metrics for Dynamic TP/SL Projected PnL
+    var futuresBalance: Double = 0.0
+        private set
+    var futuresLeverage: Int = 10
+        private set
+
+    fun setFuturesAccountMetrics(balance: Double, leverage: Int) {
+        var changed = false
+        if (balance >= 0.0 && balance != futuresBalance) {
+            futuresBalance = balance
+            changed = true
+        }
+        if (leverage > 0 && leverage != futuresLeverage) {
+            futuresLeverage = leverage
+            changed = true
+        }
+        if (changed) {
+            postInvalidate()
+        }
+    }
+
+    private fun getEffectiveFuturesMetrics(): Pair<Double, Int> {
+        var bal = futuresBalance
+        var lev = futuresLeverage
+        if (bal <= 0.0 || lev <= 0) {
+            try {
+                if (MainActivity.activeFuturesBalance > 0.0) {
+                    bal = MainActivity.activeFuturesBalance
+                }
+                if (MainActivity.activeFuturesLeverage > 0) {
+                    lev = MainActivity.activeFuturesLeverage
+                }
+                if (bal <= 0.0 || lev <= 0) {
+                    val prefs = context.getSharedPreferences("aetherdex_prefs", Context.MODE_PRIVATE)
+                    val isDemo = prefs.getBoolean("is_demo_mode", true)
+                    val demoBal = prefs.getFloat("demo_balance", 0.0f).toDouble()
+                    val hlBal = prefs.getFloat("hyperliquid_l1_balance", 0.0f).toDouble()
+                    val savedFut = prefs.getFloat("futures_available_balance", -1f).toDouble()
+                    if (bal <= 0.0) {
+                        bal = if (savedFut >= 0.0) savedFut else (if (isDemo && demoBal > 0.0) demoBal else hlBal)
+                    }
+                    if (lev <= 0) {
+                        lev = prefs.getInt("futures_selected_leverage", 10)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        if (lev <= 0) lev = 10
+        return Pair(bal, lev)
+    }
+
     // View State & Touch Control Parameters
     private var zoomFactor: Float = 1.0f // 0.10f to 8.0f (Controls candleWidth and visible candle count)
     private var scrollOffsetFloat: Float = 0f
@@ -1743,54 +1794,127 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val endX = paddingLeftPx + chartWidth
 
                 if (endX > startX) {
+                    val (currentBalance, currentLeverage) = getEffectiveFuturesMetrics()
+                    val isLong = (lastSig == 1)
+
+                    val entryPrice = if (lastDualRibbonSigIdx < dualRibbonEntrySeries.size && dualRibbonEntrySeries[lastDualRibbonSigIdx] > 0.0) {
+                        dualRibbonEntrySeries[lastDualRibbonSigIdx]
+                    } else if (lastDualRibbonSigIdx < candles.size) {
+                        candles[lastDualRibbonSigIdx].close
+                    } else 0.0
+
+                    // Calculate projected Profit & Loss in dollar terms based on Futures Balance & Leverage
+                    val estProfit = if (entryPrice > 0.0 && currentBalance > 0.0 && currentLeverage > 0) {
+                        val pnlRatio = if (isLong) (tp - entryPrice) / entryPrice else (entryPrice - tp) / entryPrice
+                        (pnlRatio * currentBalance * currentLeverage).coerceAtLeast(0.0)
+                    } else 0.0
+
+                    val estLoss = if (entryPrice > 0.0 && currentBalance > 0.0 && currentLeverage > 0) {
+                        val pnlRatio = if (isLong) (entryPrice - sl) / entryPrice else (sl - entryPrice) / entryPrice
+                        (pnlRatio * currentBalance * currentLeverage).coerceAtLeast(0.0)
+                    } else 0.0
+
+                    val balLabel = if (currentBalance > 0.0) {
+                        String.format(Locale.US, "Bal: $%.2f (%dx)", currentBalance, currentLeverage)
+                    } else {
+                        String.format(Locale.US, "Bal: $0.00 (%dx)", currentLeverage)
+                    }
+
+                    val profitStr = if (estProfit > 0.0) {
+                        String.format(Locale.US, "+Est. Profit: $%.2f", estProfit)
+                    } else {
+                        "+Est. Profit: --"
+                    }
+
+                    val lossStr = if (estLoss > 0.0) {
+                        String.format(Locale.US, "-Est. Loss: $%.2f", estLoss)
+                    } else {
+                        "-Est. Loss: --"
+                    }
+
+                    val tpRightText = "TP " + formatPriceValue(tp) + " | " + profitStr
+                    val slRightText = "SL " + formatPriceValue(sl) + " | " + lossStr
+
+                    val tpRightW = paintRiskPillText.measureText(tpRightText) + 16f
+                    val balW = paintRiskPillText.measureText(balLabel) + 16f
+                    val slW = paintRiskPillText.measureText(slRightText) + 16f
+
                     if (lastSig == 1) { // Active BUY Position
-                        // TP Target line & pill badge (Green)
+                        // TP Target line & pill badges (Green)
                         canvas.drawLine(startX, yTp, endX, yTp, paintRibbonTp)
-                        val tpLabel = "TP " + formatPriceValue(tp) + " (1:2)"
-                        val tpW = paintRiskPillText.measureText(tpLabel) + 16f
-                        val tpRect = RectF(endX - tpW, yTp - 14f, endX - 2f, yTp + 5f)
+                        val yTpTop = yTp - 14f
+                        val yTpBottom = yTp + 5f
+                        val yTpTextY = yTp - 1f
+
+                        val tpRightRect = RectF(endX - tpRightW, yTpTop, endX - 2f, yTpBottom)
+                        val balRect = RectF(endX - tpRightW - 6f - balW, yTpTop, endX - tpRightW - 6f, yTpBottom)
+
                         paintRiskPillBg.color = Color.parseColor("#E60D2517")
                         paintRiskPillBorder.color = Color.parseColor("#00E676")
-                        canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBg)
-                        canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBorder)
                         paintRiskPillText.color = Color.parseColor("#00E676")
-                        canvas.drawText(tpLabel, endX - tpW + 8f, yTp - 1f, paintRiskPillText)
+
+                        // Left side: current Futures Balance
+                        canvas.drawRoundRect(balRect, 4f, 4f, paintRiskPillBg)
+                        canvas.drawRoundRect(balRect, 4f, 4f, paintRiskPillBorder)
+                        canvas.drawText(balLabel, balRect.left + 8f, yTpTextY, paintRiskPillText)
+
+                        // Right side: TP price + estimated profit
+                        canvas.drawRoundRect(tpRightRect, 4f, 4f, paintRiskPillBg)
+                        canvas.drawRoundRect(tpRightRect, 4f, 4f, paintRiskPillBorder)
+                        canvas.drawText(tpRightText, tpRightRect.left + 8f, yTpTextY, paintRiskPillText)
 
                         // SL Stop Loss line & pill badge (Red)
                         canvas.drawLine(startX, ySl, endX, ySl, paintRibbonSl)
-                        val slLabel = "SL " + formatPriceValue(sl)
-                        val slW = paintRiskPillText.measureText(slLabel) + 16f
-                        val slRect = RectF(endX - slW, ySl - 5f, endX - 2f, ySl + 14f)
+                        val ySlTop = ySl - 5f
+                        val ySlBottom = ySl + 14f
+                        val ySlTextY = ySl + 8f
+
+                        val slRect = RectF(endX - slW, ySlTop, endX - 2f, ySlBottom)
                         paintRiskPillBg.color = Color.parseColor("#E6290D0D")
                         paintRiskPillBorder.color = Color.parseColor("#FF5252")
+                        paintRiskPillText.color = Color.parseColor("#FF5252")
+
                         canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBg)
                         canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBorder)
-                        paintRiskPillText.color = Color.parseColor("#FF5252")
-                        canvas.drawText(slLabel, endX - slW + 8f, ySl + 8f, paintRiskPillText)
+                        canvas.drawText(slRightText, slRect.left + 8f, ySlTextY, paintRiskPillText)
                     } else if (lastSig == -1) { // Active SELL Position
                         // SL Stop Loss line & pill badge (Red, above price for Short)
                         canvas.drawLine(startX, ySl, endX, ySl, paintRibbonSl)
-                        val slLabel = "SL " + formatPriceValue(sl)
-                        val slW = paintRiskPillText.measureText(slLabel) + 16f
-                        val slRect = RectF(endX - slW, ySl - 14f, endX - 2f, ySl + 5f)
+                        val ySlTop = ySl - 14f
+                        val ySlBottom = ySl + 5f
+                        val ySlTextY = ySl - 1f
+
+                        val slRect = RectF(endX - slW, ySlTop, endX - 2f, ySlBottom)
                         paintRiskPillBg.color = Color.parseColor("#E6290D0D")
                         paintRiskPillBorder.color = Color.parseColor("#FF5252")
+                        paintRiskPillText.color = Color.parseColor("#FF5252")
+
                         canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBg)
                         canvas.drawRoundRect(slRect, 4f, 4f, paintRiskPillBorder)
-                        paintRiskPillText.color = Color.parseColor("#FF5252")
-                        canvas.drawText(slLabel, endX - slW + 8f, ySl - 1f, paintRiskPillText)
+                        canvas.drawText(slRightText, slRect.left + 8f, ySlTextY, paintRiskPillText)
 
                         // TP Target line & pill badge (Green, below price for Short)
                         canvas.drawLine(startX, yTp, endX, yTp, paintRibbonTp)
-                        val tpLabel = "TP " + formatPriceValue(tp) + " (1:2)"
-                        val tpW = paintRiskPillText.measureText(tpLabel) + 16f
-                        val tpRect = RectF(endX - tpW, yTp - 5f, endX - 2f, yTp + 14f)
+                        val yTpTop = yTp - 5f
+                        val yTpBottom = yTp + 14f
+                        val yTpTextY = yTp + 8f
+
+                        val tpRightRect = RectF(endX - tpRightW, yTpTop, endX - 2f, yTpBottom)
+                        val balRect = RectF(endX - tpRightW - 6f - balW, yTpTop, endX - tpRightW - 6f, yTpBottom)
+
                         paintRiskPillBg.color = Color.parseColor("#E60D2517")
                         paintRiskPillBorder.color = Color.parseColor("#00E676")
-                        canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBg)
-                        canvas.drawRoundRect(tpRect, 4f, 4f, paintRiskPillBorder)
                         paintRiskPillText.color = Color.parseColor("#00E676")
-                        canvas.drawText(tpLabel, endX - tpW + 8f, yTp + 8f, paintRiskPillText)
+
+                        // Left side: current Futures Balance
+                        canvas.drawRoundRect(balRect, 4f, 4f, paintRiskPillBg)
+                        canvas.drawRoundRect(balRect, 4f, 4f, paintRiskPillBorder)
+                        canvas.drawText(balLabel, balRect.left + 8f, yTpTextY, paintRiskPillText)
+
+                        // Right side: TP price + estimated profit
+                        canvas.drawRoundRect(tpRightRect, 4f, 4f, paintRiskPillBg)
+                        canvas.drawRoundRect(tpRightRect, 4f, 4f, paintRiskPillBorder)
+                        canvas.drawText(tpRightText, tpRightRect.left + 8f, yTpTextY, paintRiskPillText)
                     }
                 }
             }
