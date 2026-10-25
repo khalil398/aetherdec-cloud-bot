@@ -518,9 +518,12 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
 
   let setupState = "NEUTRAL"; // "LONG_SETUP", "SHORT_SETUP", or "NEUTRAL"
   let hasPulledBack = false;
-  let currentPositionState = "NEUTRAL";
+  let currentPositionState = "NEUTRAL"; // Strict state: "NEUTRAL", "IN_BUY", "IN_SELL"
   let lastBuySignalIdx = -1;
   let lastSellSignalIdx = -1;
+  let activeSl = 0;
+  let activeTp = 0;
+  let activeEntry = 0;
 
   const buySignals = new Array(n).fill(false);
   const sellSignals = new Array(n).fill(false);
@@ -536,6 +539,25 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
     const h = highPrices[i];
     const l = lowPrices[i];
     const c = closePrices[i];
+
+    // Check position closing for active positions (SL/TP hit or structural invalidation)
+    if (currentPositionState === "IN_BUY") {
+      if ((activeSl > 0 && l <= activeSl) || (activeTp > 0 && h >= activeTp) || (c < e134L && e20 < e134L)) {
+        currentPositionState = "NEUTRAL";
+        setupState = "NEUTRAL";
+        hasPulledBack = false;
+        activeSl = 0;
+        activeTp = 0;
+      }
+    } else if (currentPositionState === "IN_SELL") {
+      if ((activeSl > 0 && h >= activeSl) || (activeTp > 0 && l <= activeTp) || (c > e134H && e20 > e134H)) {
+        currentPositionState = "NEUTRAL";
+        setupState = "NEUTRAL";
+        hasPulledBack = false;
+        activeSl = 0;
+        activeTp = 0;
+      }
+    }
 
     // Krypt Ribbon space boundaries
     const ribbonTop = Math.max(e20, e55);
@@ -574,7 +596,6 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
       // Step 2 (Pullback): Price pulls back into Krypt ribbon space
       // Invalidation Rule: without a complete candle body closing entirely below the ribbon
       if (bodyTop < ribbonBottom) {
-        // Invalidation: candle body completely below ribbon
         hasPulledBack = false;
         setupState = "NEUTRAL";
       } else {
@@ -586,17 +607,29 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
         const isGreenCandle = c > o;
         const closesAboveEma20 = c > e20;
 
-        if (hasPulledBack && isGreenCandle && closesAboveEma20) {
+        // Strict Single-Signal Control: Suppress subsequent BUY signals if already IN_BUY
+        if (currentPositionState !== "IN_BUY" && hasPulledBack && isGreenCandle && closesAboveEma20) {
           buySignals[i] = true;
           lastBuySignalIdx = i;
-          currentPositionState = "IN_BUY";
-          hasPulledBack = false; // Reset to await next pullback in ongoing trend
+          currentPositionState = "IN_BUY"; // Enters IN_BUY state (locks until exit or reversal)
+          hasPulledBack = false;
 
-          // Risk Management & Targets (SL / TP):
-          // SL outside 134 EMA green band below
-          const sl = Math.min(e134L * 0.999, c * 0.99);
+          // Stop Loss directly below bottom edge of 134 EMA green band (just beneath ema134Low)
+          let sl = e134L * 0.9995;
+          if (sl >= c) {
+            sl = c * 0.997;
+          }
+          // Cap risk to maximum 3% to avoid excessive distance if green band is lagging
+          if (c - sl > c * 0.03) {
+            sl = c * 0.97;
+          }
+
           const risk = c - sl;
-          const tp = c + (risk * 2.0); // Minimum 1:2 Risk-to-Reward Ratio
+          const tp = c + (risk * 2.0); // Exact 1:2 RRR
+
+          activeSl = sl;
+          activeTp = tp;
+          activeEntry = c;
 
           slSeries[i] = sl;
           tpSeries[i] = tp;
@@ -606,7 +639,6 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
       // Step 2 (Pullback): Price pulls back into Krypt ribbon space
       // Invalidation Rule: without a complete candle body closing entirely above the ribbon
       if (bodyBottom > ribbonTop) {
-        // Invalidation: candle body completely above ribbon
         hasPulledBack = false;
         setupState = "NEUTRAL";
       } else {
@@ -618,17 +650,29 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
         const isRedCandle = c < o;
         const closesBelowEma20 = c < e20;
 
-        if (hasPulledBack && isRedCandle && closesBelowEma20) {
+        // Strict Single-Signal Control: Suppress subsequent SELL signals if already IN_SELL
+        if (currentPositionState !== "IN_SELL" && hasPulledBack && isRedCandle && closesBelowEma20) {
           sellSignals[i] = true;
           lastSellSignalIdx = i;
-          currentPositionState = "IN_SELL";
-          hasPulledBack = false; // Reset to await next pullback in ongoing trend
+          currentPositionState = "IN_SELL"; // Enters IN_SELL state (locks until exit or reversal)
+          hasPulledBack = false;
 
-          // Risk Management & Targets (SL / TP):
-          // SL outside 134 EMA green band above
-          const sl = Math.max(e134H * 1.001, c * 1.01);
+          // Stop Loss directly above top edge of 134 EMA green band (just above ema134High)
+          let sl = e134H * 1.0005;
+          if (sl <= c) {
+            sl = c * 1.003;
+          }
+          // Cap risk to maximum 3% to avoid excessive distance if green band is lagging
+          if (sl - c > c * 0.03) {
+            sl = c * 1.03;
+          }
+
           const risk = sl - c;
-          const tp = c - (risk * 2.0); // Minimum 1:2 Risk-to-Reward Ratio
+          const tp = c - (risk * 2.0); // Exact 1:2 RRR
+
+          activeSl = sl;
+          activeTp = tp;
+          activeEntry = c;
 
           slSeries[i] = sl;
           tpSeries[i] = tp;
@@ -643,37 +687,37 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   const currentE20 = ma1_20[idx];
   const currentE55 = ma8_55[idx];
 
-  const isBuyTriggeredNow = buySignals[idx] || (lastBuySignalIdx >= n - 2);
-  const isSellTriggeredNow = sellSignals[idx] || (lastSellSignalIdx >= n - 2);
+  const isBuyTriggeredNow = buySignals[idx];
+  const isSellTriggeredNow = sellSignals[idx];
 
-  const isBuySignal = (currentPositionState === "IN_BUY") || isBuyTriggeredNow;
-  const isSellSignal = (currentPositionState === "IN_SELL") || isSellTriggeredNow;
+  const isBuySignal = (currentPositionState === "IN_BUY");
+  const isSellSignal = (currentPositionState === "IN_SELL");
   const isUptrend = (currentE20 > currentE134H && currentE20 > currentE55);
 
-  const breakoutCandleOffset = lastBuySignalIdx >= 0 ? (idx - lastBuySignalIdx) : -1;
-  const exitCandleOffset = lastSellSignalIdx >= 0 ? (idx - lastSellSignalIdx) : -1;
+  const breakoutCandleOffset = (currentPositionState === "IN_BUY" && lastBuySignalIdx >= 0) ? (idx - lastBuySignalIdx) : -1;
+  const exitCandleOffset = (currentPositionState === "IN_SELL" && lastSellSignalIdx >= 0) ? (idx - lastSellSignalIdx) : -1;
 
   // Derive active dynamic Stop Loss & Take Profit levels
-  let activeEntry = 0;
-  let activeSl = 0;
-  let activeTp = 0;
+  let returnEntry = 0;
+  let returnSl = 0;
+  let returnTp = 0;
 
   if (currentPositionState === "IN_BUY" && lastBuySignalIdx >= 0) {
-    activeEntry = closePrices[lastBuySignalIdx];
-    activeSl = slSeries[lastBuySignalIdx];
-    activeTp = tpSeries[lastBuySignalIdx];
+    returnEntry = closePrices[lastBuySignalIdx];
+    returnSl = slSeries[lastBuySignalIdx];
+    returnTp = tpSeries[lastBuySignalIdx];
   } else if (currentPositionState === "IN_SELL" && lastSellSignalIdx >= 0) {
-    activeEntry = closePrices[lastSellSignalIdx];
-    activeSl = slSeries[lastSellSignalIdx];
-    activeTp = tpSeries[lastSellSignalIdx];
+    returnEntry = closePrices[lastSellSignalIdx];
+    returnSl = slSeries[lastSellSignalIdx];
+    returnTp = tpSeries[lastSellSignalIdx];
   } else if (currentE20 > currentE134H) {
-    activeEntry = closePrices[idx];
-    activeSl = Math.min(currentE134L * 0.999, activeEntry * 0.99);
-    activeTp = activeEntry + ((activeEntry - activeSl) * 2.0);
+    returnEntry = closePrices[idx];
+    returnSl = Math.max(currentE134L * 0.9995, returnEntry * 0.97);
+    returnTp = returnEntry + ((returnEntry - returnSl) * 2.0);
   } else if (currentE20 < currentE134L) {
-    activeEntry = closePrices[idx];
-    activeSl = Math.max(currentE134H * 1.001, activeEntry * 1.01);
-    activeTp = activeEntry - ((activeSl - activeEntry) * 2.0);
+    returnEntry = closePrices[idx];
+    returnSl = Math.min(currentE134H * 1.0005, returnEntry * 1.03);
+    returnTp = returnEntry - ((returnSl - returnEntry) * 2.0);
   }
 
   // Proximity Calculation (0 - 100%)
@@ -703,9 +747,9 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
     r1Ema134Low: currentE134L,
     kryptMa1_20: currentE20,
     kryptMa8_55: currentE55,
-    stopLoss: activeSl,
-    takeProfit: activeTp,
-    entryPrice: activeEntry,
+    stopLoss: returnSl,
+    takeProfit: returnTp,
+    entryPrice: returnEntry,
     riskRewardRatio: 2.0,
     isUptrend,
     currentPositionState,
@@ -722,9 +766,9 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
     isSellTriggered: isSellTriggeredNow,
     breakoutCandleOffset,
     exitCandleOffset,
-    stopLoss: activeSl,
-    takeProfit: activeTp,
-    entryPrice: activeEntry,
+    stopLoss: returnSl,
+    takeProfit: returnTp,
+    entryPrice: returnEntry,
     riskRewardRatio: 2.0,
     proximityScore,
     currentPositionState,
