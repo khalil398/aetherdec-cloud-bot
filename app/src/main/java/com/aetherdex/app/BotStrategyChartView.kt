@@ -771,7 +771,10 @@ class BotStrategyChartView @JvmOverloads constructor(
         dualRibbonEntrySeries = DoubleArray(n)
 
         var lastLockedDirection = 0 // 0 = None, 1 = Locked in BUY, -1 = Locked in SELL (Strict alternating signals)
-        var hasPulledBackRibbon = false
+        var hasExpandedLong = false
+        var pullbackConfirmedLong = false
+        var hasExpandedShort = false
+        var pullbackConfirmedShort = false
 
         if (n > 0 && kryptEmaSeries.size == 8) {
             val ma1 = kryptEmaSeries[0] // EMA 20 (yellow reference line)
@@ -792,74 +795,97 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val bodyTop = max(o, c)
                 val bodyBottom = min(o, c)
 
-                // Step 1: EMA 20 and price cross and trade above/below both 134 EMA green bands
                 val isAboveGreenBand = (e20 > e134H && c > e134H)
                 val isBelowGreenBand = (e20 < e134L && c < e134L)
 
-                // BUY Signal Check: STRICTLY BLOCKED if already locked in BUY (lastLockedDirection == 1)
+                // LONG 3-STEP CONFIRMATION SEQUENCE:
+                // Step 1: Regime filter established completely above 134 green band & price expands above yellow line (EMA 20).
+                // Step 2: Clear retracement/pullback into Krypt ribbon (touching/entering between EMA 20 & 55, no body below ribbon).
+                // Step 3: Trigger ▲ BUY strictly on close of first green candle that closes back above yellow line (EMA 20).
                 if (lastLockedDirection != 1) {
-                    if (isAboveGreenBand) {
-                        if (bodyTop >= ribbonBottom) {
-                            if (l <= e20) {
-                                hasPulledBackRibbon = true
-                            }
-
-                            val isGreen = c > o
-                            val closesAboveYellow = c > e20
-
-                            if (hasPulledBackRibbon && isGreen && closesAboveYellow) {
-                                dualRibbonSignals[i] = 1
-                                lastLockedDirection = 1 // STRICT SINGLE-SIGNAL LOCK: Blocks all subsequent BUY signals until opposite SELL!
-                                hasPulledBackRibbon = false
-
-                                // Stop Loss sits snugly right against the 134 EMA Low green band boundary
-                                var sl = e134L
-                                if (sl >= c) {
-                                    sl = c * 0.999
-                                }
-                                val risk = max(c - sl, c * 0.001)
-                                val tp = c + (risk * 2.0) // Exact 1:2 RRR
-
-                                dualRibbonEntrySeries[i] = c
-                                dualRibbonSlSeries[i] = sl
-                                dualRibbonTpSeries[i] = tp
+                    if (c < e134L || e20 < e134L || bodyTop < ribbonBottom) {
+                        hasExpandedLong = false
+                        pullbackConfirmedLong = false
+                    } else if (isAboveGreenBand) {
+                        if (!hasExpandedLong) {
+                            if (c > e20) {
+                                hasExpandedLong = true
                             }
                         } else {
-                            hasPulledBackRibbon = false
+                            if (!pullbackConfirmedLong) {
+                                val touchesOrEntersRibbon = (l <= ribbonTop && bodyTop >= ribbonBottom)
+                                if (touchesOrEntersRibbon && (c <= e20 || c < o)) {
+                                    pullbackConfirmedLong = true
+                                }
+                            } else {
+                                val isGreen = c > o
+                                val closesAboveYellow = c > e20
+
+                                if (isGreen && closesAboveYellow) {
+                                    dualRibbonSignals[i] = 1
+                                    lastLockedDirection = 1 // STRICT SINGLE-SIGNAL LOCK: Blocks all subsequent BUY signals until opposite SELL!
+                                    hasExpandedLong = false
+                                    pullbackConfirmedLong = false
+
+                                    // Stop Loss sits snugly right against the 134 EMA Low green band boundary
+                                    var sl = e134L
+                                    if (sl >= c) {
+                                        sl = c * 0.999
+                                    }
+                                    val risk = max(c - sl, c * 0.001)
+                                    val tp = c + (risk * 2.0) // Exact 1:2 RRR
+
+                                    dualRibbonEntrySeries[i] = c
+                                    dualRibbonSlSeries[i] = sl
+                                    dualRibbonTpSeries[i] = tp
+                                }
+                            }
                         }
                     }
                 }
 
-                // SELL Signal Check: STRICTLY BLOCKED if already locked in SELL (lastLockedDirection == -1)
+                // SHORT 3-STEP CONFIRMATION SEQUENCE:
+                // Step 1: Regime filter established completely below 134 green band & price expands below yellow line (EMA 20).
+                // Step 2: Clear retracement/pullback up into Krypt ribbon (touching/entering between EMA 20 & 55, no body above ribbon).
+                // Step 3: Trigger ▼ SELL strictly on close of first red candle that closes back below yellow line (EMA 20).
                 if (lastLockedDirection != -1) {
-                    if (isBelowGreenBand) {
-                        if (bodyBottom <= ribbonTop) {
-                            if (h >= e20) {
-                                hasPulledBackRibbon = true
-                            }
-
-                            val isRed = c < o
-                            val closesBelowYellow = c < e20
-
-                            if (hasPulledBackRibbon && isRed && closesBelowYellow) {
-                                dualRibbonSignals[i] = -1
-                                lastLockedDirection = -1 // STRICT SINGLE-SIGNAL LOCK: Blocks all subsequent SELL signals until opposite BUY!
-                                hasPulledBackRibbon = false
-
-                                // Stop Loss sits snugly right against the 134 EMA High green band boundary
-                                var sl = e134H
-                                if (sl <= c) {
-                                    sl = c * 1.001
-                                }
-                                val risk = max(sl - c, c * 0.001)
-                                val tp = c - (risk * 2.0) // Exact 1:2 RRR
-
-                                dualRibbonEntrySeries[i] = c
-                                dualRibbonSlSeries[i] = sl
-                                dualRibbonTpSeries[i] = tp
+                    if (c > e134H || e20 > e134H || bodyBottom > ribbonTop) {
+                        hasExpandedShort = false
+                        pullbackConfirmedShort = false
+                    } else if (isBelowGreenBand) {
+                        if (!hasExpandedShort) {
+                            if (c < e20) {
+                                hasExpandedShort = true
                             }
                         } else {
-                            hasPulledBackRibbon = false
+                            if (!pullbackConfirmedShort) {
+                                val touchesOrEntersRibbon = (h >= ribbonBottom && bodyBottom <= ribbonTop)
+                                if (touchesOrEntersRibbon && (c >= e20 || c > o)) {
+                                    pullbackConfirmedShort = true
+                                }
+                            } else {
+                                val isRed = c < o
+                                val closesBelowYellow = c < e20
+
+                                if (isRed && closesBelowYellow) {
+                                    dualRibbonSignals[i] = -1
+                                    lastLockedDirection = -1 // STRICT SINGLE-SIGNAL LOCK: Blocks all subsequent SELL signals until opposite BUY!
+                                    hasExpandedShort = false
+                                    pullbackConfirmedShort = false
+
+                                    // Stop Loss sits snugly right against the 134 EMA High green band boundary
+                                    var sl = e134H
+                                    if (sl <= c) {
+                                        sl = c * 1.001
+                                    }
+                                    val risk = max(sl - c, c * 0.001)
+                                    val tp = c - (risk * 2.0) // Exact 1:2 RRR
+
+                                    dualRibbonEntrySeries[i] = c
+                                    dualRibbonSlSeries[i] = sl
+                                    dualRibbonTpSeries[i] = tp
+                                }
+                            }
                         }
                     }
                 }
