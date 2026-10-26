@@ -12,10 +12,14 @@ async function fetchUserClearinghouseState(userAddress) {
     const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
       type: "clearinghouseState",
       user: userAddress
-    });
+    }, { timeout: 10000 });
     return response.data;
   } catch (error) {
-    console.error(`[Hyperliquid] Error fetching clearinghouseState for ${userAddress}:`, error.message);
+    if (error.response?.status === 429) {
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on clearinghouseState for ${userAddress}`);
+    } else {
+      console.error(`[Hyperliquid] Error fetching clearinghouseState for ${userAddress}:`, error.message);
+    }
     return null;
   }
 }
@@ -28,10 +32,14 @@ async function fetchSpotClearinghouseState(userAddress) {
     const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
       type: "spotClearinghouseState",
       user: userAddress
-    });
+    }, { timeout: 10000 });
     return response.data;
   } catch (error) {
-    console.error(`[Hyperliquid] Error fetching spotClearinghouseState for ${userAddress}:`, error.message);
+    if (error.response?.status === 429) {
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on spotClearinghouseState for ${userAddress}`);
+    } else {
+      console.error(`[Hyperliquid] Error fetching spotClearinghouseState for ${userAddress}:`, error.message);
+    }
     return null;
   }
 }
@@ -43,22 +51,33 @@ async function fetchAllMids() {
   try {
     const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
       type: "allMids"
-    });
+    }, { timeout: 10000 });
     return response.data;
   } catch (error) {
-    console.error("[Hyperliquid] Error fetching allMids:", error.message);
+    if (error.response?.status === 429) {
+      console.warn("[Hyperliquid] ⚠️ Rate limit (429) on allMids");
+    } else {
+      console.error("[Hyperliquid] Error fetching allMids:", error.message);
+    }
     return {};
   }
 }
 
+let cachedSpotMarkets = null;
+let lastSpotMarketsFetch = 0;
+
 /**
- * Fetches all dynamic spot market metadata from Hyperliquid API.
+ * Fetches all dynamic spot market metadata from Hyperliquid API (cached for 2 minutes).
  */
 async function fetchSpotMetaAndCtxs() {
+  const now = Date.now();
+  if (cachedSpotMarkets && (now - lastSpotMarketsFetch < 120000)) {
+    return cachedSpotMarkets;
+  }
   try {
     const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
       type: "spotMetaAndAssetCtxs"
-    });
+    }, { timeout: 10000 });
     const rootData = response.data;
     const spotMarkets = [];
 
@@ -113,8 +132,11 @@ async function fetchSpotMetaAndCtxs() {
         }
       });
     }
+    cachedSpotMarkets = spotMarkets;
+    lastSpotMarketsFetch = now;
     return spotMarkets;
   } catch (error) {
+    if (cachedSpotMarkets) return cachedSpotMarkets;
     console.error("[Hyperliquid] Error fetching spotMetaAndAssetCtxs:", error.message);
     return [];
   }
@@ -142,10 +164,14 @@ async function fetchCandleSnapshot(coin = "BTC", interval = "5m", count = 300) {
         startTime,
         endTime: now
       }
-    });
+    }, { timeout: 10000 });
     return response.data || [];
   } catch (error) {
-    console.error(`[Hyperliquid] Error fetching candleSnapshot for ${coin} (${interval}):`, error.message);
+    if (error.response?.status === 429) {
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on candleSnapshot for ${coin} (${interval})`);
+    } else {
+      console.error(`[Hyperliquid] Error fetching candleSnapshot for ${coin} (${interval}):`, error.message);
+    }
     return [];
   }
 }
@@ -231,7 +257,8 @@ async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isB
     };
 
     const response = await axios.post(`${HYPERLIQUID_API_URL}/exchange`, payload, {
-      headers: { "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json" },
+      timeout: 10000
     });
 
     console.log(`[Hyperliquid] Agent order placed for asset ${assetIndex}:`, response.data);
@@ -242,14 +269,21 @@ async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isB
   }
 }
 
+let cachedPerpMarkets = null;
+let lastPerpMarketsFetch = 0;
+
 /**
- * Fetches Perpetual Futures universe and context metadata.
+ * Fetches Perpetual Futures universe and context metadata (cached for 2 minutes).
  */
 async function fetchPerpMetaAndCtxs() {
+  const now = Date.now();
+  if (cachedPerpMarkets && (now - lastPerpMarketsFetch < 120000)) {
+    return cachedPerpMarkets;
+  }
   try {
     const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
       type: "metaAndAssetCtxs"
-    });
+    }, { timeout: 10000 });
     const rootData = response.data;
     const perpMarkets = [];
     if (Array.isArray(rootData) && rootData.length >= 2) {
@@ -268,8 +302,11 @@ async function fetchPerpMetaAndCtxs() {
         });
       });
     }
+    cachedPerpMarkets = perpMarkets;
+    lastPerpMarketsFetch = now;
     return perpMarkets;
   } catch (error) {
+    if (cachedPerpMarkets) return cachedPerpMarkets;
     console.error("[Hyperliquid] Error fetching perp metaAndAssetCtxs:", error.message);
     return [];
   }

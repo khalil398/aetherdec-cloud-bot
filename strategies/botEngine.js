@@ -860,21 +860,35 @@ async function executeBotTick(uid, db, config, botSecret) {
     ? rawEnabled.map(a => a.toString().toUpperCase().trim())
     : (typeof rawEnabled === "string" && rawEnabled.length > 0 ? [rawEnabled.toUpperCase().trim()] : []);
 
-  const isAssetAuthorizedForBuy = (coin) => {
-    const cleanCoin = coin.toUpperCase().trim()
+  const cleanCoinSymbol = (coin) => {
+    if (!coin) return "";
+    return coin.toString().toUpperCase().trim()
       .replace("/USDC", "")
       .replace("/USDT", "")
       .replace("USDC", "")
       .replace("USDT", "")
       .replace("/", "");
+  };
+
+  // Strictly lock to user-enabled whitelisted assets only - eliminates 429 rate limits!
+  let whitelistedAssets = [];
+  if (enabledAssets && enabledAssets.length > 0) {
+    whitelistedAssets = enabledAssets.map(cleanCoinSymbol).filter(Boolean);
+  }
+  if (whitelistedAssets.length === 0 && targetCoin) {
+    const clnTarget = cleanCoinSymbol(targetCoin);
+    if (clnTarget) whitelistedAssets.push(clnTarget);
+  }
+  if (whitelistedAssets.length === 0) {
+    whitelistedAssets = ["BTC"];
+  }
+  whitelistedAssets = Array.from(new Set(whitelistedAssets));
+
+  const isAssetAuthorizedForBuy = (coin) => {
+    const cleanCoin = cleanCoinSymbol(coin);
 
     // 1. If target_coin is specified, it is always authorized for auto-trading
-    const targetClean = targetCoin.toUpperCase().trim()
-      .replace("/USDC", "")
-      .replace("/USDT", "")
-      .replace("USDC", "")
-      .replace("USDT", "")
-      .replace("/", "");
+    const targetClean = cleanCoinSymbol(targetCoin);
     if (targetClean && (
       cleanCoin === targetClean ||
       cleanCoin === `U${targetClean}` ||
@@ -887,12 +901,7 @@ async function executeBotTick(uid, db, config, botSecret) {
     // 2. If enabled_assets are configured, check if this coin is toggled ON
     if (enabledAssets && enabledAssets.length > 0) {
       return enabledAssets.some(enabledRaw => {
-        const enabled = enabledRaw.toUpperCase().trim()
-          .replace("/USDC", "")
-          .replace("/USDT", "")
-          .replace("USDC", "")
-          .replace("USDT", "")
-          .replace("/", "");
+        const enabled = cleanCoinSymbol(enabledRaw);
         return (
           enabled === cleanCoin ||
           enabled === `U${cleanCoin}` ||
@@ -968,11 +977,10 @@ async function executeBotTick(uid, db, config, botSecret) {
     }
     const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
 
-    const scanQueue = Array.from(new Set([
-      targetCoin,
-      ...enabledAssets,
-      ...perpAvailableCoins
-    ])).filter(Boolean);
+    // STRICT SINGLE/WHITELISTED ASSET LOCK:
+    // Only scan the user-selected/enabled whitelisted asset(s).
+    // Completely bypass scanning all 239 pairs in the background to eliminate 429 rate limits!
+    const scanQueue = whitelistedAssets;
 
     const isDualRibbonActive = futuresStrategyList.some(s =>
       s.toLowerCase().includes("dual-ribbon") ||
@@ -994,24 +1002,19 @@ async function executeBotTick(uid, db, config, botSecret) {
     let validResults = [];
 
     if (isEmaStrategyActive) {
-      console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Perpetual Futures pairs on ${futuresInterval} (Strategy: ${futuresStrategyList.join("+")}, Target: ${targetCoin}, Authorized: ${enabledAssets.length}, Margin: ${marginMode})...`);
+      console.log(`[${uid}] 🎯 Futures whitelisted asset locked: [${scanQueue.join(", ")}] on ${futuresInterval} (Strategy: ${futuresStrategyList.join("+")}, Margin: ${marginMode}). Strictly bypassing all other pairs.`);
 
       const scanResults = await Promise.all(
         scanQueue.map(async (coin) => {
           try {
-            const cleanCoin = coin.toUpperCase().trim()
-              .replace("/USDC", "")
-              .replace("/USDT", "")
-              .replace("USDC", "")
-              .replace("USDT", "")
-              .replace("/", "");
+            const cleanCoin = cleanCoinSymbol(coin);
             const market = perpMarketMap.get(cleanCoin);
             const querySymbol = market ? market.coin : cleanCoin;
             const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || 0);
             if (coinPrice <= 0) return null;
 
             // Strategy execution engine queries targeted candle timeframe (5m for Dual-Ribbon, 30m for EMA/ICT)
-            const candles = await fetchCandleSnapshot(querySymbol, futuresInterval, 1000);
+            const candles = await fetchCandleSnapshot(querySymbol, futuresInterval, 300);
             if (!candles || candles.length < minCandlesReq) return null;
 
             const signalResult = isDualRibbonActive
@@ -1346,11 +1349,10 @@ async function executeBotTick(uid, db, config, botSecret) {
 
     console.log(`[${uid}] ⚡ Running 30m Spot Bot Engine '${spotStrategyList.join(" + ")}' (Alloc: ${spotAllocPct}%)...`);
 
-    const scanQueue = Array.from(new Set([
-      targetCoin,
-      ...enabledAssets,
-      ...availableCoins
-    ]));
+    // STRICT SINGLE/WHITELISTED ASSET LOCK:
+    // Only scan the user-selected/enabled whitelisted asset(s).
+    // Completely bypass scanning all universe pairs to eliminate 429 rate limits!
+    const scanQueue = whitelistedAssets;
 
     const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
     const isDualRibbonActive = spotStrategyList.some(s =>
@@ -1371,9 +1373,9 @@ async function executeBotTick(uid, db, config, botSecret) {
     ) || spotStrategyList.length === 0;
 
     if (isEmaStrategyActive) {
-      console.log(`[${uid}] 🔍 Scanning ${scanQueue.length} Hyperliquid Spot pairs on ${spotInterval} (Strategy: ${spotStrategyList.join("+")}, Target: ${targetCoin}, Authorized: ${enabledAssets.length})...`);
+      console.log(`[${uid}] 🎯 Spot whitelisted asset locked: [${scanQueue.join(", ")}] on ${spotInterval} (Strategy: ${spotStrategyList.join("+")}). Strictly bypassing all other pairs.`);
 
-    // Parallel Candle Snapshot Queries across spot pairs
+    // Parallel Candle Snapshot Queries across whitelisted spot pairs
     const scanResults = await Promise.all(
       scanQueue.map(async (coin) => {
         try {
@@ -1382,7 +1384,7 @@ async function executeBotTick(uid, db, config, botSecret) {
           const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || allMids[coin] || 0);
           if (coinPrice <= 0) return null;
 
-          const candles = await fetchCandleSnapshot(querySymbol, spotInterval, 1000);
+          const candles = await fetchCandleSnapshot(querySymbol, spotInterval, 300);
           if (!candles || candles.length < minCandlesReq) return null;
 
           const signalResult = isDualRibbonActive
