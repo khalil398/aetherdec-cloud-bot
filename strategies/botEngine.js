@@ -453,6 +453,10 @@ async function evaluateIctMarketStructure(coin = "BTC", candles) {
     exitCandleOffset: isBreakdownLow ? 0 : -1,
     currentPositionState: isBuySignal ? "IN_BUY" : (isSellSignal ? "IN_SELL" : "NEUTRAL"),
     metrics
+  };
+}
+
+/**
  * Evaluates 5-Minute Dual-Ribbon Strategy (Combined Ribbon):
  * 
  * 1. Ribbon 1 (134 EMA Green Band):
