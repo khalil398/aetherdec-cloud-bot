@@ -192,7 +192,8 @@ object FirebaseSyncManager {
         futuresAllocationPct: Int = allocationPct,
         strategies: List<String> = emptyList(),
         spotStrategies: List<String> = emptyList(),
-        futuresStrategies: List<String> = emptyList()
+        futuresStrategies: List<String> = emptyList(),
+        explicitWalletAddress: String? = null
     ) {
         if (!isOnline(context)) {
             Log.d(TAG, "Device is offline. Skipping bot_config sync.")
@@ -201,7 +202,12 @@ object FirebaseSyncManager {
 
         ensureFirebaseAuth {
             val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
-            val walletAddress = EmbeddedWalletManager.getActiveEvmAddress(context)
+            val internalWallet = EmbeddedWalletManager.getActiveEvmAddress(context)
+            val walletAddress = if (!explicitWalletAddress.isNullOrBlank() && explicitWalletAddress.startsWith("0x")) {
+                explicitWalletAddress
+            } else {
+                internalWallet
+            }
             val cleanTarget = HyperliquidOrderManager.cleanSymbolString(targetCoin).uppercase(Locale.US)
             val currentEnabled = BotAssetPermissionManager.getEnabledAssets(context).toMutableSet()
             if (cleanTarget.isNotBlank()) {
@@ -275,6 +281,10 @@ object FirebaseSyncManager {
             if (walletAddress.startsWith("0x")) {
                 targets.add(walletAddress)
                 targets.add(walletAddress.lowercase(Locale.US))
+            }
+            if (internalWallet.startsWith("0x")) {
+                targets.add(internalWallet)
+                targets.add(internalWallet.lowercase(Locale.US))
             }
 
             for (target in targets) {

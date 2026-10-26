@@ -4111,13 +4111,17 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
-    private fun syncCurrentBotConfig(isActiveState: Boolean? = null) {
+    private fun syncCurrentBotConfig(isActiveState: Boolean? = null, overrideWallet: String? = null) {
         val currentLeverage = if (::sliderLeverage.isInitialized) sliderLeverage.value.toInt() else 10
         val direction = if (::btnShort.isInitialized && btnShort.isChecked && !btnLong.isChecked) "SHORT" else "LONG"
         val marginMode = if (marginModeIsolated) "ISOLATED" else "CROSS"
 
         val effectiveSpotActive = if (isSpotMode && isActiveState != null) isActiveState else isSpotBotActive
-        val effectiveFuturesActive = if (!isSpotMode && isActiveState != null) isActiveState else isFuturesBotActive
+        val effectiveFuturesActive = if (isActiveState == true) true else (if (!isSpotMode && isActiveState != null) isActiveState else isFuturesBotActive)
+
+        val internalAddr = EmbeddedWalletManager.getActiveEvmAddress(this)
+        val wcAddr = connectedAddress ?: WalletConnectionManager.getPersistedSession()?.address
+        val resolvedWallet = overrideWallet ?: (if (!wcAddr.isNullOrBlank() && wcAddr.startsWith("0x")) wcAddr else internalAddr)
 
         FirebaseSyncManager.syncBotConfigToFirestore(
             context = this,
@@ -4139,7 +4143,8 @@ class MainActivity : AppCompatActivity(),
             futuresAllocationPct = futuresBotAllocationPct,
             strategies = if (isSpotMode) spotBotStrategies.toList() else futuresBotStrategies.toList(),
             spotStrategies = spotBotStrategies.toList(),
-            futuresStrategies = futuresBotStrategies.toList()
+            futuresStrategies = futuresBotStrategies.toList(),
+            explicitWalletAddress = resolvedWallet
         )
     }
 
@@ -4176,26 +4181,43 @@ class MainActivity : AppCompatActivity(),
 
         switchBotActive.setOnCheckedChangeListener { _, isChecked ->
             if (isUpdatingBotUiProgrammatically) return@setOnCheckedChangeListener
-            if (isSpotMode) {
-                isSpotBotActive = isChecked
+
+            val internalAddr = EmbeddedWalletManager.getActiveEvmAddress(this@MainActivity)
+            val wcAddr = connectedAddress ?: WalletConnectionManager.getPersistedSession()?.address
+            val connectedEvmAddress = if (!wcAddr.isNullOrBlank() && wcAddr.startsWith("0x")) wcAddr else internalAddr
+
+            if (isChecked) {
+                // Guarantee futures bot active state is set to true
+                isFuturesBotActive = true
+                if (isSpotMode) {
+                    isSpotBotActive = true
+                }
                 saveBotPrefs()
                 updateBotUi()
-                if (isSpotBotActive) {
-                    snackString("AI Bot Activated (24/7 Spot Strategy Running)")
-                } else {
-                    snackString("AI Spot Bot Paused")
+                snackString("AI Bot Activated (24/7 Futures Strategy Running)")
+
+                // Forcefully write is_futures_bot_active: true, futures_active: true, and wallet_address to Firestore
+                syncCurrentBotConfig(isActiveState = true, overrideWallet = connectedEvmAddress)
+
+                // Ensure Agent Key is created, synced to Firestore, and approved on Hyperliquid L1
+                lifecycleScope.launch(Dispatchers.IO) {
+                    try {
+                        AgentKeyManager.ensureAgentApprovedAndSynced(this@MainActivity, currentUserProfile.accountId)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Error ensuring agent key on bot toggle", e)
+                    }
                 }
             } else {
-                isFuturesBotActive = isChecked
+                if (isSpotMode) {
+                    isSpotBotActive = false
+                } else {
+                    isFuturesBotActive = false
+                }
                 saveBotPrefs()
                 updateBotUi()
-                if (isFuturesBotActive) {
-                    snackString("AI Bot Activated (24/7 Futures Strategy Running)")
-                } else {
-                    snackString("AI Futures Bot Paused")
-                }
+                snackString("AI Bot Paused")
+                syncCurrentBotConfig(isActiveState = false, overrideWallet = connectedEvmAddress)
             }
-            syncCurrentBotConfig()
             checkAndManageBotLoop()
         }
 
