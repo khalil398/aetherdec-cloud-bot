@@ -127,6 +127,65 @@ class BotStrategyChartView @JvmOverloads constructor(
             return result
         }
 
+        fun calculateRSI(closes: DoubleArray, period: Int = 14): DoubleArray {
+            val n = closes.size
+            val rsi = DoubleArray(n)
+            if (n == 0) return rsi
+            if (n <= period) {
+                for (i in 0 until n) rsi[i] = 50.0
+                return rsi
+            }
+
+            var avgGain = 0.0
+            var avgLoss = 0.0
+
+            for (i in 1..period) {
+                val change = closes[i] - closes[i - 1]
+                if (change > 0) avgGain += change else avgLoss -= change
+            }
+            avgGain /= period
+            avgLoss /= period
+
+            rsi[period] = if (avgLoss == 0.0) 100.0 else 100.0 - (100.0 / (1.0 + (avgGain / avgLoss)))
+            for (i in 0 until period) {
+                rsi[i] = rsi[period]
+            }
+
+            for (i in (period + 1) until n) {
+                val change = closes[i] - closes[i - 1]
+                val gain = if (change > 0) change else 0.0
+                val loss = if (change < 0) -change else 0.0
+
+                avgGain = (avgGain * (period - 1) + gain) / period
+                avgLoss = (avgLoss * (period - 1) + loss) / period
+
+                rsi[i] = if (avgLoss == 0.0) {
+                    100.0
+                } else {
+                    val rs = avgGain / avgLoss
+                    100.0 - (100.0 / (1.0 + rs))
+                }
+            }
+            return rsi
+        }
+
+        fun calculateSMA(data: DoubleArray, period: Int = 14): DoubleArray {
+            val n = data.size
+            val result = DoubleArray(n)
+            if (n == 0) return result
+            var sum = 0.0
+            for (i in 0 until n) {
+                sum += data[i]
+                if (i >= period) {
+                    sum -= data[i - period]
+                    result[i] = sum / period
+                } else {
+                    result[i] = sum / (i + 1)
+                }
+            }
+            return result
+        }
+
         fun computeProximityFromCandles(candles: List<Candle>): Int {
             if (candles.size < 35) return 0
             val highs = DoubleArray(candles.size) { candles[it].high }
@@ -194,6 +253,10 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     // Signals: 1 = BUY, -1 = SELL, 0 = NONE
     private var signalSeries: IntArray = IntArray(0)
+
+    // 14-Period RSI Sub-Panel Series
+    private var rsiSeries: DoubleArray = DoubleArray(0)
+    private var rsiMaSeries: DoubleArray = DoubleArray(0)
 
     // Multi-Strategy Mode Selection
     var activeStrategies: Set<String> = setOf("30m EMA High/Low")
@@ -612,6 +675,92 @@ class BotStrategyChartView @JvmOverloads constructor(
         isAntiAlias = true
     }
 
+    // ── 14-Period RSI Sub-Panel TradingView Palette & Paints ──
+    private val colorRsiLine = Color.parseColor("#FFFF00")        // Bright Neon Yellow
+    private val colorRsiMa = Color.parseColor("#26A69A")          // Subtle Teal/Cyan (#26A69A / #4E878C)
+    private val colorRsiOverbought = Color.parseColor("#00E676")  // Solid vibrant Green Level 70
+    private val colorRsiMidline = Color.parseColor("#546E7A")     // Faint muted Blue/Gray Level 50 (#37474F / #546E7A)
+    private val colorRsiOversold = Color.parseColor("#FF5252")    // Muted Red Level 30
+    private val colorRsiDivider = Color.parseColor("#2A2E39")     // Sub-panel divider line
+    private val colorRsiZoneFill = Color.parseColor("#08FFFFFF")  // Subtle shaded fill between Level 30 & 70
+
+    private val paintRsiLine = Paint().apply {
+        color = colorRsiLine
+        strokeWidth = 3.5f // ~2dp
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintRsiMa = Paint().apply {
+        color = colorRsiMa
+        strokeWidth = 2.5f // ~1.5dp
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintRsi70 = Paint().apply {
+        color = colorRsiOverbought
+        strokeWidth = 2f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintRsi50 = Paint().apply {
+        color = colorRsiMidline
+        strokeWidth = 1.2f
+        style = Paint.Style.STROKE
+        pathEffect = DashPathEffect(floatArrayOf(8f, 6f), 0f)
+        isAntiAlias = true
+    }
+
+    private val paintRsi30 = Paint().apply {
+        color = colorRsiOversold
+        strokeWidth = 1.5f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintRsiDivider = Paint().apply {
+        color = colorRsiDivider
+        strokeWidth = 2f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintRsiZone = Paint().apply {
+        color = colorRsiZoneFill
+        style = Paint.Style.FILL
+    }
+
+    private val paintRsiBadge70 = Paint().apply {
+        color = Color.parseColor("#FFFF00") // Highlighted yellow badge 70
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val paintRsiBadge70Text = Paint().apply {
+        color = Color.BLACK
+        textSize = 17f
+        typeface = Typeface.DEFAULT_BOLD
+        isAntiAlias = true
+    }
+
+    private val paintRsiValBadge = Paint().apply {
+        color = Color.parseColor("#26A69A")
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val paintRsiValBadgeText = Paint().apply {
+        color = Color.WHITE
+        textSize = 17f
+        typeface = Typeface.DEFAULT_BOLD
+        isAntiAlias = true
+    }
+
+    private val pathRsi = Path()
+    private val pathRsiMa = Path()
+
     // Smooth Kinetic Fling Scroller
     private val scroller = OverScroller(context)
     private var lastFlingX = 0
@@ -810,9 +959,11 @@ class BotStrategyChartView @JvmOverloads constructor(
                 lastTouchY = event.y
 
                 val chartWidth = rightAxisLeft - paddingLeftPx
-                val chartHeight = bottomAxisTop - paddingTopPx
+                val totalCanvasHeight = bottomAxisTop - paddingTopPx
+                val rsiSubPanelHeight = (totalCanvasHeight * 0.22f).coerceIn(110f, 240f)
+                val candleChartHeight = totalCanvasHeight - rsiSubPanelHeight
 
-                if (isDraggingPriceAxis && chartHeight > 0f) {
+                if (isDraggingPriceAxis && candleChartHeight > 0f) {
                     // Right Y-Axis Scale Drag: Stretches or compresses candle vertical height
                     val scaleDelta = 1.0 + (dy / 300.0)
                     yScaleMultiplier = (yScaleMultiplier * scaleDelta).coerceIn(0.2, 5.0)
@@ -822,8 +973,8 @@ class BotStrategyChartView @JvmOverloads constructor(
                     val zoomDelta = dx / 200f
                     zoomFactor = (zoomFactor + zoomDelta).coerceIn(0.10f, 8.0f)
                     invalidate()
-                } else if (isDraggingChart && chartWidth > 0f && chartHeight > 0f) {
-                    // 1. Horizontal Drag (Scroll through candles)
+                } else if (isDraggingChart && chartWidth > 0f && totalCanvasHeight > 0f) {
+                    // 1. Horizontal Drag (Scroll through candles and synchronized RSI)
                     val visibleCount = (baseVisibleCount / zoomFactor).coerceIn(5f, max(45f, candles.size.toFloat()))
                     val candleWidth = max(0.5f, chartWidth / visibleCount)
                     if (candleWidth > 0f) {
@@ -833,10 +984,12 @@ class BotStrategyChartView @JvmOverloads constructor(
                         scrollOffsetFloat = (scrollOffsetFloat + deltaOffset).coerceIn(minScroll, maxScroll)
                     }
 
-                    // 2. Vertical Drag (Free look - Pan price up / down smoothly 1:1 with finger)
-                    val effectiveRange = if (lastPriceRange > 0.0) lastPriceRange * yScaleMultiplier else 100.0
-                    val priceShift = (dy / chartHeight) * effectiveRange
-                    verticalPriceOffset += priceShift
+                    // 2. Vertical Drag (Free look - Pan price up / down smoothly when dragging candle chart)
+                    if (event.y < paddingTopPx + candleChartHeight && candleChartHeight > 0f) {
+                        val effectiveRange = if (lastPriceRange > 0.0) lastPriceRange * yScaleMultiplier else 100.0
+                        val priceShift = (dy / candleChartHeight) * effectiveRange
+                        verticalPriceOffset += priceShift
+                    }
                     invalidate()
                 }
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -870,6 +1023,10 @@ class BotStrategyChartView @JvmOverloads constructor(
         ema34LowSeries = calculateEMA(lows, 34)
         ema200Series = calculateEMA(closes, 200)
         ema233Series = calculateEMA(closes, 233)
+
+        // Calculate 14-Period RSI & RSI Moving Average (length 14) purely in-memory
+        rsiSeries = calculateRSI(closes, 14)
+        rsiMaSeries = calculateSMA(rsiSeries, 14)
 
         // Calculate 5-Minute Dual-Ribbon (Combined Ribbon)
         ema134HighSeries = calculateEMA(highs, 134)
@@ -1252,9 +1409,15 @@ class BotStrategyChartView @JvmOverloads constructor(
         }
 
         val chartWidth = width.toFloat() - paddingLeftPx - paddingRightPx
-        val chartHeight = height.toFloat() - paddingTopPx - paddingBottomPx
+        val totalCanvasHeight = height.toFloat() - paddingTopPx - paddingBottomPx
 
-        if (chartWidth <= 0 || chartHeight <= 0) return
+        if (chartWidth <= 0 || totalCanvasHeight <= 0) return
+
+        // Dedicated bottom sub-panel taking ~22% of the chart canvas height
+        val rsiSubPanelHeight = (totalCanvasHeight * 0.22f).coerceIn(110f, 240f)
+        val candleChartHeight = totalCanvasHeight - rsiSubPanelHeight
+        val rsiPanelTop = paddingTopPx + candleChartHeight
+        val rsiPanelBottom = paddingTopPx + totalCanvasHeight
 
         // Compute visible range with time scale zoom factor and generous right margin
         val visibleCandleCount = (baseVisibleCount / zoomFactor).coerceIn(5f, max(45f, totalCandles.toFloat()))
@@ -1361,13 +1524,13 @@ class BotStrategyChartView @JvmOverloads constructor(
         val getX = { index: Int -> paddingLeftPx + (index - floatStartIndex) * candleWidth + candleWidth / 2f }
         val getY = { price: Double ->
             val ratio = (price - currentMinPrice) / priceRange
-            (paddingTopPx + chartHeight - ratio * chartHeight).toFloat()
+            (paddingTopPx + candleChartHeight - ratio * candleChartHeight).toFloat()
         }
 
         // Draw Grid Lines & Price Axis Labels
-        val gridLines = 5
+        val gridLines = 4
         for (g in 0..gridLines) {
-            val py = paddingTopPx + (chartHeight / gridLines) * g
+            val py = paddingTopPx + (candleChartHeight / gridLines) * g
             canvas.drawLine(paddingLeftPx, py, paddingLeftPx + chartWidth, py, paintGrid)
 
             val pValue = currentMaxPrice - (g.toDouble() / gridLines) * priceRange
@@ -1971,14 +2134,157 @@ class BotStrategyChartView @JvmOverloads constructor(
             canvas.drawText(priceStr, paddingLeftPx + chartWidth + 12f, yLast + 6f, paintTagText)
         }
 
+        // ═════════════════════════════════════════════════════════════════════
+        // ── 14-PERIOD RSI SUB-PANEL (TradingView Color Scheme & Scale) ────
+        // ═════════════════════════════════════════════════════════════════════
+        // 1. Thin Divider Line (#2A2E39)
+        canvas.drawLine(0f, rsiPanelTop, width.toFloat(), rsiPanelTop, paintRsiDivider)
+
+        val rsiPaddingTop = 18f
+        val rsiPaddingBottom = 16f
+        val rsiPlotTop = rsiPanelTop + rsiPaddingTop
+        val rsiPlotBottom = rsiPanelBottom - rsiPaddingBottom
+        val rsiPlotHeight = max(10f, rsiPlotBottom - rsiPlotTop)
+
+        val getRsiY = { rsiVal: Double ->
+            val clamped = rsiVal.coerceIn(0.0, 100.0)
+            (rsiPlotBottom - (clamped / 100.0) * rsiPlotHeight).toFloat()
+        }
+
+        val y70 = getRsiY(70.0)
+        val y50 = getRsiY(50.0)
+        val y30 = getRsiY(30.0)
+
+        // 2. Subtle Shaded Zone between 30 and 70
+        canvas.drawRect(paddingLeftPx, y70, paddingLeftPx + chartWidth, y30, paintRsiZone)
+
+        // 3. Reference Level Lines: 70 (Solid Green), 50 (Faint Blue/Gray), 30 (Muted Red)
+        canvas.drawLine(paddingLeftPx, y70, paddingLeftPx + chartWidth, y70, paintRsi70)
+        canvas.drawLine(paddingLeftPx, y50, paddingLeftPx + chartWidth, y50, paintRsi50)
+        canvas.drawLine(paddingLeftPx, y30, paddingLeftPx + chartWidth, y30, paintRsi30)
+
+        // 4. Right Price Scale: Highlighted Yellow Badge for Level 70
+        val badge70Rect = RectF(paddingLeftPx + chartWidth + 4f, y70 - 10f, width.toFloat() - 6f, y70 + 10f)
+        canvas.drawRoundRect(badge70Rect, 4f, 4f, paintRsiBadge70)
+        canvas.drawText("70.00", badge70Rect.left + 6f, y70 + 5f, paintRsiBadge70Text)
+
+        // Level 50 Midline label
+        canvas.drawText("50.00", paddingLeftPx + chartWidth + 10f, y50 + 5f, paintTextSec)
+
+        // Level 30 Oversold label
+        val paintRsi30Label = Paint(paintTextSec).apply { color = colorRsiOversold }
+        canvas.drawText("30.00", paddingLeftPx + chartWidth + 10f, y30 + 5f, paintRsi30Label)
+
+        // 5. Draw RSI Line (Neon Yellow) and RSI MA Line (Teal/Cyan) Paths
+        pathRsi.reset()
+        pathRsiMa.reset()
+        var rsiStarted = false
+        var rsiMaStarted = false
+
+        for (i in renderStartIndex..renderEndIndex) {
+            val cx = getX(i)
+            if (i in rsiSeries.indices && rsiSeries[i] > 0.0) {
+                val cy = getRsiY(rsiSeries[i])
+                if (!rsiStarted) {
+                    pathRsi.moveTo(cx, cy)
+                    rsiStarted = true
+                } else {
+                    pathRsi.lineTo(cx, cy)
+                }
+            }
+            if (i in rsiMaSeries.indices && rsiMaSeries[i] > 0.0) {
+                val cy = getRsiY(rsiMaSeries[i])
+                if (!rsiMaStarted) {
+                    pathRsiMa.moveTo(cx, cy)
+                    rsiMaStarted = true
+                } else {
+                    pathRsiMa.lineTo(cx, cy)
+                }
+            }
+        }
+
+        if (rsiMaStarted) {
+            canvas.drawPath(pathRsiMa, paintRsiMa)
+        }
+        if (rsiStarted) {
+            canvas.drawPath(pathRsi, paintRsiLine)
+        }
+
+        // 6. Live Current RSI Value Badge on Right Scale
+        if (candles.isNotEmpty() && rsiSeries.isNotEmpty()) {
+            val lastRsi = rsiSeries.last()
+            val yCurrRsi = getRsiY(lastRsi)
+            if (abs(yCurrRsi - y70) > 16f) {
+                val rsiValStr = String.format(Locale.US, "%.1f", lastRsi)
+                val currRsiBadgeRect = RectF(paddingLeftPx + chartWidth + 4f, yCurrRsi - 10f, width.toFloat() - 6f, yCurrRsi + 10f)
+                paintRsiValBadge.color = if (lastRsi >= 70.0) colorBullish else if (lastRsi <= 30.0) colorBearish else colorRsiMa
+                canvas.drawRoundRect(currRsiBadgeRect, 4f, 4f, paintRsiValBadge)
+                canvas.drawText(rsiValStr, currRsiBadgeRect.left + 8f, yCurrRsi + 5f, paintRsiValBadgeText)
+            }
+        }
+
+        // 7. Sub-Panel Header Legend (Top-Left of RSI sub-panel)
+        val legendRsiY = rsiPanelTop + 16f
+        var legX = paddingLeftPx + 10f
+
+        val dotRadius = 3.5f
+        val paintYellowDot = Paint().apply { color = colorRsiLine; style = Paint.Style.FILL; isAntiAlias = true }
+        canvas.drawCircle(legX + dotRadius, legendRsiY - 5f, dotRadius, paintYellowDot)
+        legX += dotRadius * 2 + 5f
+
+        val activeRsiVal = if (isCrosshairActive && selectedCandleIndex in rsiSeries.indices) {
+            rsiSeries[selectedCandleIndex]
+        } else if (rsiSeries.isNotEmpty()) {
+            rsiSeries.last()
+        } else 0.0
+
+        val rsiLegendText = String.format(Locale.US, "RSI 14: %.2f", activeRsiVal)
+        val paintRsiLegend = Paint(paintTextSec).apply {
+            color = colorRsiLine
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        canvas.drawText(rsiLegendText, legX, legendRsiY, paintRsiLegend)
+        legX += paintRsiLegend.measureText(rsiLegendText) + 16f
+
+        val paintTealDot = Paint().apply { color = colorRsiMa; style = Paint.Style.FILL; isAntiAlias = true }
+        canvas.drawCircle(legX + dotRadius, legendRsiY - 5f, dotRadius, paintTealDot)
+        legX += dotRadius * 2 + 5f
+
+        val activeMaVal = if (isCrosshairActive && selectedCandleIndex in rsiMaSeries.indices) {
+            rsiMaSeries[selectedCandleIndex]
+        } else if (rsiMaSeries.isNotEmpty()) {
+            rsiMaSeries.last()
+        } else 0.0
+
+        val maLegendText = String.format(Locale.US, "MA 14: %.2f", activeMaVal)
+        val paintMaLegend = Paint(paintTextSec).apply {
+            color = colorRsiMa
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        canvas.drawText(maLegendText, legX, legendRsiY, paintMaLegend)
+
+        // 8. Bottom Time Axis Labels (below RSI sub-panel in bottom padding)
+        val timeLabelY = rsiPanelBottom + 26f
+        val timeInterval = max(1, (visibleCandleCount / 5).toInt())
+        for (i in calcStartIndex..calcEndIndex step timeInterval) {
+            if (i in candles.indices && candles[i].timestamp > 0) {
+                val cx = getX(i)
+                val sdf = SimpleDateFormat("HH:mm", Locale.US)
+                val tStr = sdf.format(Date(candles[i].timestamp))
+                canvas.drawText(tStr, cx - 22f, timeLabelY, paintTextSec)
+            }
+        }
+
         // Crosshair Handler
         if (isCrosshairActive) {
             val clampedX = touchX.coerceIn(paddingLeftPx, paddingLeftPx + chartWidth)
-            val clampedY = touchY.coerceIn(paddingTopPx, paddingTopPx + chartHeight)
+            val clampedY = touchY.coerceIn(paddingTopPx, paddingTopPx + totalCanvasHeight)
 
-            // Draw Crosshair Lines
+            // Draw Crosshair Lines across both Candle Chart and RSI Sub-Panel
             canvas.drawLine(paddingLeftPx, clampedY, paddingLeftPx + chartWidth, clampedY, paintCrosshair)
-            canvas.drawLine(clampedX, paddingTopPx, clampedX, paddingTopPx + chartHeight, paintCrosshair)
+            canvas.drawLine(clampedX, paddingTopPx, clampedX, paddingTopPx + totalCanvasHeight, paintCrosshair)
 
             // Identify selected candle index
             val relativeX = clampedX - paddingLeftPx
@@ -1994,7 +2300,12 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val sdf = SimpleDateFormat("$pattern ($timeframeLabel)", Locale.US)
                 val timeStr = if (hc.timestamp > 0) sdf.format(Date(hc.timestamp)) else "$timeframeLabel Candle"
 
-                val hoverPrice = currentMaxPrice - ((clampedY - paddingTopPx) / chartHeight) * priceRange
+                val isHoveringRsi = clampedY >= rsiPanelTop
+                val hoverPrice = if (!isHoveringRsi) {
+                    currentMaxPrice - ((clampedY - paddingTopPx) / candleChartHeight) * priceRange
+                } else {
+                    hc.close
+                }
                 val priceHoverStr = formatPriceValue(hoverPrice)
 
                 // Render Hover Callout Box
