@@ -42,7 +42,7 @@ const activeEngines = new Map();
 if (admin.apps.length > 0) {
   const db = admin.firestore();
 
-  const handleConfigChange = (change, db) => {
+  const handleConfigChange = async (change, db) => {
     const docRef = change.doc.ref;
     const pathSegments = docRef.path.split("/");
     // Path format: users/{uid}/bot/bot_config or users/{uid}/bot_config/config
@@ -51,7 +51,35 @@ if (admin.apps.length > 0) {
     if (!uid || !config) return;
 
     // Direct wallet address binding: extract from config or EVM UID
-    const walletAddress = config.masterAddress || config.wallet_address || config.walletAddress || (uid.startsWith("0x") ? uid : null);
+    let walletAddress = config.masterAddress || config.wallet_address || config.walletAddress || (uid.startsWith("0x") ? uid : null);
+
+    // Deep lookup fallback 1: Check users/{uid}/bot/bot_secret
+    if (!walletAddress) {
+      try {
+        const secretDoc = await db.doc(`users/${uid}/bot/bot_secret`).get();
+        if (secretDoc.exists) {
+          const sData = secretDoc.data();
+          walletAddress = sData.masterAddress || sData.wallet_address || sData.walletAddress;
+        }
+      } catch (e) {}
+    }
+
+    // Deep lookup fallback 2: Check root user document users/{uid}
+    if (!walletAddress) {
+      try {
+        const userDoc = await db.doc(`users/${uid}`).get();
+        if (userDoc.exists) {
+          const uData = userDoc.data();
+          walletAddress = uData.connectedWalletAddress || uData.wallet_address || uData.masterAddress;
+        }
+      } catch (e) {}
+    }
+
+    if (walletAddress) {
+      config.masterAddress = walletAddress;
+      config.wallet_address = walletAddress;
+      config.walletAddress = walletAddress;
+    }
 
     const isSpotActive = Boolean(
       config.is_spot_bot_active ||
@@ -64,7 +92,13 @@ if (admin.apps.length > 0) {
       config.is_futures_bot_active ||
       config.futures_active ||
       config.futures_config?.active ||
-      ((config.market_type === "PERP" || config.market_type === "FUTURES") && config.active)
+      ((config.market_type === "PERP" || config.market_type === "FUTURES") && config.active) ||
+      (config.active && (
+        String(config.strategy || "").toLowerCase().includes("dual-ribbon") ||
+        String(config.futures_strategy || "").toLowerCase().includes("dual-ribbon") ||
+        (Array.isArray(config.strategies) && config.strategies.some(s => String(s).toLowerCase().includes("dual-ribbon"))) ||
+        (Array.isArray(config.futures_strategies) && config.futures_strategies.some(s => String(s).toLowerCase().includes("dual-ribbon")))
+      ))
     );
 
     const isAnyActive = isSpotActive || isFuturesActive || config.active === true;
@@ -81,10 +115,10 @@ if (admin.apps.length > 0) {
     }
   };
 
-  // Primary listener on subcollection "bot" (document "bot_config")
+  // Primary listener on subcollection "bot" (document "bot_config" & "futures_config")
   db.collectionGroup("bot").onSnapshot((snapshot) => {
     snapshot.docChanges().forEach((change) => {
-      if (change.doc.id === "bot_config") {
+      if (change.doc.id === "bot_config" || change.doc.id === "futures_config") {
         handleConfigChange(change, db);
       }
     });
@@ -99,6 +133,25 @@ if (admin.apps.length > 0) {
     });
   }, (error) => {
     console.error("❌ Firestore 'bot_config' CollectionGroup Error:", error.message);
+  });
+
+  // Fallback listener on root users collection for immediate toggle triggers
+  db.collection("users").onSnapshot((snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      const uData = change.doc.data();
+      if (!uData) return;
+      if (uData.bot_config || uData.is_futures_bot_active !== undefined || uData.futures_active !== undefined) {
+        const fakeChange = {
+          doc: {
+            ref: { path: `users/${change.doc.id}/bot/bot_config` },
+            data: () => ({ ...uData, ...(uData.bot_config || {}) })
+          }
+        };
+        handleConfigChange(fakeChange, db);
+      }
+    });
+  }, (error) => {
+    console.error("❌ Firestore 'users' root Error:", error.message);
   });
 }
 
