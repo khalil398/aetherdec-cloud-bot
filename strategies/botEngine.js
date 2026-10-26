@@ -753,7 +753,21 @@ async function executeBotTick(uid, db, config, botSecret) {
     return;
   }
 
-  console.log(`[${uid}] ⚡ Running 30m Multi-Pair EMA Scanner Engine '${config.strategy}' (Allocation: ${config.allocation_pct}%)...`);
+  const writeStatusTargets = Array.from(new Set([
+    uid,
+    masterAddress,
+    masterAddress ? masterAddress.toLowerCase() : null
+  ])).filter(Boolean);
+
+  const writeBotStatus = async (statusPayload, merge = true) => {
+    for (const targetId of writeStatusTargets) {
+      try {
+        await db.doc(`users/${targetId}/bot/bot_status`).set(statusPayload, { merge });
+      } catch (e) {}
+    }
+  };
+
+  console.log(`[${uid}] ⚡ Running Engine (Master Wallet: ${masterAddress}, Strategy: '${config.strategy || config.futures_strategy || '5m Dual-Ribbon'}', Alloc: ${config.allocation_pct || config.futures_allocation_pct || 25}%)...`);
 
   // 1. Fetch Spot Clearinghouse, Dynamic Spot Meta & All Mid Prices
   const spotClearinghouse = await fetchSpotClearinghouseState(masterAddress);
@@ -774,6 +788,7 @@ async function executeBotTick(uid, db, config, botSecret) {
       const pos = item.position;
       return sum + parseFloat(pos.unrealizedPnl || 0);
     }, 0.0);
+    console.log(`[${uid}] 💰 Hyperliquid Futures Account (${masterAddress}): Balance/Value = $${accountValue.toFixed(2)} USDC, Active Positions: ${activeTradesCount}, Unrealized PnL: $${totalPnlUsd.toFixed(2)}`);
   }
 
   // Map spot balances and asset indices
@@ -1228,7 +1243,7 @@ async function executeBotTick(uid, db, config, botSecret) {
                 const statusEntry = orderResult?.response?.data?.statuses?.[0];
                 if (statusEntry?.error) {
                   console.error(`[${uid}] ❌ Futures ${targetSide} REJECTED by Hyperliquid: "${statusEntry.error}"`);
-                  await db.doc(`users/${uid}/bot/bot_status`).set({
+                  await writeBotStatus({
                     last_order_result: {
                       timestamp: Date.now(),
                       coin,
@@ -1244,10 +1259,10 @@ async function executeBotTick(uid, db, config, botSecret) {
                       attempted_price: limitPx,
                       asset_index: assetIdx
                     }
-                  }, { merge: true });
+                  }, true);
                 } else {
                   console.log(`[${uid}] ✅ Futures ${targetSide} order submitted successfully on Hyperliquid for ${coin}`);
-                  await db.doc(`users/${uid}/bot/bot_status`).set({
+                  await writeBotStatus({
                     last_order_result: {
                       timestamp: Date.now(),
                       coin,
@@ -1265,7 +1280,7 @@ async function executeBotTick(uid, db, config, botSecret) {
                       risk_reward_ratio: bestEntrySignal.riskRewardRatio || 2.0,
                       asset_index: assetIdx
                     }
-                  }, { merge: true });
+                  }, true);
                 }
               } catch (err) {
                 console.error(`[${uid}] Futures ${targetSide} Execution Failed for ${coin}:`, err.message);
@@ -1292,7 +1307,7 @@ async function executeBotTick(uid, db, config, botSecret) {
       });
     }
 
-    await db.doc(`users/${uid}/bot/bot_status`).set({
+    await writeBotStatus({
       pnl_usd: totalPnlUsd,
       pnl_pct: pnlPct,
       active_trades: activeTradesCount,
@@ -1508,7 +1523,7 @@ async function executeBotTick(uid, db, config, botSecret) {
           const statusEntry = orderResult?.response?.data?.statuses?.[0];
           if (statusEntry?.error) {
             console.error(`[${uid}] ❌ Spot BUY REJECTED by Hyperliquid Exchange for ${coin} (assetIndex: ${assetIdx}): "${statusEntry.error}" [Attempted: ${formattedSz} @ limit ${limitPx}, Notional: ~$${notionalUsd} USD]`);
-            await db.doc(`users/${uid}/bot/bot_status`).set({
+            await writeBotStatus({
               last_order_result: {
                 timestamp: Date.now(),
                 coin,
@@ -1521,10 +1536,10 @@ async function executeBotTick(uid, db, config, botSecret) {
                 available_usdc: usdcBalance,
                 asset_index: assetIdx
               }
-            }, { merge: true });
+            }, true);
           } else if (statusEntry?.filled) {
             console.log(`[${uid}] ✅ Spot BUY FILLED on Hyperliquid: ${statusEntry.filled.totalSz} ${coin} @ avgPx ${statusEntry.filled.avgPx} (oid: ${statusEntry.filled.oid})`);
-            await db.doc(`users/${uid}/bot/bot_status`).set({
+            await writeBotStatus({
               last_order_result: {
                 timestamp: Date.now(),
                 coin,
@@ -1535,10 +1550,10 @@ async function executeBotTick(uid, db, config, botSecret) {
                 oid: statusEntry.filled.oid,
                 asset_index: assetIdx
               }
-            }, { merge: true });
+            }, true);
           } else if (statusEntry?.resting) {
             console.log(`[${uid}] ✅ Spot BUY RESTING order placed on Hyperliquid: ${formattedSz} ${coin} @ ${limitPx} (oid: ${statusEntry.resting.oid})`);
-            await db.doc(`users/${uid}/bot/bot_status`).set({
+            await writeBotStatus({
               last_order_result: {
                 timestamp: Date.now(),
                 coin,
@@ -1549,10 +1564,10 @@ async function executeBotTick(uid, db, config, botSecret) {
                 oid: statusEntry.resting.oid,
                 asset_index: assetIdx
               }
-            }, { merge: true });
+            }, true);
           } else if (orderResult?.status === "err") {
             console.error(`[${uid}] ❌ Spot BUY FAILED with server error:`, orderResult.response);
-            await db.doc(`users/${uid}/bot/bot_status`).set({
+            await writeBotStatus({
               last_order_result: {
                 timestamp: Date.now(),
                 coin,
@@ -1561,7 +1576,7 @@ async function executeBotTick(uid, db, config, botSecret) {
                 error: String(orderResult.response),
                 asset_index: assetIdx
               }
-            }, { merge: true });
+            }, true);
           } else {
             console.log(`[${uid}] ℹ️ Spot order response for ${coin}:`, JSON.stringify(orderResult));
           }
@@ -1570,7 +1585,7 @@ async function executeBotTick(uid, db, config, botSecret) {
         }
       } catch (err) {
         console.error(`[${uid}] Spot Buy Execution Failed for ${coin}:`, err.message);
-        await db.doc(`users/${uid}/bot/bot_status`).set({
+        await writeBotStatus({
           last_order_result: {
             timestamp: Date.now(),
             coin,
@@ -1578,7 +1593,7 @@ async function executeBotTick(uid, db, config, botSecret) {
             status: "EXCEPTION",
             error: err.message
           }
-        }, { merge: true });
+        }, true);
       }
     }
   } else if (config.strategy === "Smart DCA / Dip Buyer") {
@@ -1599,9 +1614,8 @@ async function executeBotTick(uid, db, config, botSecret) {
     });
   }
 
-  // Write Telemetry Stats back to Firestore users/{uid}/bot/bot_status
-  const statusDocRef = db.doc(`users/${uid}/bot/bot_status`);
-  await statusDocRef.set({
+  // Write Telemetry Stats back to Firestore
+  await writeBotStatus({
     pnl_usd: totalPnlUsd,
     pnl_pct: pnlPct,
     active_trades: activeTradesCount,
@@ -1614,7 +1628,7 @@ async function executeBotTick(uid, db, config, botSecret) {
     scanned_markets_count: availableCoins.length,
     target_radar: targetRadarTelemetry,
     updated_at: Date.now()
-  }, { merge: true });
+  }, true);
 
   console.log(`[${uid}] ✅ Telemetry updated: PnL=$${totalPnlUsd.toFixed(2)} (${pnlPct.toFixed(2)}%), Scanned Spot Markets: ${availableCoins.length}`);
   }

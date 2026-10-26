@@ -50,26 +50,34 @@ if (admin.apps.length > 0) {
     const config = change.doc.data();
     if (!uid || !config) return;
 
-    const isSpotActive = config.is_spot_bot_active !== undefined
-      ? Boolean(config.is_spot_bot_active)
-      : (config.spot_active !== undefined
-        ? Boolean(config.spot_active)
-        : (config.market_type === "SPOT" ? Boolean(config.active) : false));
+    // Direct wallet address binding: extract from config or EVM UID
+    const walletAddress = config.masterAddress || config.wallet_address || config.walletAddress || (uid.startsWith("0x") ? uid : null);
 
-    const isFuturesActive = config.is_futures_bot_active !== undefined
-      ? Boolean(config.is_futures_bot_active)
-      : (config.futures_active !== undefined
-        ? Boolean(config.futures_active)
-        : (config.market_type === "PERP" || config.market_type === "FUTURES" ? Boolean(config.active) : false));
+    const isSpotActive = Boolean(
+      config.is_spot_bot_active ||
+      config.spot_active ||
+      config.spot_config?.active ||
+      (config.market_type === "SPOT" && config.active)
+    );
+
+    const isFuturesActive = Boolean(
+      config.is_futures_bot_active ||
+      config.futures_active ||
+      config.futures_config?.active ||
+      ((config.market_type === "PERP" || config.market_type === "FUTURES") && config.active)
+    );
 
     const isAnyActive = isSpotActive || isFuturesActive || config.active === true;
 
-    console.log(`🔔 Bot config update for UID [${uid}]: spotActive=${isSpotActive}, futuresActive=${isFuturesActive}, anyActive=${isAnyActive}`);
+    console.log(`🔔 Bot config update for UID [${uid}] (Wallet: ${walletAddress || "N/A"}): spotActive=${isSpotActive}, futuresActive=${isFuturesActive}, anyActive=${isAnyActive}`);
+
+    // Map to a consolidated worker key (prefer lowercase wallet address)
+    const workerKey = walletAddress ? walletAddress.toLowerCase() : uid;
 
     if (isAnyActive) {
-      startWorker(uid, db, config);
+      startWorker(workerKey, db, config, uid, walletAddress);
     } else {
-      stopWorker(uid);
+      stopWorker(workerKey);
     }
   };
 
@@ -95,44 +103,92 @@ if (admin.apps.length > 0) {
 }
 
 
-async function startWorker(uid, db, config) {
-  stopWorker(uid);
+async function startWorker(workerKey, db, config, uid, walletAddress) {
+  stopWorker(workerKey);
 
-  // Fetch restricted Agent Key secret from users/{uid}/bot/bot_secret
-  const secretDoc = await db.doc(`users/${uid}/bot/bot_secret`).get();
-  if (!secretDoc.exists) {
-    console.warn(`[${uid}] No bot_secret document found in Firestore. Skipping worker start.`);
-    return;
+  // Multi-path lookup for restricted Agent Key secret:
+  // 1. users/${walletAddress}/bot/bot_secret
+  // 2. users/${walletAddress.toLowerCase()}/bot/bot_secret
+  // 3. users/${uid}/bot/bot_secret
+  let botSecret = null;
+  const lookupIds = Array.from(new Set([
+    walletAddress,
+    walletAddress ? walletAddress.toLowerCase() : null,
+    uid,
+    config.masterAddress,
+    config.wallet_address
+  ])).filter(Boolean);
+
+  for (const id of lookupIds) {
+    try {
+      const secretRef = db.doc(`users/${id}/bot/bot_secret`);
+      const secretDoc = await secretRef.get();
+      if (secretDoc.exists) {
+        botSecret = secretDoc.data();
+        console.log(`[${workerKey}] ✅ Found bot_secret under users/${id}/bot/bot_secret`);
+        break;
+      }
+    } catch (e) {
+      console.warn(`[${workerKey}] Error checking secret for ${id}:`, e.message);
+    }
   }
 
-  const botSecret = secretDoc.data();
-  console.log(`🚀 Starting 24/7 worker engine for UID [${uid}] (Master: ${botSecret.masterAddress})`);
+  // Fallback: Check root user documents for bot_secret field
+  if (!botSecret) {
+    for (const id of lookupIds) {
+      try {
+        const userDoc = await db.doc(`users/${id}`).get();
+        if (userDoc.exists && userDoc.data()?.bot_secret) {
+          botSecret = userDoc.data().bot_secret;
+          console.log(`[${workerKey}] ✅ Found bot_secret in root user doc users/${id}`);
+          break;
+        }
+      } catch (e) {}
+    }
+  }
+
+  // If botSecret is not found yet, initialize with walletAddress for continuous clearinghouse/market scanning
+  if (!botSecret) {
+    if (walletAddress) {
+      console.warn(`[${workerKey}] No bot_secret document found yet in Firestore. Initializing worker with walletAddress [${walletAddress}] for continuous clearinghouse/market scanning.`);
+      botSecret = { masterAddress: walletAddress };
+    } else {
+      console.warn(`[${workerKey}] No bot_secret document or wallet address found in Firestore. Skipping worker start.`);
+      return;
+    }
+  }
+
+  if (!botSecret.masterAddress && walletAddress) {
+    botSecret.masterAddress = walletAddress;
+  }
+
+  console.log(`🚀 Starting 24/7 worker engine for [${workerKey}] (Master Wallet: ${botSecret.masterAddress})`);
 
   // Initial immediate tick
   try {
-    await executeBotTick(uid, db, config, botSecret);
+    await executeBotTick(workerKey, db, config, botSecret);
   } catch (e) {
-    console.error(`[${uid}] Initial tick error:`, e.message);
+    console.error(`[${workerKey}] Initial tick error:`, e.message);
   }
 
   // 10-second recurring execution loop
   const intervalId = setInterval(async () => {
     try {
-      await executeBotTick(uid, db, config, botSecret);
+      await executeBotTick(workerKey, db, config, botSecret);
     } catch (e) {
-      console.error(`[${uid}] Tick execution error:`, e.message);
+      console.error(`[${workerKey}] Tick execution error:`, e.message);
     }
   }, 10000);
 
-  activeEngines.set(uid, { intervalId, config, botSecret });
+  activeEngines.set(workerKey, { intervalId, config, botSecret });
 }
 
-function stopWorker(uid) {
-  if (activeEngines.has(uid)) {
-    const worker = activeEngines.get(uid);
+function stopWorker(workerKey) {
+  if (activeEngines.has(workerKey)) {
+    const worker = activeEngines.get(workerKey);
     clearInterval(worker.intervalId);
-    activeEngines.delete(uid);
-    console.log(`⏸️ Worker engine paused for UID [${uid}]`);
+    activeEngines.delete(workerKey);
+    console.log(`⏸️ Worker engine paused for [${workerKey}]`);
   }
 }
 
