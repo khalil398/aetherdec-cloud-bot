@@ -157,6 +157,7 @@ class MainActivity : AppCompatActivity(),
     private var spotAssetBalances = mutableMapOf<String, Double>()
     private var spotBotJob: kotlinx.coroutines.Job? = null
     private var botStatusListener: com.google.firebase.firestore.ListenerRegistration? = null
+    private var tradeHistoryListener: com.google.firebase.firestore.ListenerRegistration? = null
 
     // Demo Trading State & Order Form UI handles
     private var demoBalance: Double = 0.00
@@ -382,6 +383,7 @@ class MainActivity : AppCompatActivity(),
                         updateSideColorsForSpot()
                         updateSpotBalanceUi()
                     }
+                    syncCurrentPositionRiskToChart()
                 }
             }
         }
@@ -414,6 +416,8 @@ class MainActivity : AppCompatActivity(),
         if (::webViewChart.isInitialized) {
             webViewChart.onResume()
         }
+        startTradeHistoryListener()
+        syncCurrentPositionRiskToChart()
     }
 
     override fun onPause() {
@@ -433,6 +437,12 @@ class MainActivity : AppCompatActivity(),
         try {
             botStatusListener?.remove()
             botStatusListener = null
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        try {
+            tradeHistoryListener?.remove()
+            tradeHistoryListener = null
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -809,8 +819,12 @@ class MainActivity : AppCompatActivity(),
             prefs.edit().putBoolean("is_demo_mode", isChecked).apply()
             updateTradingEnvironmentUi()
             updateResetDemoButtonVisibility()
+            updatePositionsListUi()
+            updateHistoryListUi()
+            syncCurrentPositionRiskToChart()
             if (!isChecked) {
                 fetchHyperliquidBalance()
+                startTradeHistoryListener()
             }
             val msg = if (isChecked) "Demo Mode Enabled ($10,000 Practice Balance)" else "Real On-Chain Mode Enabled (Hyperliquid L1 Active)"
             snackString(msg)
@@ -4405,28 +4419,41 @@ class MainActivity : AppCompatActivity(),
                 syncCurrentBotConfig()
                 botStatusListener = FirebaseSyncManager.listenToBotStatus(
                     accountId = currentUserProfile.accountId,
-                    walletAddress = EmbeddedWalletManager.getActiveEvmAddress(this@MainActivity)
-                ) { pnlUsd, _, activeTrades, marketType ->
-                    runOnUiThread {
-                        if (marketType == "PERP") {
-                            futuresBotTotalPnlUsd = pnlUsd
-                            futuresBotActiveTradesCount = activeTrades
-                        } else if (marketType == "SPOT") {
-                            spotBotTotalPnlUsd = pnlUsd
-                            spotBotActiveTradesCount = activeTrades
-                        } else {
-                            if (isSpotMode) {
+                    walletAddress = EmbeddedWalletManager.getActiveEvmAddress(this@MainActivity),
+                    onUpdateWithMarket = { pnlUsd, _, activeTrades, marketType ->
+                        runOnUiThread {
+                            if (marketType == "PERP") {
+                                futuresBotTotalPnlUsd = pnlUsd
+                                futuresBotActiveTradesCount = activeTrades
+                            } else if (marketType == "SPOT") {
                                 spotBotTotalPnlUsd = pnlUsd
                                 spotBotActiveTradesCount = activeTrades
                             } else {
-                                futuresBotTotalPnlUsd = pnlUsd
-                                futuresBotActiveTradesCount = activeTrades
+                                if (isSpotMode) {
+                                    spotBotTotalPnlUsd = pnlUsd
+                                    spotBotActiveTradesCount = activeTrades
+                                } else {
+                                    futuresBotTotalPnlUsd = pnlUsd
+                                    futuresBotActiveTradesCount = activeTrades
+                                }
+                            }
+                            saveBotPrefs()
+                            updateBotUi()
+                        }
+                    },
+                    onPositionsUpdate = { newPositions ->
+                        runOnUiThread {
+                            if (!isDemoModeActive) {
+                                val demoPositions = activePositions.filter { it.isDemo }
+                                activePositions.clear()
+                                activePositions.addAll(demoPositions)
+                                activePositions.addAll(newPositions)
+                                updatePositionsListUi()
+                                syncCurrentPositionRiskToChart()
                             }
                         }
-                        saveBotPrefs()
-                        updateBotUi()
                     }
-                }
+                )
             }
         }
     }
@@ -4440,6 +4467,44 @@ class MainActivity : AppCompatActivity(),
 
         if (!isSpotBotActive && !isFuturesBotActive) {
             syncCurrentBotConfig(isActiveState = false)
+        }
+    }
+
+    fun startTradeHistoryListener() {
+        val walletAddr = EmbeddedWalletManager.getActiveEvmAddress(this)
+        if (walletAddr.isBlank() || walletAddr == "0x0000...0000") return
+
+        tradeHistoryListener?.remove()
+        tradeHistoryListener = FirebaseSyncManager.listenToTradeHistory(
+            walletAddress = walletAddr,
+            accountId = currentUserProfile.accountId
+        ) { realHistory ->
+            runOnUiThread {
+                val demoTrades = closedPositions.filter { it.isDemo }
+                closedPositions.clear()
+                closedPositions.addAll(demoTrades)
+                closedPositions.addAll(realHistory)
+                closedPositions.sortByDescending { it.timestamp }
+                updateHistoryListUi()
+            }
+        }
+    }
+
+    private fun syncCurrentPositionRiskToChart() {
+        val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment ?: return
+        val currentPairClean = currentDisplaySymbol.replace("/", "").uppercase(java.util.Locale.US)
+        val currentPos = activePositions.find {
+            (!it.isDemo || isDemoModeActive) && (it.symbol.replace("/", "").uppercase(java.util.Locale.US) == currentPairClean)
+        }
+        if (currentPos != null && currentPos.tp > 0 && currentPos.sl > 0) {
+            botChartFrag.setExplicitRiskLevels(
+                currentPos.entryPrice,
+                currentPos.sl,
+                currentPos.tp,
+                currentPos.isLong
+            )
+        } else {
+            botChartFrag.clearExplicitRiskLevels()
         }
     }
 
@@ -5365,6 +5430,52 @@ class MainActivity : AppCompatActivity(),
                     // Save to SharedPreferences
                     val prefs = getSharedPreferences("aetherdex_prefs", MODE_PRIVATE)
                     prefs.edit().putFloat("hyperliquid_l1_balance", balanceToUse.toFloat()).apply()
+
+                    val assetPositions = response.optJSONArray("assetPositions")
+                    if (assetPositions != null && !isDemoModeActive) {
+                        val livePositions = mutableListOf<Position>()
+                        for (i in 0 until assetPositions.length()) {
+                            val item = assetPositions.optJSONObject(i) ?: continue
+                            val posObj = item.optJSONObject("position") ?: continue
+                            val coin = posObj.optString("coin", "")
+                            val szi = posObj.optString("szi", "0.0").toDoubleOrNull() ?: 0.0
+                            if (Math.abs(szi) > 0.0001 && coin.isNotBlank()) {
+                                val isLong = szi > 0
+                                val entryPx = posObj.optString("entryPx", "0.0").toDoubleOrNull() ?: 0.0
+                                val levObj = posObj.opt("leverage")
+                                val lev = if (levObj is org.json.JSONObject) levObj.optInt("value", 10) else (levObj as? Number)?.toInt() ?: 10
+                                val marginUsed = posObj.optString("marginUsed", "0.0").toDoubleOrNull() ?: 0.0
+                                val coinSymbol = "$coin/USDC"
+
+                                val existing = activePositions.find { it.symbol == coinSymbol || it.symbol.startsWith(coin) }
+                                val tp = existing?.tp ?: 0.0
+                                val sl = existing?.sl ?: 0.0
+
+                                livePositions.add(
+                                    Position(
+                                        id = "${coin}_${entryPx}_${if (isLong) "LONG" else "SHORT"}",
+                                        symbol = coinSymbol,
+                                        isLong = isLong,
+                                        entryPrice = entryPx,
+                                        leverage = lev,
+                                        margin = if (marginUsed > 0) marginUsed else (Math.abs(szi * entryPx) / lev),
+                                        tp = tp,
+                                        sl = sl,
+                                        timestamp = existing?.timestamp ?: System.currentTimeMillis(),
+                                        isDemo = false
+                                    )
+                                )
+                            }
+                        }
+                        withContext(Dispatchers.Main) {
+                            val demoPositions = activePositions.filter { it.isDemo }
+                            activePositions.clear()
+                            activePositions.addAll(demoPositions)
+                            activePositions.addAll(livePositions)
+                            updatePositionsListUi()
+                            syncCurrentPositionRiskToChart()
+                        }
+                    }
 
                     if (showToast) {
                         val unifiedText = if (isUnifiedAccountActive) " (Unified)" else ""
@@ -6574,6 +6685,16 @@ class MainActivity : AppCompatActivity(),
         )
         closedPositions.add(0, closedPos)
         saveDemoTradingState()
+
+        if (!pos.isDemo) {
+            val walletAddr = EmbeddedWalletManager.getActiveEvmAddress(this)
+            FirebaseSyncManager.archiveTradeToFirestore(
+                walletAddress = walletAddr,
+                accountId = currentUserProfile.accountId,
+                closedPos = closedPos
+            )
+        }
+        syncCurrentPositionRiskToChart()
 
         // Update UI
         updateDemoBalanceUi()

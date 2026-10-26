@@ -233,6 +233,31 @@ class BotStrategyChartView @JvmOverloads constructor(
         }
     }
 
+    var explicitEntryPrice: Double = 0.0
+        private set
+    var explicitStopLoss: Double = 0.0
+        private set
+    var explicitTakeProfit: Double = 0.0
+        private set
+    var explicitIsLong: Boolean? = null
+        private set
+
+    fun setExplicitPositionRiskLevels(entryPrice: Double, sl: Double, tp: Double, isLong: Boolean) {
+        explicitEntryPrice = entryPrice
+        explicitStopLoss = sl
+        explicitTakeProfit = tp
+        explicitIsLong = isLong
+        postInvalidate()
+    }
+
+    fun clearExplicitPositionRiskLevels() {
+        explicitEntryPrice = 0.0
+        explicitStopLoss = 0.0
+        explicitTakeProfit = 0.0
+        explicitIsLong = null
+        postInvalidate()
+    }
+
     private fun getEffectiveFuturesMetrics(): Pair<Double, Int> {
         var bal = futuresBalance
         var lev = futuresLeverage
@@ -1781,23 +1806,26 @@ class BotStrategyChartView @JvmOverloads constructor(
             }
         }
 
-        // Render Clean Active SL / TP Risk Management for Dual-Ribbon (Only for latest active signal, avoiding historical clutter)
-        if (showDualRibbon && lastDualRibbonSigIdx >= 0 && lastDualRibbonSigIdx < dualRibbonSlSeries.size) {
-            val lastSig = dualRibbonSignals[lastDualRibbonSigIdx]
-            val sl = dualRibbonSlSeries[lastDualRibbonSigIdx]
-            val tp = dualRibbonTpSeries[lastDualRibbonSigIdx]
+        // Render Clean Active SL / TP Risk Management for Dual-Ribbon (or Explicit Active Position Risk Levels)
+        val hasExplicitRisk = explicitStopLoss > 0.0 && explicitTakeProfit > 0.0 && explicitIsLong != null
+        if ((showDualRibbon && lastDualRibbonSigIdx >= 0 && lastDualRibbonSigIdx < dualRibbonSlSeries.size) || hasExplicitRisk) {
+            val lastSig = if (hasExplicitRisk) (if (explicitIsLong == true) 1 else -1) else dualRibbonSignals[lastDualRibbonSigIdx]
+            val sl = if (hasExplicitRisk) explicitStopLoss else dualRibbonSlSeries[lastDualRibbonSigIdx]
+            val tp = if (hasExplicitRisk) explicitTakeProfit else dualRibbonTpSeries[lastDualRibbonSigIdx]
 
             if (sl > 0.0 && tp > 0.0) {
                 val ySl = getY(sl)
                 val yTp = getY(tp)
-                val startX = max(paddingLeftPx, getX(lastDualRibbonSigIdx))
+                val startX = if (hasExplicitRisk) paddingLeftPx else max(paddingLeftPx, getX(lastDualRibbonSigIdx))
                 val endX = paddingLeftPx + chartWidth
 
                 if (endX > startX) {
                     val (currentBalance, currentLeverage) = getEffectiveFuturesMetrics()
                     val isLong = (lastSig == 1)
 
-                    val entryPrice = if (lastDualRibbonSigIdx < dualRibbonEntrySeries.size && dualRibbonEntrySeries[lastDualRibbonSigIdx] > 0.0) {
+                    val entryPrice = if (hasExplicitRisk && explicitEntryPrice > 0.0) {
+                        explicitEntryPrice
+                    } else if (lastDualRibbonSigIdx < dualRibbonEntrySeries.size && dualRibbonEntrySeries[lastDualRibbonSigIdx] > 0.0) {
                         dualRibbonEntrySeries[lastDualRibbonSigIdx]
                     } else if (lastDualRibbonSigIdx < candles.size) {
                         candles[lastDualRibbonSigIdx].close

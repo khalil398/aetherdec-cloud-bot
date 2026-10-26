@@ -384,7 +384,8 @@ object FirebaseSyncManager {
     fun listenToBotStatus(
         accountId: String = "",
         walletAddress: String = "",
-        onUpdateWithMarket: (pnlUsd: Double, pnlPct: Double, activeTrades: Int, marketType: String?) -> Unit
+        onUpdateWithMarket: (pnlUsd: Double, pnlPct: Double, activeTrades: Int, marketType: String?) -> Unit,
+        onPositionsUpdate: ((List<Position>) -> Unit)? = null
     ): com.google.firebase.firestore.ListenerRegistration? {
         val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
         val targetIds = mutableSetOf<String>()
@@ -406,6 +407,45 @@ object FirebaseSyncManager {
                 val marketType = snapshot.getString("market_type")
                 Log.d(TAG, "Bot status update received from Firestore: pnlUsd=$pnlUsd, pnlPct=$pnlPct, activeTrades=$activeTrades, market=$marketType")
                 onUpdateWithMarket(pnlUsd, pnlPct, activeTrades, marketType)
+
+                // Parse active positions if present
+                if (onPositionsUpdate != null) {
+                    val rawPositions = snapshot.get("active_positions") as? List<*>
+                        ?: snapshot.get("positions") as? List<*>
+                    if (rawPositions != null) {
+                        val parsed = mutableListOf<Position>()
+                        for (item in rawPositions) {
+                            val map = item as? Map<*, *> ?: continue
+                            try {
+                                val symbol = (map["symbol"] as? String) ?: "${map["coin"] ?: "BTC"}/USDC"
+                                val isLong = (map["isLong"] as? Boolean) ?: ((map["side"] as? String)?.uppercase(Locale.US) == "LONG")
+                                val entryPrice = (map["entryPrice"] as? Number)?.toDouble() ?: 0.0
+                                val leverage = (map["leverage"] as? Number)?.toInt() ?: 10
+                                val margin = (map["margin"] as? Number)?.toDouble() ?: 0.0
+                                val tp = (map["tp"] as? Number)?.toDouble() ?: (map["take_profit"] as? Number)?.toDouble() ?: 0.0
+                                val sl = (map["sl"] as? Number)?.toDouble() ?: (map["stop_loss"] as? Number)?.toDouble() ?: 0.0
+                                val timestamp = (map["timestamp"] as? Number)?.toLong() ?: System.currentTimeMillis()
+                                parsed.add(
+                                    Position(
+                                        id = (map["id"] as? String) ?: "${symbol}_${entryPrice}",
+                                        symbol = symbol,
+                                        isLong = isLong,
+                                        entryPrice = entryPrice,
+                                        leverage = leverage,
+                                        margin = margin,
+                                        tp = tp,
+                                        sl = sl,
+                                        timestamp = timestamp,
+                                        isDemo = false
+                                    )
+                                )
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error parsing active position map", e)
+                            }
+                        }
+                        onPositionsUpdate(parsed)
+                    }
+                }
             }
         }
 
@@ -421,6 +461,50 @@ object FirebaseSyncManager {
                     }
                 }
             if (registration == null) registration = reg
+
+            // Dedicated listener on users/{target}/bot/positions
+            firestore.collection("users")
+                .document(target)
+                .collection("bot")
+                .document("positions")
+                .addSnapshotListener { snapshot, error ->
+                    if (error == null && snapshot != null && snapshot.exists() && onPositionsUpdate != null) {
+                        val rawPositions = snapshot.get("positions") as? List<*>
+                        if (rawPositions != null) {
+                            val parsed = mutableListOf<Position>()
+                            for (item in rawPositions) {
+                                val map = item as? Map<*, *> ?: continue
+                                try {
+                                    val symbol = (map["symbol"] as? String) ?: "${map["coin"] ?: "BTC"}/USDC"
+                                    val isLong = (map["isLong"] as? Boolean) ?: ((map["side"] as? String)?.uppercase(Locale.US) == "LONG")
+                                    val entryPrice = (map["entryPrice"] as? Number)?.toDouble() ?: 0.0
+                                    val leverage = (map["leverage"] as? Number)?.toInt() ?: 10
+                                    val margin = (map["margin"] as? Number)?.toDouble() ?: 0.0
+                                    val tp = (map["tp"] as? Number)?.toDouble() ?: (map["take_profit"] as? Number)?.toDouble() ?: 0.0
+                                    val sl = (map["sl"] as? Number)?.toDouble() ?: (map["stop_loss"] as? Number)?.toDouble() ?: 0.0
+                                    val timestamp = (map["timestamp"] as? Number)?.toLong() ?: System.currentTimeMillis()
+                                    parsed.add(
+                                        Position(
+                                            id = (map["id"] as? String) ?: "${symbol}_${entryPrice}",
+                                            symbol = symbol,
+                                            isLong = isLong,
+                                            entryPrice = entryPrice,
+                                            leverage = leverage,
+                                            margin = margin,
+                                            tp = tp,
+                                            sl = sl,
+                                            timestamp = timestamp,
+                                            isDemo = false
+                                        )
+                                    )
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Error parsing position item from /bot/positions", e)
+                                }
+                            }
+                            onPositionsUpdate(parsed)
+                        }
+                    }
+                }
 
             // Secondary listener on users/{target}/bot_status/status
             firestore.collection("users")
@@ -458,8 +542,138 @@ object FirebaseSyncManager {
         accountId: String = "",
         onUpdate: (pnlUsd: Double, pnlPct: Double, activeTrades: Int) -> Unit
     ): com.google.firebase.firestore.ListenerRegistration? {
-        return listenToBotStatus(accountId) { pnlUsd, pnlPct, activeTrades, _ ->
-            onUpdate(pnlUsd, pnlPct, activeTrades)
+        return listenToBotStatus(
+            accountId = accountId,
+            walletAddress = "",
+            onUpdateWithMarket = { pnlUsd, pnlPct, activeTrades, _ ->
+                onUpdate(pnlUsd, pnlPct, activeTrades)
+            }
+        )
+    }
+
+    fun listenToTradeHistory(
+        walletAddress: String,
+        accountId: String = "",
+        onHistoryUpdated: (List<ClosedPosition>) -> Unit
+    ): com.google.firebase.firestore.ListenerRegistration? {
+        val targetIds = mutableSetOf<String>()
+        if (walletAddress.startsWith("0x")) {
+            targetIds.add(walletAddress)
+            targetIds.add(walletAddress.lowercase(Locale.US))
+        }
+        if (accountId.isNotBlank()) {
+            targetIds.add(accountId)
+        }
+        val currentUid = auth.currentUser?.uid
+        if (!currentUid.isNullOrBlank()) {
+            targetIds.add(currentUid)
+        }
+        if (targetIds.isEmpty()) return null
+
+        Log.i(TAG, "Setting up real-time listener on trade_history for targets: $targetIds")
+
+        val allTradesMap = java.util.concurrent.ConcurrentHashMap<String, ClosedPosition>()
+        var primaryRegistration: com.google.firebase.firestore.ListenerRegistration? = null
+
+        for (target in targetIds) {
+            val reg = firestore.collection("users")
+                .document(target)
+                .collection("trade_history")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Error listening to trade_history for $target: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        for (doc in snapshot.documents) {
+                            try {
+                                val id = doc.getString("id") ?: doc.id
+                                val symbol = doc.getString("symbol") ?: "${doc.getString("coin") ?: "BTC"}/USDC"
+                                val isLong = doc.getBoolean("isLong") ?: (doc.getString("side")?.uppercase(Locale.US) == "LONG")
+                                val leverage = (doc.get("leverage") as? Number)?.toInt() ?: 10
+                                val margin = (doc.get("margin") as? Number)?.toDouble() ?: 0.0
+                                val positionSizeUsdc = (doc.get("positionSizeUsdc") as? Number)?.toDouble() ?: (margin * leverage)
+                                val entryPrice = (doc.get("entryPrice") as? Number)?.toDouble() ?: 0.0
+                                val exitPrice = (doc.get("exitPrice") as? Number)?.toDouble() ?: 0.0
+                                val realizedPnl = (doc.get("realizedPnl") as? Number)?.toDouble() ?: 0.0
+                                val realizedPnlPercent = (doc.get("realizedPnlPercent") as? Number)?.toDouble() ?: 0.0
+                                val closeReason = doc.getString("closeReason") ?: "Closed Trade"
+                                val timestamp = (doc.get("timestamp") as? Number)?.toLong() ?: System.currentTimeMillis()
+
+                                val closedPos = ClosedPosition(
+                                    id = id,
+                                    symbol = symbol,
+                                    isLong = isLong,
+                                    leverage = leverage,
+                                    margin = margin,
+                                    positionSizeUsdc = positionSizeUsdc,
+                                    entryPrice = entryPrice,
+                                    exitPrice = exitPrice,
+                                    realizedPnl = realizedPnl,
+                                    realizedPnlPercent = realizedPnlPercent,
+                                    closeReason = closeReason,
+                                    timestamp = timestamp,
+                                    isDemo = false
+                                )
+                                allTradesMap[id] = closedPos
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error parsing trade_history doc ${doc.id}", e)
+                            }
+                        }
+                        val sortedList = allTradesMap.values.sortedByDescending { it.timestamp }
+                        onHistoryUpdated(sortedList)
+                    }
+                }
+            if (primaryRegistration == null) primaryRegistration = reg
+        }
+
+        return primaryRegistration
+    }
+
+    fun archiveTradeToFirestore(
+        walletAddress: String,
+        accountId: String,
+        closedPos: ClosedPosition
+    ) {
+        val targetIds = mutableSetOf<String>()
+        if (walletAddress.startsWith("0x")) {
+            targetIds.add(walletAddress)
+            targetIds.add(walletAddress.lowercase(Locale.US))
+        }
+        if (accountId.isNotBlank()) targetIds.add(accountId)
+        val currentUid = auth.currentUser?.uid
+        if (!currentUid.isNullOrBlank()) targetIds.add(currentUid)
+
+        val tradeMap = hashMapOf<String, Any>(
+            "id" to closedPos.id,
+            "symbol" to closedPos.symbol,
+            "isLong" to closedPos.isLong,
+            "side" to (if (closedPos.isLong) "LONG" else "SHORT"),
+            "leverage" to closedPos.leverage,
+            "margin" to closedPos.margin,
+            "positionSizeUsdc" to closedPos.positionSizeUsdc,
+            "entryPrice" to closedPos.entryPrice,
+            "exitPrice" to closedPos.exitPrice,
+            "realizedPnl" to closedPos.realizedPnl,
+            "realizedPnlPercent" to closedPos.realizedPnlPercent,
+            "closeReason" to closedPos.closeReason,
+            "timestamp" to closedPos.timestamp,
+            "isDemo" to closedPos.isDemo,
+            "walletAddress" to walletAddress
+        )
+
+        for (target in targetIds) {
+            firestore.collection("users")
+                .document(target)
+                .collection("trade_history")
+                .document(closedPos.id)
+                .set(tradeMap)
+                .addOnSuccessListener {
+                    Log.i(TAG, "Archived trade ${closedPos.id} to users/$target/trade_history")
+                }
+                .addOnFailureListener { e ->
+                    Log.w(TAG, "Failed to archive trade ${closedPos.id} to users/$target/trade_history", e)
+                }
         }
     }
 
