@@ -4,7 +4,7 @@
   "description": "24/7 Standalone Cloud Bot Engine for AetherDex (Hyperliquid L1)",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node --max-old-space-size=256 --expose-gc index.js",
     "dev": "node --watch index.js"
   },
   "keywords": [

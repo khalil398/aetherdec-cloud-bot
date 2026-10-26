@@ -109,6 +109,12 @@ if (admin.apps.length > 0) {
     const workerKey = walletAddress ? walletAddress.toLowerCase() : uid;
 
     if (isAnyActive) {
+      if (activeEngines.has(workerKey)) {
+        // Worker is ALREADY running: update config in place without restarting intervals!
+        const existing = activeEngines.get(workerKey);
+        existing.config = config;
+        return;
+      }
       startWorker(workerKey, db, config, uid, walletAddress);
     } else {
       stopWorker(workerKey);
@@ -134,112 +140,114 @@ if (admin.apps.length > 0) {
   }, (error) => {
     console.error("❌ Firestore 'bot_config' CollectionGroup Error:", error.message);
   });
-
-  // Fallback listener on root users collection for immediate toggle triggers
-  db.collection("users").onSnapshot((snapshot) => {
-    snapshot.docChanges().forEach((change) => {
-      const uData = change.doc.data();
-      if (!uData) return;
-      if (uData.bot_config || uData.is_futures_bot_active !== undefined || uData.futures_active !== undefined) {
-        const fakeChange = {
-          doc: {
-            ref: { path: `users/${change.doc.id}/bot/bot_config` },
-            data: () => ({ ...uData, ...(uData.bot_config || {}) })
-          }
-        };
-        handleConfigChange(fakeChange, db);
-      }
-    });
-  }, (error) => {
-    console.error("❌ Firestore 'users' root Error:", error.message);
-  });
 }
 
+const pendingWorkerStarts = new Set();
 
 async function startWorker(workerKey, db, config, uid, walletAddress) {
-  stopWorker(workerKey);
+  if (pendingWorkerStarts.has(workerKey)) return;
+  pendingWorkerStarts.add(workerKey);
 
-  // Multi-path lookup for restricted Agent Key secret:
-  // 1. users/${walletAddress}/bot/bot_secret
-  // 2. users/${walletAddress.toLowerCase()}/bot/bot_secret
-  // 3. users/${uid}/bot/bot_secret
-  let botSecret = null;
-  const lookupIds = Array.from(new Set([
-    walletAddress,
-    walletAddress ? walletAddress.toLowerCase() : null,
-    uid,
-    config.masterAddress,
-    config.wallet_address
-  ])).filter(Boolean);
+  try {
+    stopWorker(workerKey);
 
-  for (const id of lookupIds) {
-    try {
-      const secretRef = db.doc(`users/${id}/bot/bot_secret`);
-      const secretDoc = await secretRef.get();
-      if (secretDoc.exists) {
-        botSecret = secretDoc.data();
-        console.log(`[${workerKey}] ✅ Found bot_secret under users/${id}/bot/bot_secret`);
-        break;
-      }
-    } catch (e) {
-      console.warn(`[${workerKey}] Error checking secret for ${id}:`, e.message);
-    }
-  }
+    // Multi-path lookup for restricted Agent Key secret:
+    // 1. users/${walletAddress}/bot/bot_secret
+    // 2. users/${walletAddress.toLowerCase()}/bot/bot_secret
+    // 3. users/${uid}/bot/bot_secret
+    let botSecret = null;
+    const lookupIds = Array.from(new Set([
+      walletAddress,
+      walletAddress ? walletAddress.toLowerCase() : null,
+      uid,
+      config.masterAddress,
+      config.wallet_address
+    ])).filter(Boolean);
 
-  // Fallback: Check root user documents for bot_secret field
-  if (!botSecret) {
     for (const id of lookupIds) {
       try {
-        const userDoc = await db.doc(`users/${id}`).get();
-        if (userDoc.exists && userDoc.data()?.bot_secret) {
-          botSecret = userDoc.data().bot_secret;
-          console.log(`[${workerKey}] ✅ Found bot_secret in root user doc users/${id}`);
+        const secretRef = db.doc(`users/${id}/bot/bot_secret`);
+        const secretDoc = await secretRef.get();
+        if (secretDoc.exists) {
+          botSecret = secretDoc.data();
+          console.log(`[${workerKey}] ✅ Found bot_secret under users/${id}/bot/bot_secret`);
           break;
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn(`[${workerKey}] Error checking secret for ${id}:`, e.message);
+      }
     }
-  }
 
-  // If botSecret is not found yet, initialize with walletAddress for continuous clearinghouse/market scanning
-  if (!botSecret) {
-    if (walletAddress) {
-      console.warn(`[${workerKey}] No bot_secret document found yet in Firestore. Initializing worker with walletAddress [${walletAddress}] for continuous clearinghouse/market scanning.`);
-      botSecret = { masterAddress: walletAddress };
-    } else {
-      console.warn(`[${workerKey}] No bot_secret document or wallet address found in Firestore. Skipping worker start.`);
-      return;
+    // Fallback: Check root user documents for bot_secret field
+    if (!botSecret) {
+      for (const id of lookupIds) {
+        try {
+          const userDoc = await db.doc(`users/${id}`).get();
+          if (userDoc.exists && userDoc.data()?.bot_secret) {
+            botSecret = userDoc.data().bot_secret;
+            console.log(`[${workerKey}] ✅ Found bot_secret in root user doc users/${id}`);
+            break;
+          }
+        } catch (e) {}
+      }
     }
-  }
 
-  if (!botSecret.masterAddress && walletAddress) {
-    botSecret.masterAddress = walletAddress;
-  }
+    // If botSecret is not found yet, initialize with walletAddress for continuous clearinghouse/market scanning
+    if (!botSecret) {
+      if (walletAddress) {
+        console.warn(`[${workerKey}] No bot_secret document found yet in Firestore. Initializing worker with walletAddress [${walletAddress}] for continuous clearinghouse/market scanning.`);
+        botSecret = { masterAddress: walletAddress };
+      } else {
+        console.warn(`[${workerKey}] No bot_secret document or wallet address found in Firestore. Skipping worker start.`);
+        return;
+      }
+    }
 
-  console.log(`🚀 Starting 24/7 worker engine for [${workerKey}] (Master Wallet: ${botSecret.masterAddress})`);
+    if (!botSecret.masterAddress && walletAddress) {
+      botSecret.masterAddress = walletAddress;
+    }
 
-  // Initial immediate tick
-  try {
-    await executeBotTick(workerKey, db, config, botSecret);
-  } catch (e) {
-    console.error(`[${workerKey}] Initial tick error:`, e.message);
-  }
+    console.log(`🚀 Starting 24/7 worker engine for [${workerKey}] (Master Wallet: ${botSecret.masterAddress})`);
 
-  // 10-second recurring execution loop
-  const intervalId = setInterval(async () => {
+    // Initial immediate tick
     try {
       await executeBotTick(workerKey, db, config, botSecret);
     } catch (e) {
-      console.error(`[${workerKey}] Tick execution error:`, e.message);
+      console.error(`[${workerKey}] Initial tick error:`, e.message);
     }
-  }, 10000);
 
-  activeEngines.set(workerKey, { intervalId, config, botSecret });
+    // 10-second recurring execution loop (strictly prevents overlapping ticks)
+    let isTickRunning = false;
+    const intervalId = setInterval(async () => {
+      if (isTickRunning) return; // Prevent overlapping execution
+      isTickRunning = true;
+      try {
+        const currentWorker = activeEngines.get(workerKey);
+        if (!currentWorker) return;
+        await executeBotTick(workerKey, db, currentWorker.config, currentWorker.botSecret);
+      } catch (e) {
+        console.error(`[${workerKey}] Tick execution error:`, e.message);
+      } finally {
+        isTickRunning = false;
+        if (global.gc) {
+          try { global.gc(); } catch (e) {}
+        }
+      }
+    }, 10000);
+
+    activeEngines.set(workerKey, { intervalId, config, botSecret });
+  } finally {
+    pendingWorkerStarts.delete(workerKey);
+  }
 }
 
 function stopWorker(workerKey) {
+  pendingWorkerStarts.delete(workerKey);
   if (activeEngines.has(workerKey)) {
     const worker = activeEngines.get(workerKey);
-    clearInterval(worker.intervalId);
+    if (worker.intervalId) {
+      clearInterval(worker.intervalId);
+    }
     activeEngines.delete(workerKey);
     console.log(`⏸️ Worker engine paused for [${workerKey}]`);
   }

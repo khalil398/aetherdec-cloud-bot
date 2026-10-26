@@ -27,6 +27,23 @@ function calculateEMA(values, period) {
   return emas;
 }
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Rate limit cooldown map: symbol -> timestamp until which requests for this symbol are paused (15s backoff)
+const rateLimitedSymbols = new Map();
+
+function isSymbolCoolingDown(symbol) {
+  const clean = (symbol || "").toString().toUpperCase().trim().replace("/USDC", "").replace("/USDT", "").replace("/", "");
+  const expiry = rateLimitedSymbols.get(clean) || 0;
+  return Date.now() < expiry;
+}
+
+function recordSymbol429(symbol) {
+  const clean = (symbol || "").toString().toUpperCase().trim().replace("/USDC", "").replace("/USDT", "").replace("/", "");
+  console.warn(`[Hyperliquid] ⚠️ Rate limit (429) active for ${clean}. Pausing evaluation for 15 seconds.`);
+  rateLimitedSymbols.set(clean, Date.now() + 15000);
+}
+
 /**
  * Known fallback szDecimals for core Hyperliquid spot tokens.
  */
@@ -1002,33 +1019,50 @@ async function executeBotTick(uid, db, config, botSecret) {
     let validResults = [];
 
     if (isEmaStrategyActive) {
-      console.log(`[${uid}] 🎯 Futures whitelisted asset locked: [${scanQueue.join(", ")}] on ${futuresInterval} (Strategy: ${futuresStrategyList.join("+")}, Margin: ${marginMode}). Strictly bypassing all other pairs.`);
+      console.log(`[${uid}] 🎯 Futures whitelisted asset locked: [${scanQueue.join(", ")}] on ${futuresInterval} (Strategy: ${futuresStrategyList.join("+")}, Margin: ${marginMode}). Paced sequential evaluation.`);
 
-      const scanResults = await Promise.all(
-        scanQueue.map(async (coin) => {
-          try {
-            const cleanCoin = cleanCoinSymbol(coin);
-            const market = perpMarketMap.get(cleanCoin);
-            const querySymbol = market ? market.coin : cleanCoin;
-            const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || 0);
-            if (coinPrice <= 0) return null;
+      const scanResults = [];
+      for (let i = 0; i < scanQueue.length; i++) {
+        if (i > 0) {
+          // Mandatory 1-second delay between whitelisted asset fetches to pace API traffic
+          await sleep(1000);
+        }
+        const coin = scanQueue[i];
+        const cleanCoin = cleanCoinSymbol(coin);
 
-            // Strategy execution engine queries targeted candle timeframe (5m for Dual-Ribbon, 30m for EMA/ICT)
-            const candles = await fetchCandleSnapshot(querySymbol, futuresInterval, 300);
-            if (!candles || candles.length < minCandlesReq) return null;
+        // Graceful Rate Limit Handling: Check 15-second cooldown
+        if (isSymbolCoolingDown(cleanCoin)) {
+          console.warn(`[${uid}] ⏳ Symbol ${cleanCoin} is in 429 rate limit cooldown (15s backoff). Skipping tick.`);
+          continue;
+        }
 
-            const signalResult = isDualRibbonActive
-              ? await evaluateDualRibbonStrategy(cleanCoin, candles)
-              : (isChochActive
-                ? await evaluateIctMarketStructure(cleanCoin, candles)
-                : await evaluateEmaRibbonStrategy(cleanCoin, candles));
-            return { coin: cleanCoin, coinPrice, market, ...signalResult };
-          } catch (e) {
-            console.error(`[${uid}] Error evaluating perp ${coin}:`, e.message);
-            return null;
+        try {
+          const market = perpMarketMap.get(cleanCoin);
+          const querySymbol = market ? market.coin : cleanCoin;
+          const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || 0);
+          if (coinPrice <= 0) continue;
+
+          // Strategy execution engine queries targeted candle timeframe
+          const candleResult = await fetchCandleSnapshot(querySymbol, futuresInterval, 300);
+          if (candleResult?.rateLimited) {
+            recordSymbol429(cleanCoin);
+            continue;
           }
-        })
-      );
+
+          const candles = Array.isArray(candleResult) ? candleResult : (candleResult?.candles || []);
+          if (!candles || candles.length < minCandlesReq) continue;
+
+          const signalResult = isDualRibbonActive
+            ? await evaluateDualRibbonStrategy(cleanCoin, candles)
+            : (isChochActive
+              ? await evaluateIctMarketStructure(cleanCoin, candles)
+              : await evaluateEmaRibbonStrategy(cleanCoin, candles));
+
+          scanResults.push({ coin: cleanCoin, coinPrice, market, ...signalResult });
+        } catch (e) {
+          console.error(`[${uid}] Error evaluating perp ${coin}:`, e.message);
+        }
+      }
 
       validResults = scanResults.filter(Boolean);
 
@@ -1373,32 +1407,49 @@ async function executeBotTick(uid, db, config, botSecret) {
     ) || spotStrategyList.length === 0;
 
     if (isEmaStrategyActive) {
-      console.log(`[${uid}] 🎯 Spot whitelisted asset locked: [${scanQueue.join(", ")}] on ${spotInterval} (Strategy: ${spotStrategyList.join("+")}). Strictly bypassing all other pairs.`);
+      console.log(`[${uid}] 🎯 Spot whitelisted asset locked: [${scanQueue.join(", ")}] on ${spotInterval} (Strategy: ${spotStrategyList.join("+")}). Paced sequential evaluation.`);
 
-    // Parallel Candle Snapshot Queries across whitelisted spot pairs
-    const scanResults = await Promise.all(
-      scanQueue.map(async (coin) => {
-        try {
-          const market = resolveSpotMarket(coin, spotMarketMap);
-          const querySymbol = market ? market.exchangeCoin : coin;
-          const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || allMids[coin] || 0);
-          if (coinPrice <= 0) return null;
+    // Sequential Paced Candle Queries across whitelisted spot pairs
+    const scanResults = [];
+    for (let i = 0; i < scanQueue.length; i++) {
+      if (i > 0) {
+        // Mandatory 1-second delay between whitelisted asset fetches
+        await sleep(1000);
+      }
+      const coin = scanQueue[i];
+      const cleanCoin = cleanCoinSymbol(coin);
 
-          const candles = await fetchCandleSnapshot(querySymbol, spotInterval, 300);
-          if (!candles || candles.length < minCandlesReq) return null;
+      if (isSymbolCoolingDown(cleanCoin)) {
+        console.warn(`[${uid}] ⏳ Spot symbol ${cleanCoin} is in 429 rate limit cooldown (15s backoff). Skipping tick.`);
+        continue;
+      }
 
-          const signalResult = isDualRibbonActive
-            ? await evaluateDualRibbonStrategy(coin, candles)
-            : (isChochActive
-              ? await evaluateIctMarketStructure(coin, candles)
-              : await evaluateEmaRibbonStrategy(coin, candles));
-          return { coin, coinPrice, market, ...signalResult };
-        } catch (e) {
-          console.error(`[${uid}] Error evaluating ${coin}:`, e.message);
-          return null;
+      try {
+        const market = resolveSpotMarket(coin, spotMarketMap);
+        const querySymbol = market ? market.exchangeCoin : coin;
+        const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || allMids[coin] || 0);
+        if (coinPrice <= 0) continue;
+
+        const candleResult = await fetchCandleSnapshot(querySymbol, spotInterval, 300);
+        if (candleResult?.rateLimited) {
+          recordSymbol429(cleanCoin);
+          continue;
         }
-      })
-    );
+
+        const candles = Array.isArray(candleResult) ? candleResult : (candleResult?.candles || []);
+        if (!candles || candles.length < minCandlesReq) continue;
+
+        const signalResult = isDualRibbonActive
+          ? await evaluateDualRibbonStrategy(coin, candles)
+          : (isChochActive
+            ? await evaluateIctMarketStructure(coin, candles)
+            : await evaluateEmaRibbonStrategy(coin, candles));
+
+        scanResults.push({ coin, coinPrice, market, ...signalResult });
+      } catch (e) {
+        console.error(`[${uid}] Error evaluating ${coin}:`, e.message);
+      }
+    }
 
     const validResults = scanResults.filter(Boolean);
 
@@ -1634,6 +1685,15 @@ async function executeBotTick(uid, db, config, botSecret) {
 
   console.log(`[${uid}] ✅ Telemetry updated: PnL=$${totalPnlUsd.toFixed(2)} (${pnlPct.toFixed(2)}%), Scanned Spot Markets: ${availableCoins.length}`);
   }
+
+  // Memory Leak Prevention: Clear temporary maps and arrays after tick evaluation
+  try {
+    perpMarketMap?.clear();
+    spotMarketMap?.clear();
+    spotBalances?.clear();
+    assetIndexMap?.clear();
+    szDecimalsMap?.clear();
+  } catch (e) {}
 }
 
 module.exports = {

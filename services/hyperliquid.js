@@ -168,7 +168,8 @@ async function fetchCandleSnapshot(coin = "BTC", interval = "5m", count = 300) {
     return response.data || [];
   } catch (error) {
     if (error.response?.status === 429) {
-      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on candleSnapshot for ${coin} (${interval})`);
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on candleSnapshot for ${coin} (${interval}). Triggering 15s pause.`);
+      return { rateLimited: true, candles: [] };
     } else {
       console.error(`[Hyperliquid] Error fetching candleSnapshot for ${coin} (${interval}):`, error.message);
     }
@@ -390,19 +391,31 @@ async function updateAgentLeverage({ agentPrivateKey, masterAddress, assetIndex,
   }
 }
 
+const userAbstractionCache = new Map();
+
 /**
- * Checks whether user has Unified Account or Portfolio Margin active.
+ * Checks whether user has Unified Account or Portfolio Margin active (cached 5 minutes).
  */
 async function checkUserAbstraction(userAddress) {
+  const cached = userAbstractionCache.get(userAddress);
+  if (cached && (Date.now() - cached.timestamp < 300000)) {
+    return cached.val;
+  }
   try {
     const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
       type: "userAbstraction",
       user: userAddress
-    });
-    return response.data || "disabled";
+    }, { timeout: 10000 });
+    const val = response.data || "disabled";
+    userAbstractionCache.set(userAddress, { val, timestamp: Date.now() });
+    return val;
   } catch (error) {
-    console.error(`[Hyperliquid] Error checking userAbstraction for ${userAddress}:`, error.message);
-    return "disabled";
+    if (error.response?.status === 429) {
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on userAbstraction for ${userAddress}`);
+    } else {
+      console.error(`[Hyperliquid] Error checking userAbstraction for ${userAddress}:`, error.message);
+    }
+    return cached ? cached.val : "disabled";
   }
 }
 
