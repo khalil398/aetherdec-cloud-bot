@@ -345,29 +345,39 @@ object FirebaseSyncManager {
         if (!isOnline(context)) return
         ensureFirebaseAuth {
             val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
+            val walletAddress = EmbeddedWalletManager.getActiveEvmAddress(context)
             val payload = hashMapOf<String, Any>(
                 "enabled_assets" to enabledAssets,
                 "updated_at" to System.currentTimeMillis()
             )
 
-            firestore.collection("users")
-                .document(docId)
-                .collection("bot")
-                .document("bot_config")
-                .set(payload, SetOptions.merge())
-                .addOnSuccessListener {
-                    Log.i(TAG, "Synced enabled_assets (${enabledAssets.size}) to Firestore (users/$docId/bot/bot_config)")
-                }
+            val targets = mutableSetOf<String>()
+            targets.add(docId)
+            if (walletAddress.startsWith("0x")) {
+                targets.add(walletAddress)
+                targets.add(walletAddress.lowercase(Locale.US))
+            }
 
-            firestore.collection("users")
-                .document(docId)
-                .collection("bot_config")
-                .document("config")
-                .set(payload, SetOptions.merge())
+            for (target in targets) {
+                firestore.collection("users")
+                    .document(target)
+                    .collection("bot")
+                    .document("bot_config")
+                    .set(payload, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.i(TAG, "Synced enabled_assets (${enabledAssets.size}) to Firestore (users/$target/bot/bot_config)")
+                    }
 
-            firestore.collection("users")
-                .document(docId)
-                .set(hashMapOf("bot_config" to payload), SetOptions.merge())
+                firestore.collection("users")
+                    .document(target)
+                    .collection("bot_config")
+                    .document("config")
+                    .set(payload, SetOptions.merge())
+
+                firestore.collection("users")
+                    .document(target)
+                    .set(hashMapOf("bot_config" to payload, "enabled_assets" to enabledAssets), SetOptions.merge())
+            }
         }
     }
 
