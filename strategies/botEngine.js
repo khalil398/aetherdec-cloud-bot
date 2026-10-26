@@ -1,7 +1,6 @@
 const {
   fetchUserClearinghouseState,
   fetchSpotClearinghouseState,
-  fetchAllMids,
   fetchSpotMetaAndCtxs,
   fetchPerpMetaAndCtxs,
   fetchCandleSnapshot,
@@ -787,48 +786,101 @@ async function executeBotTick(uid, db, config, botSecret) {
     }
   };
 
+  // 1. Decoupled Market Activation States - Evaluated FIRST before any network calls
+  const isSpotActive = config.is_spot_bot_active !== undefined
+    ? Boolean(config.is_spot_bot_active)
+    : (config.spot_active !== undefined
+      ? Boolean(config.spot_active)
+      : (config.market_type === "SPOT" ? Boolean(config.active) : false));
+
+  const isFuturesActive = config.is_futures_bot_active !== undefined
+    ? Boolean(config.is_futures_bot_active)
+    : (config.futures_active !== undefined
+      ? Boolean(config.futures_active)
+      : (config.market_type === "PERP" || config.market_type === "FUTURES" || config.is_spot === false ? Boolean(config.active) : false));
+
+  console.log(`[${uid}] ⚡ Bot Tick Evaluation: isSpotActive=${isSpotActive}, isFuturesActive=${isFuturesActive}`);
+
+  if (!isSpotActive && !isFuturesActive) {
+    console.log(`[${uid}] ⏸️ Both Spot and Futures bot engines are INACTIVE. Skipping tick.`);
+    return;
+  }
+
   console.log(`[${uid}] ⚡ Running Engine (Master Wallet: ${masterAddress}, Strategy: '${config.strategy || config.futures_strategy || '5m Dual-Ribbon'}', Alloc: ${config.allocation_pct || config.futures_allocation_pct || 25}%)...`);
 
-  // 1. Fetch Spot Clearinghouse, Dynamic Spot Meta & All Mid Prices
-  const spotClearinghouse = await fetchSpotClearinghouseState(masterAddress);
-  const perpClearinghouse = await fetchUserClearinghouseState(masterAddress);
-  const allMids = await fetchAllMids();
-  const spotMarkets = await fetchSpotMetaAndCtxs();
-
+  // 2. Fetch Perpetual Futures Clearinghouse (only when Futures is active, throttled/cached)
+  let perpClearinghouse = null;
   let totalPnlUsd = 0.0;
   let activeTradesCount = 0;
   let accountValue = 0.0;
 
-  if (perpClearinghouse && perpClearinghouse.marginSummary) {
-    accountValue = parseFloat(perpClearinghouse.marginSummary.accountValue || 0);
-    const assetPositions = perpClearinghouse.assetPositions || [];
-    activeTradesCount = assetPositions.length;
+  if (isFuturesActive) {
+    perpClearinghouse = await fetchUserClearinghouseState(masterAddress);
+    if (perpClearinghouse && perpClearinghouse.marginSummary) {
+      accountValue = parseFloat(perpClearinghouse.marginSummary.accountValue || 0);
+      const assetPositions = perpClearinghouse.assetPositions || [];
+      activeTradesCount = assetPositions.length;
 
-    totalPnlUsd = assetPositions.reduce((sum, item) => {
-      const pos = item.position;
-      return sum + parseFloat(pos.unrealizedPnl || 0);
-    }, 0.0);
-    console.log(`[${uid}] 💰 Hyperliquid Futures Account (${masterAddress}): Balance/Value = $${accountValue.toFixed(2)} USDC, Active Positions: ${activeTradesCount}, Unrealized PnL: $${totalPnlUsd.toFixed(2)}`);
+      totalPnlUsd = assetPositions.reduce((sum, item) => {
+        const pos = item.position;
+        return sum + parseFloat(pos.unrealizedPnl || 0);
+      }, 0.0);
+      console.log(`[${uid}] 💰 Hyperliquid Futures Account (${masterAddress}): Balance/Value = $${accountValue.toFixed(2)} USDC, Active Positions: ${activeTradesCount}, Unrealized PnL: $${totalPnlUsd.toFixed(2)}`);
+    }
   }
 
-  // Map spot balances and asset indices
+  // 3. ZERO-OUT SPOT CALLS: Fetch Spot Clearinghouse & Spot Markets ONLY IF Spot is Active!
+  let spotClearinghouse = null;
+  let spotMarkets = [];
   const spotBalances = new Map();
   let usdcBalance = 0.0;
-  if (spotClearinghouse && spotClearinghouse.balances) {
-    spotClearinghouse.balances.forEach(b => {
-      const avail = parseFloat(b.total || 0) - parseFloat(b.hold || 0);
-      spotBalances.set(b.coin, avail);
-      if (b.coin === "USDC") usdcBalance = avail;
-    });
-  }
-
   const assetIndexMap = new Map();
   const szDecimalsMap = new Map();
   const spotMarketMap = new Map();
   const FALLBACK_UNIVERSE = ["BTC", "ETH", "SOL", "HYPE", "PURR", "HFUN", "SUI", "PEPE", "DOGE", "AVAX", "LINK", "XRP"];
-  
-  // Populate fallback asset indices and szDecimals
   Object.entries(FALLBACK_SZ_DECIMALS).forEach(([c, dec]) => szDecimalsMap.set(c, dec));
+
+  if (isSpotActive) {
+    spotClearinghouse = await fetchSpotClearinghouseState(masterAddress);
+    spotMarkets = await fetchSpotMetaAndCtxs();
+
+    if (spotClearinghouse && spotClearinghouse.balances) {
+      spotClearinghouse.balances.forEach(b => {
+        const avail = parseFloat(b.total || 0) - parseFloat(b.hold || 0);
+        spotBalances.set(b.coin, avail);
+        if (b.coin === "USDC") usdcBalance = avail;
+      });
+    }
+
+    if (spotMarkets && spotMarkets.length > 0) {
+      spotMarkets.forEach(m => {
+        const keys = [
+          m.coin.toUpperCase(),
+          m.displayName.toUpperCase(),
+          m.displayName.replace("/", "").toUpperCase(),
+          m.exchangeCoin ? m.exchangeCoin.toUpperCase() : null,
+          `@${m.universeIndex}`,
+          m.universeIndex.toString()
+        ].filter(Boolean);
+
+        if (m.coin.startsWith("U")) {
+          const stripped = m.coin.substring(1).toUpperCase();
+          keys.push(stripped);
+          keys.push(`${stripped}/USDC`);
+          keys.push(`${stripped}USDC`);
+        }
+
+        keys.forEach(k => {
+          spotMarketMap.set(k, m);
+          assetIndexMap.set(k, m.l1AssetIndex);
+          if (m.szDecimals !== undefined) {
+            szDecimalsMap.set(k, m.szDecimals);
+          }
+        });
+      });
+    }
+  }
+
   assetIndexMap.set("PURR", 10000);
   assetIndexMap.set("HFUN", 10001);
   assetIndexMap.set("HYPE", 10107);
@@ -839,34 +891,6 @@ async function executeBotTick(uid, db, config, botSecret) {
   assetIndexMap.set("ENA", 10206);
   assetIndexMap.set("UAVAX", 10306);
   assetIndexMap.set("AVAX", 10306);
-
-  if (spotMarkets && spotMarkets.length > 0) {
-    spotMarkets.forEach(m => {
-      const keys = [
-        m.coin.toUpperCase(),
-        m.displayName.toUpperCase(),
-        m.displayName.replace("/", "").toUpperCase(),
-        m.exchangeCoin ? m.exchangeCoin.toUpperCase() : null,
-        `@${m.universeIndex}`,
-        m.universeIndex.toString()
-      ].filter(Boolean);
-
-      if (m.coin.startsWith("U")) {
-        const stripped = m.coin.substring(1).toUpperCase();
-        keys.push(stripped);
-        keys.push(`${stripped}/USDC`);
-        keys.push(`${stripped}USDC`);
-      }
-
-      keys.forEach(k => {
-        spotMarketMap.set(k, m);
-        assetIndexMap.set(k, m.l1AssetIndex);
-        if (m.szDecimals !== undefined) {
-          szDecimalsMap.set(k, m.szDecimals);
-        }
-      });
-    });
-  }
 
   const availableCoins = (spotMarkets && spotMarkets.length > 0)
     ? spotMarkets.map(m => m.coin)
@@ -934,27 +958,6 @@ async function executeBotTick(uid, db, config, botSecret) {
     // 3. Fallback: if no assets explicitly enabled and no target_coin, authorize default target ("BTC")
     return cleanCoin === "BTC" || cleanCoin === "UBTC";
   };
-
-  // Prioritize active target coin and authorized assets in the scan queue
-  // Decoupled Market Activation States
-  const isSpotActive = config.is_spot_bot_active !== undefined
-    ? Boolean(config.is_spot_bot_active)
-    : (config.spot_active !== undefined
-      ? Boolean(config.spot_active)
-      : (config.market_type === "SPOT" ? Boolean(config.active) : false));
-
-  const isFuturesActive = config.is_futures_bot_active !== undefined
-    ? Boolean(config.is_futures_bot_active)
-    : (config.futures_active !== undefined
-      ? Boolean(config.futures_active)
-      : (config.market_type === "PERP" || config.market_type === "FUTURES" || config.is_spot === false ? Boolean(config.active) : false));
-
-  console.log(`[${uid}] ⚡ Bot Tick Evaluation: isSpotActive=${isSpotActive}, isFuturesActive=${isFuturesActive}`);
-
-  if (!isSpotActive && !isFuturesActive) {
-    console.log(`[${uid}] ⏸️ Both Spot and Futures bot engines are INACTIVE. Skipping tick.`);
-    return;
-  }
 
   const futuresConfig = config.futures_config || config;
   const futuresStrategy = futuresConfig.strategy || config.strategy || "30m EMA High/Low";
@@ -1042,10 +1045,8 @@ async function executeBotTick(uid, db, config, botSecret) {
         try {
           const market = perpMarketMap.get(cleanCoin);
           const querySymbol = market ? market.coin : cleanCoin;
-          const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || 0);
-          if (coinPrice <= 0) continue;
 
-          // Strategy execution engine queries targeted candle timeframe
+          // Strategy execution engine queries targeted candle timeframe for this single symbol
           const candleResult = await fetchCandleSnapshot(querySymbol, futuresInterval, 300);
           if (candleResult?.rateLimited) {
             recordSymbol429(cleanCoin);
@@ -1054,6 +1055,11 @@ async function executeBotTick(uid, db, config, botSecret) {
 
           const candles = Array.isArray(candleResult) ? candleResult : (candleResult?.candles || []);
           if (!candles || candles.length < minCandlesReq) continue;
+
+          // Strictly derive current price from the latest candle close of the target symbol (eliminates allMids request)
+          const latestCandle = candles[candles.length - 1];
+          const coinPrice = parseFloat(latestCandle.close || (market ? market.markPrice : 0) || 0);
+          if (coinPrice <= 0) continue;
 
           const signalResult = isDualRibbonActive
             ? await evaluateDualRibbonStrategy(cleanCoin, candles)
@@ -1580,8 +1586,6 @@ async function executeBotTick(uid, db, config, botSecret) {
       try {
         const market = resolveSpotMarket(coin, spotMarketMap);
         const querySymbol = market ? market.exchangeCoin : coin;
-        const coinPrice = parseFloat(allMids[querySymbol] || (market ? market.markPrice : 0) || allMids[coin] || 0);
-        if (coinPrice <= 0) continue;
 
         const candleResult = await fetchCandleSnapshot(querySymbol, spotInterval, 300);
         if (candleResult?.rateLimited) {
@@ -1591,6 +1595,10 @@ async function executeBotTick(uid, db, config, botSecret) {
 
         const candles = Array.isArray(candleResult) ? candleResult : (candleResult?.candles || []);
         if (!candles || candles.length < minCandlesReq) continue;
+
+        const latestCandle = candles[candles.length - 1];
+        const coinPrice = parseFloat(latestCandle.close || (market ? market.markPrice : 0) || 0);
+        if (coinPrice <= 0) continue;
 
         const signalResult = isDualRibbonActive
           ? await evaluateDualRibbonStrategy(coin, candles)

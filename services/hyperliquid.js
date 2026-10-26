@@ -4,23 +4,34 @@ const msgpack = require("msgpack-lite");
 
 const HYPERLIQUID_API_URL = process.env.HYPERLIQUID_API_URL || "https://api.hyperliquid.xyz";
 
+const clearinghouseCache = new Map();
+
 /**
- * Fetches Hyperliquid L1 Clearinghouse state for a user.
+ * Fetches Hyperliquid L1 Clearinghouse state for a user (throttled & cached for 6s).
  */
 async function fetchUserClearinghouseState(userAddress) {
+  const now = Date.now();
+  const cached = clearinghouseCache.get(userAddress);
+  if (cached && (now - cached.time < 6000)) {
+    return cached.data;
+  }
   try {
     const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
       type: "clearinghouseState",
       user: userAddress
     }, { timeout: 10000 });
+    if (response.data) {
+      clearinghouseCache.set(userAddress, { data: response.data, time: now });
+    }
     return response.data;
   } catch (error) {
     if (error.response?.status === 429) {
       console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on clearinghouseState for ${userAddress}`);
+      if (cached) return cached.data;
     } else {
       console.error(`[Hyperliquid] Error fetching clearinghouseState for ${userAddress}:`, error.message);
     }
-    return null;
+    return cached ? cached.data : null;
   }
 }
 
