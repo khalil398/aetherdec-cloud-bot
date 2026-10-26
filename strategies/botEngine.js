@@ -760,6 +760,9 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   };
 }
 
+// In-memory cache for active position dynamic risk parameters (SL/TP)
+const activePositionsRiskCache = new Map();
+
 /**
  * Executes a 24/7 algorithmic strategy tick cycle for a specific user.
  */
@@ -1095,22 +1098,26 @@ async function executeBotTick(uid, db, config, botSecret) {
         let isDualRibbonShortExit = false;
         let exitReason = "";
 
-        if (isDualRibbonActive && stopLoss > 0 && takeProfit > 0) {
+        const cachedRisk = activePositionsRiskCache.get(`${masterAddress}_${coin}`);
+        const effectiveSl = cachedRisk?.stopLoss || stopLoss;
+        const effectiveTp = cachedRisk?.takeProfit || takeProfit;
+
+        if (isDualRibbonActive && effectiveSl > 0 && effectiveTp > 0) {
           if (isCurrentlyLong) {
-            if (coinPrice <= stopLoss) {
+            if (coinPrice <= effectiveSl) {
               isDualRibbonLongExit = true;
-              exitReason = `Dual-Ribbon Stop Loss Triggered (${coinPrice} <= SL: ${stopLoss})`;
-            } else if (coinPrice >= takeProfit) {
+              exitReason = `Dual-Ribbon Stop Loss Triggered (${coinPrice} <= SL: ${effectiveSl})`;
+            } else if (coinPrice >= effectiveTp) {
               isDualRibbonLongExit = true;
-              exitReason = `Dual-Ribbon Take Profit (1:2 RRR) Triggered (${coinPrice} >= TP: ${takeProfit})`;
+              exitReason = `Dual-Ribbon Take Profit (1:2 RRR) Triggered (${coinPrice} >= TP: ${effectiveTp})`;
             }
           } else if (isCurrentlyShort) {
-            if (coinPrice >= stopLoss) {
+            if (coinPrice >= effectiveSl) {
               isDualRibbonShortExit = true;
-              exitReason = `Dual-Ribbon Stop Loss Triggered (${coinPrice} >= SL: ${stopLoss})`;
-            } else if (coinPrice <= takeProfit) {
+              exitReason = `Dual-Ribbon Stop Loss Triggered (${coinPrice} >= SL: ${effectiveSl})`;
+            } else if (coinPrice <= effectiveTp) {
               isDualRibbonShortExit = true;
-              exitReason = `Dual-Ribbon Take Profit (1:2 RRR) Triggered (${coinPrice} <= TP: ${takeProfit})`;
+              exitReason = `Dual-Ribbon Take Profit (1:2 RRR) Triggered (${coinPrice} <= TP: ${effectiveTp})`;
             }
           }
         }
@@ -1133,6 +1140,46 @@ async function executeBotTick(uid, db, config, botSecret) {
             });
             console.log(`[${uid}] ✅ Futures LONG closed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
             currentPositionsMap.delete(coin); // Mark position deleted to allow immediate two-way SHORT reversal
+
+            // Archive closed trade record to Firestore users/{walletAddress}/trade_history
+            const entryPx = parseFloat(currentPos.entryPx || coinPrice);
+            const closeSizeCrypto = Math.abs(currentSzi);
+            const posSizeUsd = closeSizeCrypto * entryPx;
+            const pnlUsd = (coinPrice - entryPx) * closeSizeCrypto;
+            const marginUsed = parseFloat(currentPos.marginUsed || (posSizeUsd / configuredLeverage));
+            const pnlPctCalc = marginUsed > 0 ? (pnlUsd / marginUsed) * 100.0 : 0.0;
+            const entryTime = cachedRisk?.timestamp || (Date.now() - 300000);
+            const tradeId = `trade_${coin}_${Date.now()}`;
+
+            const closedTradeRecord = {
+              id: tradeId,
+              symbol: `${coin}/USDC`,
+              coin: coin,
+              isLong: true,
+              side: "LONG",
+              leverage: configuredLeverage,
+              margin: marginUsed,
+              positionSizeUsdc: posSizeUsd,
+              positionSizeCrypto: closeSizeCrypto,
+              entryPrice: entryPx,
+              exitPrice: coinPrice,
+              realizedPnl: pnlUsd,
+              realizedPnlPercent: pnlPctCalc,
+              closeReason: reasonStr,
+              duration: Date.now() - entryTime,
+              timestamp: Date.now(),
+              isDemo: false,
+              walletAddress: masterAddress
+            };
+
+            for (const targetId of writeStatusTargets) {
+              try {
+                await db.collection(`users/${targetId}/trade_history`).doc(tradeId).set(closedTradeRecord);
+              } catch (archErr) {
+                console.error(`[${uid}] Failed to archive trade_history for ${targetId}:`, archErr.message);
+              }
+            }
+            activePositionsRiskCache.delete(`${masterAddress}_${coin}`);
           } catch (err) {
             console.error(`[${uid}] Failed to close LONG on ${coin}:`, err.message);
           }
@@ -1156,6 +1203,46 @@ async function executeBotTick(uid, db, config, botSecret) {
             });
             console.log(`[${uid}] ✅ Futures SHORT closed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
             currentPositionsMap.delete(coin); // Mark position deleted to allow immediate two-way LONG reversal
+
+            // Archive closed trade record to Firestore users/{walletAddress}/trade_history
+            const entryPx = parseFloat(currentPos.entryPx || coinPrice);
+            const closeSizeCrypto = Math.abs(currentSzi);
+            const posSizeUsd = closeSizeCrypto * entryPx;
+            const pnlUsd = (entryPx - coinPrice) * closeSizeCrypto;
+            const marginUsed = parseFloat(currentPos.marginUsed || (posSizeUsd / configuredLeverage));
+            const pnlPctCalc = marginUsed > 0 ? (pnlUsd / marginUsed) * 100.0 : 0.0;
+            const entryTime = cachedRisk?.timestamp || (Date.now() - 300000);
+            const tradeId = `trade_${coin}_${Date.now()}`;
+
+            const closedTradeRecord = {
+              id: tradeId,
+              symbol: `${coin}/USDC`,
+              coin: coin,
+              isLong: false,
+              side: "SHORT",
+              leverage: configuredLeverage,
+              margin: marginUsed,
+              positionSizeUsdc: posSizeUsd,
+              positionSizeCrypto: closeSizeCrypto,
+              entryPrice: entryPx,
+              exitPrice: coinPrice,
+              realizedPnl: pnlUsd,
+              realizedPnlPercent: pnlPctCalc,
+              closeReason: reasonStr,
+              duration: Date.now() - entryTime,
+              timestamp: Date.now(),
+              isDemo: false,
+              walletAddress: masterAddress
+            };
+
+            for (const targetId of writeStatusTargets) {
+              try {
+                await db.collection(`users/${targetId}/trade_history`).doc(tradeId).set(closedTradeRecord);
+              } catch (archErr) {
+                console.error(`[${uid}] Failed to archive trade_history for ${targetId}:`, archErr.message);
+              }
+            }
+            activePositionsRiskCache.delete(`${masterAddress}_${coin}`);
           } catch (err) {
             console.error(`[${uid}] Failed to close SHORT on ${coin}:`, err.message);
           }
@@ -1299,6 +1386,15 @@ async function executeBotTick(uid, db, config, botSecret) {
                   }, true);
                 } else {
                   console.log(`[${uid}] ✅ Futures ${targetSide} order submitted successfully on Hyperliquid for ${coin}`);
+                  activePositionsRiskCache.set(`${masterAddress}_${coin}`, {
+                    stopLoss: bestEntrySignal.stopLoss || 0,
+                    takeProfit: bestEntrySignal.takeProfit || 0,
+                    entryPrice: coinPrice,
+                    isLong: isOrderBuy,
+                    timestamp: Date.now(),
+                    leverage: effectiveLeverage,
+                    margin: marginUsd
+                  });
                   await writeBotStatus({
                     last_order_result: {
                       timestamp: Date.now(),
@@ -1328,6 +1424,52 @@ async function executeBotTick(uid, db, config, botSecret) {
       }
     }
 
+    // Build active positions telemetry with explicit dynamic TP/SL levels
+    const activePositionsList = [];
+    if (perpClearinghouse && perpClearinghouse.assetPositions) {
+      perpClearinghouse.assetPositions.forEach(item => {
+        const p = item.position;
+        if (p && p.coin) {
+          const posCoin = p.coin.toUpperCase();
+          const posSzi = parseFloat(p.szi || 0);
+          if (Math.abs(posSzi) > 0.0001) {
+            const isLong = posSzi > 0;
+            const entryPx = parseFloat(p.entryPx || 0);
+            const marginUsed = parseFloat(p.marginUsed || 0);
+            const lev = typeof p.leverage === "object" ? parseInt(p.leverage.value || configuredLeverage) : parseInt(p.leverage || configuredLeverage);
+            const posSizeUsd = Math.abs(posSzi * (entryPx || 1));
+            const res = Array.isArray(validResults) ? validResults.find(r => r.coin === posCoin) : null;
+            const cached = activePositionsRiskCache.get(`${masterAddress}_${posCoin}`);
+
+            const sl = cached?.stopLoss || res?.stopLoss || (isLong ? entryPx * 0.98 : entryPx * 1.02);
+            const tp = cached?.takeProfit || res?.takeProfit || (isLong ? entryPx * 1.04 : entryPx * 0.96);
+
+            activePositionsList.push({
+              id: `${posCoin}_${entryPx}_${isLong ? 'LONG' : 'SHORT'}`,
+              symbol: `${posCoin}/USDC`,
+              coin: posCoin,
+              isLong: isLong,
+              side: isLong ? "LONG" : "SHORT",
+              entryPrice: entryPx,
+              exitPrice: 0,
+              leverage: lev,
+              margin: marginUsed > 0 ? marginUsed : (lev > 0 ? posSizeUsd / lev : 0),
+              positionSizeUsdc: posSizeUsd,
+              positionSizeCrypto: Math.abs(posSzi),
+              unrealizedPnl: parseFloat(p.unrealizedPnl || 0),
+              tp: tp,
+              sl: sl,
+              take_profit: tp,
+              stop_loss: sl,
+              estLiquidationPrice: parseFloat(p.liquidationPx || 0),
+              timestamp: cached?.timestamp || Date.now(),
+              isDemo: false
+            });
+          }
+        }
+      });
+    }
+
     // Write Perpetual Futures Telemetry Stats back to Firestore
     const targetRadarTelemetry = {};
     if (Array.isArray(validResults)) {
@@ -1348,6 +1490,8 @@ async function executeBotTick(uid, db, config, botSecret) {
       pnl_usd: totalPnlUsd,
       pnl_pct: pnlPct,
       active_trades: activeTradesCount,
+      active_positions: activePositionsList,
+      positions: activePositionsList,
       strategy: futuresStrategyList.join(","),
       strategies: futuresStrategyList,
       timeframe: futuresInterval,
@@ -1359,6 +1503,15 @@ async function executeBotTick(uid, db, config, botSecret) {
       target_radar: targetRadarTelemetry,
       updated_at: Date.now()
     }, { merge: true });
+
+    for (const targetId of writeStatusTargets) {
+      try {
+        await db.doc(`users/${targetId}/bot/positions`).set({
+          positions: activePositionsList,
+          updated_at: Date.now()
+        }, { merge: true });
+      } catch (_) {}
+    }
 
     console.log(`[${uid}] ✅ Futures Telemetry updated: PnL=$${totalPnlUsd.toFixed(2)} (${pnlPct.toFixed(2)}%), Active Trades: ${activeTradesCount}, Margin: ${marginMode}`);
 
