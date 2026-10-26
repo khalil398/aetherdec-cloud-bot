@@ -4382,7 +4382,8 @@ class MainActivity : AppCompatActivity(),
             withContext(Dispatchers.Main) {
                 syncCurrentBotConfig()
                 botStatusListener = FirebaseSyncManager.listenToBotStatus(
-                    accountId = currentUserProfile.accountId
+                    accountId = currentUserProfile.accountId,
+                    walletAddress = EmbeddedWalletManager.getActiveEvmAddress(this@MainActivity)
                 ) { pnlUsd, _, activeTrades, marketType ->
                     runOnUiThread {
                         if (marketType == "PERP") {

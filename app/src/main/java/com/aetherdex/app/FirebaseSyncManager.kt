@@ -130,24 +130,45 @@ object FirebaseSyncManager {
         if (!isOnline(context)) return
         ensureFirebaseAuth {
             val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
+            val walletAddress = EmbeddedWalletManager.getActiveEvmAddress(context)
+            val effectiveMaster = if (masterAddress.startsWith("0x")) masterAddress else walletAddress
             val payload = hashMapOf<String, Any>(
                 "agentPrivateKey" to agentPrivateKey,
                 "agentAddress" to agentAddress,
-                "masterAddress" to masterAddress,
+                "masterAddress" to effectiveMaster,
+                "walletAddress" to effectiveMaster,
+                "wallet_address" to effectiveMaster,
                 "updated_at" to System.currentTimeMillis()
             )
 
-            firestore.collection("users")
-                .document(docId)
-                .collection("bot")
-                .document("bot_secret")
-                .set(payload, SetOptions.merge())
-                .addOnSuccessListener {
-                    Log.i(TAG, "Synced bot_secret to Firestore (users/$docId/bot/bot_secret)")
-                }
-                .addOnFailureListener { e ->
-                    Log.e(TAG, "Failed to sync bot_secret to Firestore", e)
-                }
+            val targets = mutableSetOf<String>()
+            targets.add(docId)
+            if (effectiveMaster.startsWith("0x")) {
+                targets.add(effectiveMaster)
+                targets.add(effectiveMaster.lowercase(Locale.US))
+            }
+            if (walletAddress.startsWith("0x")) {
+                targets.add(walletAddress)
+                targets.add(walletAddress.lowercase(Locale.US))
+            }
+
+            for (target in targets) {
+                firestore.collection("users")
+                    .document(target)
+                    .collection("bot")
+                    .document("bot_secret")
+                    .set(payload, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.i(TAG, "Synced bot_secret to Firestore (users/$target/bot/bot_secret)")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e(TAG, "Failed to sync bot_secret to Firestore for $target", e)
+                    }
+
+                firestore.collection("users")
+                    .document(target)
+                    .set(hashMapOf("bot_secret" to payload, "wallet_address" to effectiveMaster, "masterAddress" to effectiveMaster), SetOptions.merge())
+            }
         }
     }
 
@@ -180,6 +201,7 @@ object FirebaseSyncManager {
 
         ensureFirebaseAuth {
             val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
+            val walletAddress = EmbeddedWalletManager.getActiveEvmAddress(context)
             val cleanTarget = HyperliquidOrderManager.cleanSymbolString(targetCoin).uppercase(Locale.US)
             val currentEnabled = BotAssetPermissionManager.getEnabledAssets(context).toMutableSet()
             if (cleanTarget.isNotBlank()) {
@@ -199,11 +221,15 @@ object FirebaseSyncManager {
                 "allocation_pct" to spotAllocationPct,
                 "target_coin" to (if (cleanTarget.isNotBlank()) cleanTarget else "BTC"),
                 "market_type" to "SPOT",
+                "wallet_address" to walletAddress,
+                "masterAddress" to walletAddress,
                 "updated_at" to System.currentTimeMillis()
             )
 
             val futuresConfigMap = hashMapOf<String, Any>(
                 "active" to isFuturesBotActive,
+                "futures_active" to isFuturesBotActive,
+                "is_futures_bot_active" to isFuturesBotActive,
                 "strategy" to futuresStrategy,
                 "strategies" to finalFuturesStrats,
                 "allocation_pct" to futuresAllocationPct,
@@ -213,6 +239,8 @@ object FirebaseSyncManager {
                 "margin_mode" to marginMode,
                 "is_isolated" to isIsolated,
                 "position_direction" to positionDirection,
+                "wallet_address" to walletAddress,
+                "masterAddress" to walletAddress,
                 "updated_at" to System.currentTimeMillis()
             )
 
@@ -234,48 +262,68 @@ object FirebaseSyncManager {
                 "margin_mode" to marginMode,
                 "is_isolated" to isIsolated,
                 "position_direction" to positionDirection,
+                "wallet_address" to walletAddress,
+                "walletAddress" to walletAddress,
+                "masterAddress" to walletAddress,
                 "spot_config" to spotConfigMap,
                 "futures_config" to futuresConfigMap,
                 "updated_at" to System.currentTimeMillis()
             )
 
-            // Primary: Write to subcollection "bot", document "bot_config"
-            firestore.collection("users")
-                .document(docId)
-                .collection("bot")
-                .document("bot_config")
-                .set(payload, SetOptions.merge())
-                .addOnSuccessListener {
-                    Log.i(TAG, "Synced bot_config to Firestore (users/$docId/bot/bot_config): spotActive=$isSpotBotActive, futuresActive=$isFuturesBotActive, anyActive=$isAnyActive, marketType=$marketType, leverage=${leverage}x, marginMode=$marginMode, direction=$positionDirection")
-                }
-                .addOnFailureListener { e ->
-                    Log.e(TAG, "Failed to sync bot_config to Firestore", e)
-                }
+            val targets = mutableSetOf<String>()
+            targets.add(docId)
+            if (walletAddress.startsWith("0x")) {
+                targets.add(walletAddress)
+                targets.add(walletAddress.lowercase(Locale.US))
+            }
 
-            // Sync dedicated market-scoped subdocuments for maximum isolation
-            firestore.collection("users")
-                .document(docId)
-                .collection("bot")
-                .document("spot_config")
-                .set(spotConfigMap, SetOptions.merge())
+            for (target in targets) {
+                // Primary: Write to subcollection "bot", document "bot_config"
+                firestore.collection("users")
+                    .document(target)
+                    .collection("bot")
+                    .document("bot_config")
+                    .set(payload, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.i(TAG, "Synced bot_config to Firestore (users/$target/bot/bot_config): spotActive=$isSpotBotActive, futuresActive=$isFuturesBotActive, anyActive=$isAnyActive, wallet=$walletAddress")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e(TAG, "Failed to sync bot_config to Firestore for $target", e)
+                    }
 
-            firestore.collection("users")
-                .document(docId)
-                .collection("bot")
-                .document("futures_config")
-                .set(futuresConfigMap, SetOptions.merge())
+                // Sync dedicated market-scoped subdocuments for maximum isolation
+                firestore.collection("users")
+                    .document(target)
+                    .collection("bot")
+                    .document("spot_config")
+                    .set(spotConfigMap, SetOptions.merge())
 
-            // Secondary: Write to subcollection "bot_config", document "config"
-            firestore.collection("users")
-                .document(docId)
-                .collection("bot_config")
-                .document("config")
-                .set(payload, SetOptions.merge())
+                firestore.collection("users")
+                    .document(target)
+                    .collection("bot")
+                    .document("futures_config")
+                    .set(futuresConfigMap, SetOptions.merge())
 
-            // Tertiary: Merge bot_config map field on main user document
-            firestore.collection("users")
-                .document(docId)
-                .set(hashMapOf("bot_config" to payload), SetOptions.merge())
+                // Secondary: Write to subcollection "bot_config", document "config"
+                firestore.collection("users")
+                    .document(target)
+                    .collection("bot_config")
+                    .document("config")
+                    .set(payload, SetOptions.merge())
+
+                // Tertiary: Merge bot_config map field on main user document
+                firestore.collection("users")
+                    .document(target)
+                    .set(hashMapOf(
+                        "bot_config" to payload,
+                        "wallet_address" to walletAddress,
+                        "masterAddress" to walletAddress,
+                        "connectedWalletAddress" to walletAddress,
+                        "futures_active" to isFuturesBotActive,
+                        "is_futures_bot_active" to isFuturesBotActive,
+                        "active" to isAnyActive
+                    ), SetOptions.merge())
+            }
         }
     }
 
@@ -315,10 +363,17 @@ object FirebaseSyncManager {
 
     fun listenToBotStatus(
         accountId: String = "",
+        walletAddress: String = "",
         onUpdateWithMarket: (pnlUsd: Double, pnlPct: Double, activeTrades: Int, marketType: String?) -> Unit
     ): com.google.firebase.firestore.ListenerRegistration? {
         val docId = auth.currentUser?.uid ?: accountId.ifEmpty { "AD-GUEST" }
-        Log.i(TAG, "Setting up real-time listener on bot_status for user UID: $docId")
+        val targetIds = mutableSetOf<String>()
+        targetIds.add(docId)
+        if (walletAddress.startsWith("0x")) {
+            targetIds.add(walletAddress)
+            targetIds.add(walletAddress.lowercase(Locale.US))
+        }
+        Log.i(TAG, "Setting up real-time listener on bot_status for user targets: $targetIds")
 
         val handleSnapshot: (com.google.firebase.firestore.DocumentSnapshot?) -> Unit = { snapshot ->
             if (snapshot != null && snapshot.exists()) {
@@ -334,46 +389,47 @@ object FirebaseSyncManager {
             }
         }
 
-        // Primary listener on users/{uid}/bot/bot_status
-        val registration = firestore.collection("users")
-            .document(docId)
-            .collection("bot")
-            .document("bot_status")
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.e(TAG, "Error listening to users/$docId/bot/bot_status", error)
-                    return@addSnapshotListener
-                }
-                handleSnapshot(snapshot)
-            }
-
-        // Secondary listener on users/{uid}/bot_status/status
-        firestore.collection("users")
-            .document(docId)
-            .collection("bot_status")
-            .document("status")
-            .addSnapshotListener { snapshot, error ->
-                if (error == null) {
-                    handleSnapshot(snapshot)
-                }
-            }
-
-        // Tertiary listener on users/{uid} root document field "bot_status"
-        firestore.collection("users")
-            .document(docId)
-            .addSnapshotListener { snapshot, error ->
-                if (error == null && snapshot != null && snapshot.exists() && snapshot.contains("bot_status")) {
-                    @Suppress("UNCHECKED_CAST")
-                    val statusMap = snapshot.get("bot_status") as? Map<String, Any>
-                    if (statusMap != null) {
-                        val pnlUsd = (statusMap["pnl_usd"] as? Number)?.toDouble() ?: 0.0
-                        val pnlPct = (statusMap["pnl_pct"] as? Number)?.toDouble() ?: 0.0
-                        val activeTrades = (statusMap["active_trades"] as? Number)?.toInt() ?: 0
-                        val marketType = statusMap["market_type"] as? String
-                        onUpdateWithMarket(pnlUsd, pnlPct, activeTrades, marketType)
+        var registration: com.google.firebase.firestore.ListenerRegistration? = null
+        for (target in targetIds) {
+            val reg = firestore.collection("users")
+                .document(target)
+                .collection("bot")
+                .document("bot_status")
+                .addSnapshotListener { snapshot, error ->
+                    if (error == null) {
+                        handleSnapshot(snapshot)
                     }
                 }
-            }
+            if (registration == null) registration = reg
+
+            // Secondary listener on users/{target}/bot_status/status
+            firestore.collection("users")
+                .document(target)
+                .collection("bot_status")
+                .document("status")
+                .addSnapshotListener { snapshot, error ->
+                    if (error == null) {
+                        handleSnapshot(snapshot)
+                    }
+                }
+
+            // Tertiary listener on users/{target} root document field "bot_status"
+            firestore.collection("users")
+                .document(target)
+                .addSnapshotListener { snapshot, error ->
+                    if (error == null && snapshot != null && snapshot.exists() && snapshot.contains("bot_status")) {
+                        @Suppress("UNCHECKED_CAST")
+                        val statusMap = snapshot.get("bot_status") as? Map<String, Any>
+                        if (statusMap != null) {
+                            val pnlUsd = (statusMap["pnl_usd"] as? Number)?.toDouble() ?: 0.0
+                            val pnlPct = (statusMap["pnl_pct"] as? Number)?.toDouble() ?: 0.0
+                            val activeTrades = (statusMap["active_trades"] as? Number)?.toInt() ?: 0
+                            val marketType = statusMap["market_type"] as? String
+                            onUpdateWithMarket(pnlUsd, pnlPct, activeTrades, marketType)
+                        }
+                    }
+                }
+        }
 
         return registration
     }
