@@ -5,6 +5,8 @@
     <color name="brand_green_dim">#1A00C087</color>
     <color name="brand_red">#FF3B69</color>
     <color name="brand_red_dim">#1AFF3B69</color>
+    <color name="brand_warning">#FFA000</color>
+    <color name="brand_warning_dim">#1AFFA000</color>
 
     <!-- Surfaces (Dark Trading Theme) -->
     <color name="bg_root">#0B0E14</color>

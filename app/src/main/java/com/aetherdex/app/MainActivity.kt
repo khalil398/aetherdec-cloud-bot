@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.util.Log
 import java.util.Locale
 import android.app.Dialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Color
@@ -228,6 +230,14 @@ class MainActivity : AppCompatActivity(),
     private lateinit var cardImportRestore: LinearLayout
     private lateinit var btnExportBackup: MaterialButton
     private lateinit var btnImportRestore: MaterialButton
+
+    // Agent Wallet Management handles
+    private var cardAgentWallet: View? = null
+    private var tvAgentStatusBadge: TextView? = null
+    private var tvAgentAddressValue: TextView? = null
+    private var btnCopyAgentAddress: View? = null
+    private var btnAuthorizeAgent: MaterialButton? = null
+    private var btnRotateAgentKey: MaterialButton? = null
 
     // Profile handles & User state
     private var currentUserProfile = UserProfile()
@@ -547,6 +557,7 @@ class MainActivity : AppCompatActivity(),
             walletAddress = address,
             accountId = getUserAccountId()
         )
+        refreshAgentWalletUi()
     }
 
     private fun onWalletDisconnected() {
@@ -719,6 +730,13 @@ class MainActivity : AppCompatActivity(),
         btnExportBackup = findViewById(R.id.btnExportBackup)
         btnImportRestore = findViewById(R.id.btnImportRestore)
 
+        cardAgentWallet = findViewById(R.id.cardAgentWallet)
+        tvAgentStatusBadge = findViewById(R.id.tvAgentStatusBadge)
+        tvAgentAddressValue = findViewById(R.id.tvAgentAddressValue)
+        btnCopyAgentAddress = findViewById(R.id.btnCopyAgentAddress)
+        btnAuthorizeAgent = findViewById(R.id.btnAuthorizeAgent)
+        btnRotateAgentKey = findViewById(R.id.btnRotateAgentKey)
+
         tvProfileName = findViewById(R.id.tvProfileName)
         tvProfileEmail = findViewById(R.id.tvProfileEmail)
         tvProfileAccountId = findViewById(R.id.tvProfileAccountId)
@@ -846,6 +864,7 @@ class MainActivity : AppCompatActivity(),
         btnExportBackup.setOnClickListener { startExportBackup() }
         cardImportRestore.setOnClickListener { startImportRestore() }
         btnImportRestore.setOnClickListener { startImportRestore() }
+        setupAgentWalletSection()
 
         btnProfileAuth.setOnClickListener {
             if (currentUserProfile.isLoggedIn) {
@@ -2072,6 +2091,253 @@ class MainActivity : AppCompatActivity(),
         dialog.show()
     }
 
+    private fun setupAgentWalletSection() {
+        btnCopyAgentAddress?.setOnClickListener {
+            val agentAddress = AgentKeyManager.getAgentAddress(this)
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText("Agent Address", agentAddress)
+            clipboard.setPrimaryClip(clip)
+            snackString("Copied agent address to clipboard")
+        }
+
+        btnAuthorizeAgent?.setOnClickListener {
+            val masterPkHex = EmbeddedWalletManager.getActivePrivateKeyHex(this)
+            val masterAddress = EmbeddedWalletManager.getActiveEvmAddress(this)
+            if (masterPkHex.isNullOrBlank() || !masterAddress.startsWith("0x")) {
+                snackString("Please connect or unlock your master EVM wallet first.")
+                return@setOnClickListener
+            }
+
+            btnAuthorizeAgent?.isEnabled = false
+            btnAuthorizeAgent?.text = "Authorizing on L1..."
+
+            lifecycleScope.launch {
+                val accountId = getUserAccountId()
+                val approved = AgentKeyManager.ensureAgentApprovedAndSynced(
+                    this@MainActivity,
+                    accountId
+                )
+                withContext(Dispatchers.Main) {
+                    btnAuthorizeAgent?.isEnabled = true
+                    if (approved) {
+                        snackString("Agent key successfully authorized on Hyperliquid L1!")
+                    } else {
+                        snackString("Failed to authorize agent key on L1. Check balance / connection.")
+                    }
+                    refreshAgentWalletUi()
+                }
+            }
+        }
+
+        btnRotateAgentKey?.setOnClickListener {
+            showRotateAgentKeyDialog()
+        }
+
+        refreshAgentWalletUi()
+    }
+
+    private fun refreshAgentWalletUi() {
+        val agentAddr = AgentKeyManager.getAgentAddress(this)
+        tvAgentAddressValue?.text = agentAddr
+        val masterAddress = EmbeddedWalletManager.getActiveEvmAddress(this)
+
+        val isLocallyApproved = AgentKeyManager.isAgentApprovedLocally(this)
+        updateAgentBadge(isLocallyApproved)
+
+        if (masterAddress.startsWith("0x")) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val isOnChainApproved = HyperliquidOrderManager.checkAgentApprovalOnL1(masterAddress, agentAddr)
+                AgentKeyManager.setAgentApproved(this@MainActivity, isOnChainApproved)
+                withContext(Dispatchers.Main) {
+                    updateAgentBadge(isOnChainApproved)
+                }
+            }
+        }
+    }
+
+    private fun updateAgentBadge(isApproved: Boolean) {
+        if (isApproved) {
+            tvAgentStatusBadge?.text = "Authorized on Hyperliquid"
+            tvAgentStatusBadge?.setTextColor(ContextCompat.getColor(this, R.color.brand_green))
+            tvAgentStatusBadge?.setBackgroundResource(R.drawable.bg_chip_selected_green)
+            btnAuthorizeAgent?.text = "Re-Authorize Agent"
+        } else {
+            tvAgentStatusBadge?.text = "Pending Approval"
+            tvAgentStatusBadge?.setTextColor(ContextCompat.getColor(this, R.color.brand_warning))
+            tvAgentStatusBadge?.setBackgroundResource(R.drawable.bg_chip_unselected)
+            btnAuthorizeAgent?.text = "Authorize Agent"
+        }
+    }
+
+    private fun showRotateAgentKeyDialog() {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+        val density = resources.displayMetrics.density
+        val textPrimary = ContextCompat.getColor(this, R.color.text_primary)
+        val textSecondary = ContextCompat.getColor(this, R.color.text_secondary)
+        val red = ContextCompat.getColor(this, R.color.brand_red)
+        val bgDark = ContextCompat.getColor(this, R.color.bg_elevated)
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_card)
+            val p = (20 * density).toInt()
+            setPadding(p, p, p, p)
+        }
+
+        val titleTv = TextView(this).apply {
+            text = "Rotate Agent Trading Key?"
+            textSize = 18f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(red)
+        }
+
+        val descTv = TextView(this).apply {
+            text = "Generating a new agent key will invalidate the current trading key. You will need to re-authorize the new key."
+            textSize = 13f
+            setTextColor(textPrimary)
+            setPadding(0, (8 * density).toInt(), 0, (16 * density).toInt())
+        }
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.END
+        }
+
+        val btnCancel = MaterialButton(this).apply {
+            text = "Cancel"
+            isAllCaps = false
+            backgroundTintList = android.content.res.ColorStateList.valueOf(bgDark)
+            setTextColor(textSecondary)
+            strokeColor = android.content.res.ColorStateList.valueOf(ContextCompat.getColor(context, R.color.divider))
+            strokeWidth = (1 * density).toInt()
+            cornerRadius = (8 * density).toInt()
+            setOnClickListener { dialog.dismiss() }
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = (8 * density).toInt()
+            }
+        }
+
+        val btnConfirm = MaterialButton(this).apply {
+            text = "Rotate Key"
+            isAllCaps = false
+            backgroundTintList = android.content.res.ColorStateList.valueOf(red)
+            setTextColor(ContextCompat.getColor(context, R.color.white))
+            cornerRadius = (8 * density).toInt()
+            setOnClickListener {
+                dialog.dismiss()
+                lifecycleScope.launch {
+                    val accountId = getUserAccountId()
+                    val (_, newAddr) = AgentKeyManager.rotateAgentKey(
+                        this@MainActivity,
+                        accountId
+                    )
+                    withContext(Dispatchers.Main) {
+                        snackString("New agent key generated: $newAddr")
+                        refreshAgentWalletUi()
+                        promptAuthorizeNewAgentKey()
+                    }
+                }
+            }
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        btnRow.addView(btnCancel)
+        btnRow.addView(btnConfirm)
+        container.addView(titleTv)
+        container.addView(descTv)
+        container.addView(btnRow)
+
+        dialog.setContentView(container)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        val marginPx = (24 * density).toInt()
+        dialog.window?.setLayout(
+            resources.displayMetrics.widthPixels - (marginPx * 2),
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        dialog.show()
+    }
+
+    private fun promptAuthorizeNewAgentKey() {
+        val dialog = Dialog(this)
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+        val density = resources.displayMetrics.density
+        val textPrimary = ContextCompat.getColor(this, R.color.text_primary)
+        val textSecondary = ContextCompat.getColor(this, R.color.text_secondary)
+        val green = ContextCompat.getColor(this, R.color.brand_green)
+        val bgDark = ContextCompat.getColor(this, R.color.bg_elevated)
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundResource(R.drawable.bg_card)
+            val p = (20 * density).toInt()
+            setPadding(p, p, p, p)
+        }
+
+        val titleTv = TextView(this).apply {
+            text = "Authorize Agent Key"
+            textSize = 18f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(green)
+        }
+
+        val descTv = TextView(this).apply {
+            text = "Your new agent trading key has been generated and synced to Firestore. Would you like to sign the Hyperliquid L1 authorization now?"
+            textSize = 13f
+            setTextColor(textPrimary)
+            setPadding(0, (8 * density).toInt(), 0, (16 * density).toInt())
+        }
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.END
+        }
+
+        val btnLater = MaterialButton(this).apply {
+            text = "Later"
+            isAllCaps = false
+            backgroundTintList = android.content.res.ColorStateList.valueOf(bgDark)
+            setTextColor(textSecondary)
+            strokeColor = android.content.res.ColorStateList.valueOf(ContextCompat.getColor(context, R.color.divider))
+            strokeWidth = (1 * density).toInt()
+            cornerRadius = (8 * density).toInt()
+            setOnClickListener { dialog.dismiss() }
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = (8 * density).toInt()
+            }
+        }
+
+        val btnAuthorizeNow = MaterialButton(this).apply {
+            text = "Authorize Now"
+            isAllCaps = false
+            backgroundTintList = android.content.res.ColorStateList.valueOf(green)
+            setTextColor(ContextCompat.getColor(context, R.color.black))
+            cornerRadius = (8 * density).toInt()
+            setOnClickListener {
+                dialog.dismiss()
+                btnAuthorizeAgent?.performClick()
+            }
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        btnRow.addView(btnLater)
+        btnRow.addView(btnAuthorizeNow)
+        container.addView(titleTv)
+        container.addView(descTv)
+        container.addView(btnRow)
+
+        dialog.setContentView(container)
+        dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        val marginPx = (24 * density).toInt()
+        dialog.window?.setLayout(
+            resources.displayMetrics.widthPixels - (marginPx * 2),
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        )
+        dialog.show()
+    }
+
     private fun executeDeleteAccountWipe() {
         showProgressDialog("Deleting account & wiping data... Please wait.")
         val currentAccId = getUserAccountId()
@@ -3179,6 +3445,7 @@ class MainActivity : AppCompatActivity(),
                     settingsSection.visibility = View.VISIBLE
                     historySection.visibility = View.GONE
                     taxSection.visibility = View.GONE
+                    refreshAgentWalletUi()
                 }
             }
         }

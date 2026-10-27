@@ -83,10 +83,42 @@ object AgentKeyManager {
             prefs.edit().putBoolean(KEY_IS_APPROVED, approved).apply()
 
             Log.i(TAG, "Agent Key $agentAddr approval status on L1: $approved")
-            return@withContext true
+            return@withContext approved
         } catch (e: Exception) {
             Log.e(TAG, "Error in ensureAgentApprovedAndSynced", e)
             return@withContext false
         }
+    }
+
+    fun getAgentAddress(context: Context): String {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getString(KEY_AGENT_ADDRESS, null) ?: getOrCreateAgentKey(context).second
+    }
+
+    fun isAgentApprovedLocally(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_IS_APPROVED, false)
+    }
+
+    fun setAgentApproved(context: Context, approved: Boolean) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_IS_APPROVED, approved).apply()
+    }
+
+    suspend fun rotateAgentKey(context: Context, accountId: String): Pair<String, String> = withContext(Dispatchers.IO) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().clear().apply()
+        val (newPk, newAddr) = getOrCreateAgentKey(context)
+        val masterAddress = EmbeddedWalletManager.getActiveEvmAddress(context)
+        if (masterAddress.startsWith("0x")) {
+            FirebaseSyncManager.syncBotSecretToFirestore(
+                context = context,
+                agentPrivateKey = newPk,
+                agentAddress = newAddr,
+                masterAddress = masterAddress,
+                accountId = accountId
+            )
+        }
+        Pair(newPk, newAddr)
     }
 }

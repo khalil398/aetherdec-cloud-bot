@@ -895,6 +895,56 @@ object HyperliquidOrderManager {
     }
 
     /**
+     * Computes the official EIP-712 digest for user-signed approveAgent action.
+     * Domain: HyperliquidSignTransaction (chainId = 42161 / 0xa4b1 Arbitrum Mainnet)
+     * Struct: ApproveAgent(string hyperliquidChain,address agentAddress,string agentName,uint64 nonce)
+     */
+    fun calculateApproveAgentEip712Digest(
+        hyperliquidChain: String = "Mainnet",
+        agentAddress: String,
+        agentName: String = "AetherDex Cloud Bot Engine",
+        nonce: Long
+    ): ByteArray {
+        val nameHash = keccak256("HyperliquidSignTransaction".toByteArray(Charsets.UTF_8))
+        val versionHash = keccak256("1".toByteArray(Charsets.UTF_8))
+        val chainIdBytes = pad32(java.math.BigInteger.valueOf(42161L).toByteArray()) // 42161 = 0xa4b1 (Mainnet)
+        val verifyingContractBytes = ByteArray(32)
+
+        val domainBuffer = ByteArray(32 * 5)
+        System.arraycopy(DOMAIN_TYPEHASH, 0, domainBuffer, 0, 32)
+        System.arraycopy(nameHash, 0, domainBuffer, 32, 32)
+        System.arraycopy(versionHash, 0, domainBuffer, 64, 32)
+        System.arraycopy(chainIdBytes, 0, domainBuffer, 96, 32)
+        System.arraycopy(verifyingContractBytes, 0, domainBuffer, 128, 32)
+        val domainSeparator = keccak256(domainBuffer)
+
+        val typeHash = keccak256(
+            "HyperliquidTransaction:ApproveAgent(string hyperliquidChain,address agentAddress,string agentName,uint64 nonce)".toByteArray(Charsets.UTF_8)
+        )
+        val chainHash = keccak256(hyperliquidChain.toByteArray(Charsets.UTF_8))
+        val cleanAgent = agentAddress.trim().removePrefix("0x")
+        val agentBytes = pad32(Numeric.hexStringToByteArray(cleanAgent))
+        val agentNameHash = keccak256(agentName.toByteArray(Charsets.UTF_8))
+        val nonceBytes = pad32(java.math.BigInteger.valueOf(nonce).toByteArray())
+
+        val structBuffer = ByteArray(32 * 5)
+        System.arraycopy(typeHash, 0, structBuffer, 0, 32)
+        System.arraycopy(chainHash, 0, structBuffer, 32, 32)
+        System.arraycopy(agentBytes, 0, structBuffer, 64, 32)
+        System.arraycopy(agentNameHash, 0, structBuffer, 96, 32)
+        System.arraycopy(nonceBytes, 0, structBuffer, 128, 32)
+        val structHash = keccak256(structBuffer)
+
+        val digestBuffer = ByteArray(2 + 32 + 32)
+        digestBuffer[0] = 0x19.toByte()
+        digestBuffer[1] = 0x01.toByte()
+        System.arraycopy(domainSeparator, 0, digestBuffer, 2, 32)
+        System.arraycopy(structHash, 0, digestBuffer, 34, 32)
+
+        return keccak256(digestBuffer)
+    }
+
+    /**
      * Submits an approveAgent L1 action to Hyperliquid exchange API.
      * Approves an Agent Key (agentAddress) for trading authority.
      */
@@ -914,8 +964,12 @@ object HyperliquidOrderManager {
                 put("nonce", nonce)
             }
 
-            val connectionId = createL1ActionHash(action, nonce)
-            val digest = calculateEip712Digest(connectionId)
+            val digest = calculateApproveAgentEip712Digest(
+                hyperliquidChain = "Mainnet",
+                agentAddress = agentAddress,
+                agentName = agentName,
+                nonce = nonce
+            )
 
             val cleanPk = masterPrivateKeyHex.removePrefix("0x")
             val privateKeyBigInt = java.math.BigInteger(cleanPk, 16)
@@ -925,7 +979,6 @@ object HyperliquidOrderManager {
             val rHex = Numeric.toHexString(sigData.r)
             val sHex = Numeric.toHexString(sigData.s)
             val vInt = if (sigData.v.isNotEmpty()) (sigData.v[0].toInt() and 0xFF) else 27
-
 
             val signatureObj = JSONObject().apply {
                 put("r", rHex)
@@ -962,6 +1015,50 @@ object HyperliquidOrderManager {
             return@withContext responseCode == 200 && !responseText.contains("\"status\":\"err\"")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to approveAgent on L1", e)
+            return@withContext false
+        }
+    }
+
+    /**
+     * Checks whether an Agent Key is currently authorized on Hyperliquid L1 for the given master wallet.
+     */
+    suspend fun checkAgentApprovalOnL1(
+        masterAddress: String,
+        agentAddress: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            if (!masterAddress.startsWith("0x") || !agentAddress.startsWith("0x")) return@withContext false
+            val url = URL("$HYPERLIQUID_API_URL/info")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+
+            val payload = JSONObject().apply {
+                put("type", "extraAgents")
+                put("user", masterAddress)
+            }
+
+            conn.outputStream.use { os ->
+                os.write(payload.toString().toByteArray(Charsets.UTF_8))
+            }
+
+            if (conn.responseCode == 200) {
+                val responseText = conn.inputStream.bufferedReader().readText()
+                val jsonArray = org.json.JSONArray(responseText)
+                for (i in 0 until jsonArray.length()) {
+                    val item = jsonArray.getJSONObject(i)
+                    val addr = item.optString("address", "")
+                    if (addr.equals(agentAddress, ignoreCase = true)) {
+                        return@withContext true
+                    }
+                }
+            }
+            return@withContext false
+        } catch (e: Exception) {
+            Log.w(TAG, "checkAgentApprovalOnL1 error: ${e.message}")
             return@withContext false
         }
     }
