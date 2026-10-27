@@ -762,6 +762,10 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
 // In-memory cache for active position dynamic risk parameters (SL/TP)
 const activePositionsRiskCache = new Map();
 
+// In-memory cache for already configured leverage & margin mode on Hyperliquid
+// Key: `${masterAddress.toLowerCase()}_${coin.toUpperCase()}` -> { isCross, leverage, timestamp }
+const configuredLeverageCache = new Map();
+
 /**
  * Executes a 24/7 algorithmic strategy tick cycle for a specific user.
  */
@@ -992,9 +996,9 @@ async function executeBotTick(uid, db, config, botSecret) {
       : ["BTC", "ETH", "SOL", "HYPE", "AVAX", "SUI", "DOGE", "LINK", "XRP", "ARB", "OP"];
 
     const rawPerpBal = parseFloat(perpClearinghouse?.withdrawable || perpClearinghouse?.marginSummary?.accountValue || 0.0);
-    const userAbstraction = await checkUserAbstraction(masterAddress);
-    const isUnifiedAccount = userAbstraction === "unifiedAccount" || userAbstraction === "portfolioMargin" || (rawPerpBal <= 0.01 && usdcBalance > 0);
-    const perpBalance = isUnifiedAccount ? Math.max(rawPerpBal, usdcBalance) : rawPerpBal;
+    // Purged userAbstraction polling on tick loop to conserve rate limit tokens; use spot USDC only if perp ledger is empty
+    const isUnifiedAccount = (rawPerpBal <= 0.01 && usdcBalance > 0);
+    const perpBalance = isUnifiedAccount ? usdcBalance : rawPerpBal;
     if (isUnifiedAccount) {
       console.log(`[${uid}] ⚡ Unified Account Active: Pooled USDC margin for Futures = $${perpBalance.toFixed(2)} (Spot: $${usdcBalance.toFixed(2)}, Perp ledger: $${rawPerpBal.toFixed(2)})`);
     }
@@ -1297,45 +1301,67 @@ async function executeBotTick(uid, db, config, botSecret) {
 
           // STRICT RESPECT FOR MARGIN MODE (Isolated vs. Cross) & Dynamic Leverage Fallback
           let marginConfiguredOk = false;
-          try {
-            console.log(`[${uid}] 🛡️ Enforcing Margin Mode: ${marginMode} (${effectiveLeverage}x) on ${coin} (assetIndex: ${assetIdx})`);
-            const levResult = await updateAgentLeverage({
-              agentPrivateKey,
-              masterAddress,
-              assetIndex: assetIdx,
-              isCross: !isIsolated,
-              leverage: effectiveLeverage
-            });
-            marginConfiguredOk = !levResult?.response?.data?.error;
-          } catch (levErr) {
-            const errStr = (levErr.response?.data?.error || levErr.message || "").toLowerCase();
-            if (errStr.includes("leverage") && effectiveLeverage > 1) {
-              const fallbackLev = Math.max(1, Math.min(effectiveLeverage - 1, assetMaxLeverage, 5));
-              console.warn(`[${uid}] ⚠️ Leverage rejection on ${coin} (${effectiveLeverage}x): "${errStr}". Attempting automated fallback to ${fallbackLev}x...`);
-              try {
-                await updateAgentLeverage({
-                  agentPrivateKey,
-                  masterAddress,
-                  assetIndex: assetIdx,
-                  isCross: !isIsolated,
-                  leverage: fallbackLev
-                });
-                effectiveLeverage = fallbackLev;
-                marginConfiguredOk = true;
-                console.log(`[${uid}] ✅ Leverage fallback succeeded: Applied ${effectiveLeverage}x on ${coin}`);
-              } catch (e2) {
-                if (isIsolated) {
-                  console.error(`[${uid}] ❌ STRICT MARGIN PROTECTION: Isolated margin configuration failed for ${coin}: "${e2.message}". Order aborted.`);
-                  marginConfiguredOk = false;
-                } else {
-                  marginConfiguredOk = true;
-                }
+          const cacheKey = `${masterAddress.toLowerCase()}_${coin.toUpperCase()}`;
+          const cachedLev = configuredLeverageCache.get(cacheKey);
+
+          // Check if clearinghouse state or in-memory cache already has this asset at the requested isolated/cross & leverage
+          const existingPos = perpClearinghouse?.assetPositions?.find(ap => ap.position?.coin?.toUpperCase() === coin.toUpperCase())?.position;
+          const currentIsCross = existingPos?.leverage?.type === "cross";
+          const currentLeverage = existingPos?.leverage?.value !== undefined ? parseInt(existingPos.leverage.value) : null;
+
+          const isAlreadyConfiguredOnChain = existingPos && (currentIsCross === !isIsolated) && (currentLeverage === effectiveLeverage);
+          const isAlreadyCached = cachedLev && (cachedLev.isCross === !isIsolated) && (cachedLev.leverage === effectiveLeverage);
+
+          if (isAlreadyConfiguredOnChain || isAlreadyCached) {
+            console.log(`[${uid}] ⚡ Leverage & Margin Mode already set to ${effectiveLeverage}x (${marginMode}) for ${coin}. Skipping redundant updateLeverage call.`);
+            marginConfiguredOk = true;
+          } else {
+            try {
+              console.log(`[${uid}] 🛡️ Enforcing Margin Mode: ${marginMode} (${effectiveLeverage}x) on ${coin} (assetIndex: ${assetIdx})`);
+              const levResult = await updateAgentLeverage({
+                agentPrivateKey,
+                masterAddress,
+                assetIndex: assetIdx,
+                isCross: !isIsolated,
+                leverage: effectiveLeverage
+              });
+              marginConfiguredOk = !levResult?.response?.data?.error && levResult?.status !== "err";
+              if (marginConfiguredOk) {
+                configuredLeverageCache.set(cacheKey, { isCross: !isIsolated, leverage: effectiveLeverage, timestamp: Date.now() });
               }
-            } else if (isIsolated) {
-              console.error(`[${uid}] ❌ STRICT MARGIN PROTECTION: Failed to configure ISOLATED margin mode on Hyperliquid for ${coin}: "${levErr.message}". Order aborted to prevent cross-margin exposure.`);
-              marginConfiguredOk = false;
-            } else {
-              marginConfiguredOk = true;
+            } catch (levErr) {
+              const errStr = (levErr.response?.data?.error || levErr.message || "").toLowerCase();
+              if (errStr.includes("leverage") && effectiveLeverage > 1) {
+                const fallbackLev = Math.max(1, Math.min(effectiveLeverage - 1, assetMaxLeverage, 5));
+                console.warn(`[${uid}] ⚠️ Leverage rejection on ${coin} (${effectiveLeverage}x): "${errStr}". Attempting automated fallback to ${fallbackLev}x...`);
+                try {
+                  const fallbackResult = await updateAgentLeverage({
+                    agentPrivateKey,
+                    masterAddress,
+                    assetIndex: assetIdx,
+                    isCross: !isIsolated,
+                    leverage: fallbackLev
+                  });
+                  effectiveLeverage = fallbackLev;
+                  marginConfiguredOk = !fallbackResult?.response?.data?.error && fallbackResult?.status !== "err";
+                  if (marginConfiguredOk) {
+                    configuredLeverageCache.set(cacheKey, { isCross: !isIsolated, leverage: effectiveLeverage, timestamp: Date.now() });
+                    console.log(`[${uid}] ✅ Leverage fallback succeeded: Applied ${effectiveLeverage}x on ${coin}`);
+                  }
+                } catch (e2) {
+                  if (isIsolated) {
+                    console.error(`[${uid}] ❌ STRICT MARGIN PROTECTION: Isolated margin configuration failed for ${coin}: "${e2.message}". Order aborted.`);
+                    marginConfiguredOk = false;
+                  } else {
+                    marginConfiguredOk = true;
+                  }
+                }
+              } else if (isIsolated) {
+                console.error(`[${uid}] ❌ STRICT MARGIN PROTECTION: Failed to configure ISOLATED margin mode on Hyperliquid for ${coin}: "${levErr.message}". Order aborted to prevent cross-margin exposure.`);
+                marginConfiguredOk = false;
+              } else {
+                marginConfiguredOk = true;
+              }
             }
           }
 

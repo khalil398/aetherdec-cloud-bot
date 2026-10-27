@@ -223,13 +223,13 @@ async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isB
     // EIP-712 Agent digest computation
     const domainSeparator = ethers.keccak256(
       ethers.AbiCoder.defaultAbiCoder().encode(
-        ["bytes32", "bytes32", "bytes32", "uint256", "bytes32"],
+        ["bytes32", "bytes32", "bytes32", "uint256", "address"],
         [
           ethers.id("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
           ethers.id("Exchange"),
           ethers.id("1"),
           1337,
-          "0x0000000000000000000000000000000000000000"
+          ethers.ZeroAddress
         ]
       )
     );
@@ -346,13 +346,13 @@ async function updateAgentLeverage({ agentPrivateKey, masterAddress, assetIndex,
 
     const domainSeparator = ethers.keccak256(
       ethers.AbiCoder.defaultAbiCoder().encode(
-        ["bytes32", "bytes32", "bytes32", "uint256", "bytes32"],
+        ["bytes32", "bytes32", "bytes32", "uint256", "address"],
         [
           ethers.id("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
           ethers.id("Exchange"),
           ethers.id("1"),
           1337,
-          "0x0000000000000000000000000000000000000000"
+          ethers.ZeroAddress
         ]
       )
     );
@@ -405,11 +405,12 @@ async function updateAgentLeverage({ agentPrivateKey, masterAddress, assetIndex,
 const userAbstractionCache = new Map();
 
 /**
- * Checks whether user has Unified Account or Portfolio Margin active (cached 5 minutes).
+ * Checks whether user has Unified Account or Portfolio Margin active (cached 1 hour).
  */
 async function checkUserAbstraction(userAddress) {
+  if (!userAddress) return "disabled";
   const cached = userAbstractionCache.get(userAddress);
-  if (cached && (Date.now() - cached.timestamp < 300000)) {
+  if (cached && (Date.now() - cached.timestamp < 3600000)) {
     return cached.val;
   }
   try {
@@ -421,8 +422,9 @@ async function checkUserAbstraction(userAddress) {
     userAbstractionCache.set(userAddress, { val, timestamp: Date.now() });
     return val;
   } catch (error) {
+    userAbstractionCache.set(userAddress, { val: "disabled", timestamp: Date.now() - 3000000 });
     if (error.response?.status === 429) {
-      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on userAbstraction for ${userAddress}`);
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on userAbstraction for ${userAddress}. Pausing userAbstraction queries.`);
     } else {
       console.error(`[Hyperliquid] Error checking userAbstraction for ${userAddress}:`, error.message);
     }
