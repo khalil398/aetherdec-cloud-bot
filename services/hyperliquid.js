@@ -273,6 +273,12 @@ async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isB
       timeout: 10000
     });
 
+    if (response.data && response.data.status === "err") {
+      const errMsg = typeof response.data.response === "string" ? response.data.response : JSON.stringify(response.data.response);
+      console.error("[Hyperliquid] Agent order placement rejected by exchange:", errMsg);
+      throw new Error(errMsg);
+    }
+
     console.log(`[Hyperliquid] Agent order placed for asset ${assetIndex}:`, response.data);
     return response.data;
   } catch (error) {
@@ -393,6 +399,12 @@ async function updateAgentLeverage({ agentPrivateKey, masterAddress, assetIndex,
     const response = await axios.post(`${HYPERLIQUID_API_URL}/exchange`, payload, {
       headers: { "Content-Type": "application/json" }
     });
+
+    if (response.data && response.data.status === "err") {
+      const errMsg = typeof response.data.response === "string" ? response.data.response : JSON.stringify(response.data.response);
+      console.error(`[Hyperliquid] Agent updateLeverage rejected for asset ${assetIndex}:`, errMsg);
+      throw new Error(errMsg);
+    }
 
     console.log(`[Hyperliquid] Agent updateLeverage for asset ${assetIndex} (isCross=${isCross}, leverage=${leverage}):`, response.data);
     return response.data;
