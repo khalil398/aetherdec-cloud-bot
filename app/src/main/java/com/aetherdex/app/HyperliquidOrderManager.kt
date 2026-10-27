@@ -902,9 +902,10 @@ object HyperliquidOrderManager {
     fun calculateApproveAgentEip712Digest(
         hyperliquidChain: String = "Mainnet",
         agentAddress: String,
-        agentName: String = "AetherDex Cloud Bot Engine",
+        agentName: String = "AetherDex Bot",
         nonce: Long
     ): ByteArray {
+        val safeAgentName = if (agentName.length > 16) agentName.take(16) else agentName
         val nameHash = keccak256("HyperliquidSignTransaction".toByteArray(Charsets.UTF_8))
         val versionHash = keccak256("1".toByteArray(Charsets.UTF_8))
         val chainIdBytes = pad32(java.math.BigInteger.valueOf(42161L).toByteArray()) // 42161 = 0xa4b1 (Mainnet)
@@ -924,7 +925,7 @@ object HyperliquidOrderManager {
         val chainHash = keccak256(hyperliquidChain.toByteArray(Charsets.UTF_8))
         val cleanAgent = agentAddress.trim().removePrefix("0x")
         val agentBytes = pad32(Numeric.hexStringToByteArray(cleanAgent))
-        val agentNameHash = keccak256(agentName.toByteArray(Charsets.UTF_8))
+        val agentNameHash = keccak256(safeAgentName.toByteArray(Charsets.UTF_8))
         val nonceBytes = pad32(java.math.BigInteger.valueOf(nonce).toByteArray())
 
         val structBuffer = ByteArray(32 * 5)
@@ -945,29 +946,144 @@ object HyperliquidOrderManager {
     }
 
     /**
+     * Builds the EIP-712 JSON string for external Web3 wallet signing (MetaMask / Trust / WalletConnect).
+     */
+    fun buildApproveAgentEip712Json(
+        hyperliquidChain: String = "Mainnet",
+        agentAddress: String,
+        agentName: String = "AetherDex Bot",
+        nonce: Long
+    ): String {
+        val safeAgentName = if (agentName.length > 16) agentName.take(16) else agentName
+        val json = JSONObject().apply {
+            val domain = JSONObject().apply {
+                put("name", "HyperliquidSignTransaction")
+                put("version", "1")
+                put("chainId", 42161)
+                put("verifyingContract", "0x0000000000000000000000000000000000000000")
+            }
+            val types = JSONObject().apply {
+                val eip712DomainArray = JSONArray().apply {
+                    put(JSONObject().apply { put("name", "name"); put("type", "string") })
+                    put(JSONObject().apply { put("name", "version"); put("type", "string") })
+                    put(JSONObject().apply { put("name", "chainId"); put("type", "uint256") })
+                    put(JSONObject().apply { put("name", "verifyingContract"); put("type", "address") })
+                }
+                val approveAgentArray = JSONArray().apply {
+                    put(JSONObject().apply { put("name", "hyperliquidChain"); put("type", "string") })
+                    put(JSONObject().apply { put("name", "agentAddress"); put("type", "address") })
+                    put(JSONObject().apply { put("name", "agentName"); put("type", "string") })
+                    put(JSONObject().apply { put("name", "nonce"); put("type", "uint64") })
+                }
+                put("EIP712Domain", eip712DomainArray)
+                put("HyperliquidTransaction:ApproveAgent", approveAgentArray)
+            }
+            val message = JSONObject().apply {
+                put("hyperliquidChain", hyperliquidChain)
+                put("agentAddress", agentAddress.trim())
+                put("agentName", safeAgentName)
+                put("nonce", nonce)
+            }
+            put("domain", domain)
+            put("types", types)
+            put("primaryType", "HyperliquidTransaction:ApproveAgent")
+            put("message", message)
+        }
+        return json.toString()
+    }
+
+    /**
+     * Submits an approveAgent L1 action with external Web3 signature to Hyperliquid.
+     */
+    suspend fun submitApproveAgentWithSignature(
+        agentAddress: String,
+        agentName: String = "AetherDex Bot",
+        nonce: Long,
+        signatureHex: String
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        try {
+            val safeAgentName = if (agentName.length > 16) agentName.take(16) else agentName
+            val action = JSONObject().apply {
+                put("type", "approveAgent")
+                put("hyperliquidChain", "Mainnet")
+                put("signatureChainId", "0xa4b1")
+                put("agentAddress", agentAddress.trim())
+                put("agentName", safeAgentName)
+                put("nonce", nonce)
+            }
+
+            val cleanSig = signatureHex.trim().removePrefix("0x")
+            val rHex = if (cleanSig.length >= 64) "0x" + cleanSig.substring(0, 64) else "0x0"
+            val sHex = if (cleanSig.length >= 128) "0x" + cleanSig.substring(64, 128) else "0x0"
+            val vInt = if (cleanSig.length >= 130) cleanSig.substring(128, 130).toIntOrNull(16) ?: 27 else 27
+
+            val signatureObj = JSONObject().apply {
+                put("r", rHex)
+                put("s", sHex)
+                put("v", vInt)
+            }
+
+            val payload = JSONObject().apply {
+                put("action", action)
+                put("nonce", nonce)
+                put("signature", signatureObj)
+            }
+
+            Log.i(TAG, "Submitting external approveAgent L1 payload: ${payload.toString(2)}")
+
+            val url = URL("$HYPERLIQUID_API_URL/exchange")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+
+            conn.outputStream.use { os ->
+                os.write(payload.toString().toByteArray(Charsets.UTF_8))
+            }
+
+            val responseCode = conn.responseCode
+            val responseText = if (responseCode == 200) {
+                conn.inputStream.bufferedReader().readText()
+            } else {
+                conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $responseCode"
+            }
+
+            Log.i(TAG, "approveAgent external L1 response ($responseCode): $responseText")
+            val isSuccess = responseCode == 200 && !responseText.contains("\"status\":\"err\"")
+            Pair(isSuccess, responseText)
+        } catch (e: Exception) {
+            Log.e(TAG, "submitApproveAgentWithSignature exception with full stack trace", e)
+            Pair(false, e.message ?: "Unknown exception during L1 signature submission")
+        }
+    }
+
+    /**
      * Submits an approveAgent L1 action to Hyperliquid exchange API.
      * Approves an Agent Key (agentAddress) for trading authority.
      */
     suspend fun approveAgentOnL1(
         masterPrivateKeyHex: String,
         agentAddress: String,
-        agentName: String = "AetherDex Cloud Bot Engine"
-    ): Boolean = withContext(Dispatchers.IO) {
+        agentName: String = "AetherDex Bot"
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         try {
+            val safeAgentName = if (agentName.length > 16) agentName.take(16) else agentName
             val nonce = System.currentTimeMillis()
             val action = JSONObject().apply {
                 put("type", "approveAgent")
                 put("hyperliquidChain", "Mainnet")
                 put("signatureChainId", "0xa4b1")
-                put("agentAddress", agentAddress)
-                put("agentName", agentName)
+                put("agentAddress", agentAddress.trim())
+                put("agentName", safeAgentName)
                 put("nonce", nonce)
             }
 
             val digest = calculateApproveAgentEip712Digest(
                 hyperliquidChain = "Mainnet",
-                agentAddress = agentAddress,
-                agentName = agentName,
+                agentAddress = agentAddress.trim(),
+                agentName = safeAgentName,
                 nonce = nonce
             )
 
@@ -992,13 +1108,15 @@ object HyperliquidOrderManager {
                 put("signature", signatureObj)
             }
 
+            Log.i(TAG, "Submitting local approveAgent L1 payload: ${payload.toString(2)}")
+
             val url = URL("$HYPERLIQUID_API_URL/exchange")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
             conn.doOutput = true
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
 
             conn.outputStream.use { os ->
                 os.write(payload.toString().toByteArray(Charsets.UTF_8))
@@ -1008,14 +1126,15 @@ object HyperliquidOrderManager {
             val responseText = if (responseCode == 200) {
                 conn.inputStream.bufferedReader().readText()
             } else {
-                conn.errorStream?.bufferedReader()?.readText() ?: ""
+                conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $responseCode"
             }
 
-            Log.i(TAG, "approveAgent L1 response ($responseCode): $responseText")
-            return@withContext responseCode == 200 && !responseText.contains("\"status\":\"err\"")
+            Log.i(TAG, "approveAgent local L1 response ($responseCode): $responseText")
+            val isSuccess = responseCode == 200 && !responseText.contains("\"status\":\"err\"")
+            Pair(isSuccess, responseText)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to approveAgent on L1", e)
-            return@withContext false
+            Log.e(TAG, "Failed to approveAgent on L1 with full stack trace", e)
+            Pair(false, e.message ?: "Unknown exception during L1 agent authorization")
         }
     }
 
@@ -1027,7 +1146,12 @@ object HyperliquidOrderManager {
         agentAddress: String
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            if (!masterAddress.startsWith("0x") || !agentAddress.startsWith("0x")) return@withContext false
+            val cleanMaster = masterAddress.trim().lowercase()
+            val cleanAgent = agentAddress.trim().lowercase()
+            if (!cleanMaster.startsWith("0x") || !cleanAgent.startsWith("0x")) {
+                Log.w(TAG, "checkAgentApprovalOnL1 invalid addresses: master=$masterAddress, agent=$agentAddress")
+                return@withContext false
+            }
             val url = URL("$HYPERLIQUID_API_URL/info")
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "POST"
@@ -1038,27 +1162,33 @@ object HyperliquidOrderManager {
 
             val payload = JSONObject().apply {
                 put("type", "extraAgents")
-                put("user", masterAddress)
+                put("user", cleanMaster)
             }
 
             conn.outputStream.use { os ->
                 os.write(payload.toString().toByteArray(Charsets.UTF_8))
             }
 
-            if (conn.responseCode == 200) {
+            val responseCode = conn.responseCode
+            if (responseCode == 200) {
                 val responseText = conn.inputStream.bufferedReader().readText()
+                Log.i(TAG, "checkAgentApprovalOnL1 for $cleanMaster ($responseCode): $responseText")
                 val jsonArray = org.json.JSONArray(responseText)
                 for (i in 0 until jsonArray.length()) {
                     val item = jsonArray.getJSONObject(i)
-                    val addr = item.optString("address", "")
-                    if (addr.equals(agentAddress, ignoreCase = true)) {
+                    val addr = item.optString("address", "").trim().lowercase()
+                    if (addr.isNotEmpty() && addr == cleanAgent) {
+                        Log.i(TAG, "Agent $cleanAgent is VERIFIED AUTHORIZED on Hyperliquid for master $cleanMaster")
                         return@withContext true
                     }
                 }
+            } else {
+                val errText = conn.errorStream?.bufferedReader()?.readText() ?: "HTTP $responseCode"
+                Log.w(TAG, "checkAgentApprovalOnL1 failed for $cleanMaster ($responseCode): $errText")
             }
             return@withContext false
         } catch (e: Exception) {
-            Log.w(TAG, "checkAgentApprovalOnL1 error: ${e.message}")
+            Log.e(TAG, "checkAgentApprovalOnL1 exception with full stack trace", e)
             return@withContext false
         }
     }

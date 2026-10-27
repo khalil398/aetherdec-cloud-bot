@@ -2091,6 +2091,18 @@ class MainActivity : AppCompatActivity(),
         dialog.show()
     }
 
+    fun getActiveMasterWalletAddress(): String {
+        val wcAddr = connectedAddress ?: WalletConnectionManager.getPersistedSession()?.address
+        if (!wcAddr.isNullOrBlank() && wcAddr.startsWith("0x")) {
+            return wcAddr.trim()
+        }
+        val prefsAddr = getSharedPreferences("aetherdex_prefs", MODE_PRIVATE).getString("wallet_address", null)
+        if (!prefsAddr.isNullOrBlank() && prefsAddr.startsWith("0x")) {
+            return prefsAddr.trim()
+        }
+        return EmbeddedWalletManager.getActiveEvmAddress(this).trim()
+    }
+
     private fun setupAgentWalletSection() {
         btnCopyAgentAddress?.setOnClickListener {
             val agentAddress = AgentKeyManager.getAgentAddress(this)
@@ -2101,31 +2113,85 @@ class MainActivity : AppCompatActivity(),
         }
 
         btnAuthorizeAgent?.setOnClickListener {
+            val masterAddress = getActiveMasterWalletAddress()
             val masterPkHex = EmbeddedWalletManager.getActivePrivateKeyHex(this)
-            val masterAddress = EmbeddedWalletManager.getActiveEvmAddress(this)
-            if (masterPkHex.isNullOrBlank() || !masterAddress.startsWith("0x")) {
-                snackString("Please connect or unlock your master EVM wallet first.")
+
+            if (!masterAddress.startsWith("0x") || masterAddress.contains("0000...0000")) {
+                snackString("Please connect your master EVM wallet first.")
                 return@setOnClickListener
             }
 
-            btnAuthorizeAgent?.isEnabled = false
-            btnAuthorizeAgent?.text = "Authorizing on L1..."
+            val agentAddr = AgentKeyManager.getAgentAddress(this)
 
-            lifecycleScope.launch {
-                val accountId = getUserAccountId()
-                val approved = AgentKeyManager.ensureAgentApprovedAndSynced(
-                    this@MainActivity,
-                    accountId
-                )
-                withContext(Dispatchers.Main) {
-                    btnAuthorizeAgent?.isEnabled = true
-                    if (approved) {
-                        snackString("Agent key successfully authorized on Hyperliquid L1!")
-                    } else {
-                        snackString("Failed to authorize agent key on L1. Check balance / connection.")
+            if (!masterPkHex.isNullOrBlank()) {
+                btnAuthorizeAgent?.isEnabled = false
+                btnAuthorizeAgent?.text = "Authorizing on L1..."
+
+                lifecycleScope.launch {
+                    val accountId = getUserAccountId()
+                    val (approved, responseOrMsg) = AgentKeyManager.authorizeAndSyncAgent(
+                        context = this@MainActivity,
+                        accountId = accountId,
+                        masterAddress = masterAddress,
+                        masterPrivateKeyHex = masterPkHex
+                    )
+                    withContext(Dispatchers.Main) {
+                        btnAuthorizeAgent?.isEnabled = true
+                        if (approved) {
+                            snackString("Agent key successfully authorized on Hyperliquid L1!")
+                        } else {
+                            Log.e("MainActivity", "L1 authorization failure: $responseOrMsg")
+                            snackString("L1 approval rejection: $responseOrMsg")
+                        }
+                        refreshAgentWalletUi()
                     }
-                    refreshAgentWalletUi()
                 }
+            } else if (WalletConnectionManager.isConnected()) {
+                btnAuthorizeAgent?.isEnabled = false
+                btnAuthorizeAgent?.text = "Waiting for Wallet Signature..."
+
+                val nonce = System.currentTimeMillis()
+                val eip712Json = HyperliquidOrderManager.buildApproveAgentEip712Json(
+                    hyperliquidChain = "Mainnet",
+                    agentAddress = agentAddr,
+                    agentName = "AetherDex Bot",
+                    nonce = nonce
+                )
+
+                WalletConnectionManager.requestEip712Signature(
+                    ctx = this,
+                    userAddress = masterAddress,
+                    eip712Json = eip712Json,
+                    onSigned = { signatureHex ->
+                        lifecycleScope.launch {
+                            val (approved, responseOrMsg) = HyperliquidOrderManager.submitApproveAgentWithSignature(
+                                agentAddress = agentAddr,
+                                agentName = "AetherDex Bot",
+                                nonce = nonce,
+                                signatureHex = signatureHex
+                            )
+                            withContext(Dispatchers.Main) {
+                                btnAuthorizeAgent?.isEnabled = true
+                                if (approved) {
+                                    AgentKeyManager.setAgentApproved(this@MainActivity, true)
+                                    snackString("Agent key successfully authorized on Hyperliquid L1!")
+                                } else {
+                                    Log.e("MainActivity", "L1 external signature submission failure: $responseOrMsg")
+                                    snackString("L1 approval rejection: $responseOrMsg")
+                                }
+                                refreshAgentWalletUi()
+                            }
+                        }
+                    },
+                    onError = { err ->
+                        btnAuthorizeAgent?.isEnabled = true
+                        Log.e("MainActivity", "WalletConnect EIP-712 signing failed: $err")
+                        snackString("Wallet signing error: $err")
+                        refreshAgentWalletUi()
+                    }
+                )
+            } else {
+                snackString("Please connect an active Web3 wallet or unlock embedded keys.")
             }
         }
 
@@ -2139,14 +2205,16 @@ class MainActivity : AppCompatActivity(),
     private fun refreshAgentWalletUi() {
         val agentAddr = AgentKeyManager.getAgentAddress(this)
         tvAgentAddressValue?.text = agentAddr
-        val masterAddress = EmbeddedWalletManager.getActiveEvmAddress(this)
+        val masterAddress = getActiveMasterWalletAddress()
+        Log.i("MainActivity", "refreshAgentWalletUi: master=$masterAddress, agent=$agentAddr")
 
         val isLocallyApproved = AgentKeyManager.isAgentApprovedLocally(this)
         updateAgentBadge(isLocallyApproved)
 
-        if (masterAddress.startsWith("0x")) {
+        if (masterAddress.startsWith("0x") && !masterAddress.contains("0000...0000")) {
             lifecycleScope.launch(Dispatchers.IO) {
                 val isOnChainApproved = HyperliquidOrderManager.checkAgentApprovalOnL1(masterAddress, agentAddr)
+                Log.i("MainActivity", "checkAgentApprovalOnL1 result for $agentAddr: $isOnChainApproved")
                 AgentKeyManager.setAgentApproved(this@MainActivity, isOnChainApproved)
                 withContext(Dispatchers.Main) {
                     updateAgentBadge(isOnChainApproved)
@@ -2229,9 +2297,11 @@ class MainActivity : AppCompatActivity(),
                 dialog.dismiss()
                 lifecycleScope.launch {
                     val accountId = getUserAccountId()
+                    val masterAddress = getActiveMasterWalletAddress()
                     val (_, newAddr) = AgentKeyManager.rotateAgentKey(
                         this@MainActivity,
-                        accountId
+                        accountId,
+                        masterAddress
                     )
                     withContext(Dispatchers.Main) {
                         snackString("New agent key generated: $newAddr")
