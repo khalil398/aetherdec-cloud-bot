@@ -6,6 +6,8 @@ const {
   fetchPerpMetaAndCtxs,
   fetchCandleSnapshot,
   placeAgentOrder,
+  placeAgentPositionTpslOrders,
+  fetchFrontendOpenOrders,
   updateAgentLeverage,
   checkUserAbstraction,
   formatPriceForHyperliquid,
@@ -39,6 +41,9 @@ const orderRejectionCooldowns = new Map();
 
 // Candle timestamp of last executed signal per symbol (ensures strictly 1 order per candle close)
 const lastTriggeredCandleTimeBySymbol = new Map();
+
+// Map to track active positions with native TP/SL trigger orders placed: key -> timestamp
+const hasDispatchedTpslMap = new Map();
 
 function cleanCoinSymbol(coin) {
   if (!coin) return "";
@@ -1204,6 +1209,27 @@ async function executeBotTick(uid, db, config, botSecret) {
         const effectiveSl = cachedRisk?.stopLoss || stopLoss;
         const effectiveTp = cachedRisk?.takeProfit || takeProfit;
 
+        // Ensure real native on-chain Hyperliquid TP/SL trigger orders are active for this open position
+        const tpslKey = `${masterAddress.toLowerCase()}_${coin.toUpperCase()}`;
+        if (!hasDispatchedTpslMap.has(tpslKey) && (effectiveSl > 0 || effectiveTp > 0) && isFuturesActive) {
+          hasDispatchedTpslMap.set(tpslKey, Date.now());
+          const activeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
+          placeAgentPositionTpslOrders({
+            agentPrivateKey,
+            masterAddress,
+            assetIndex: assetIdx,
+            isLong: isCurrentlyLong,
+            sz: activeSz,
+            stopLoss: effectiveSl,
+            takeProfit: effectiveTp,
+            szDec
+          }).then(res => {
+            console.log(`[${uid}] 🛡️ Native on-chain TP/SL active for ${coin}:`, res?.data?.response || res?.data || "ok");
+          }).catch(err => {
+            console.warn(`[${uid}] Native TP/SL check note for ${coin}:`, err.message);
+          });
+        }
+
         if (isDualRibbonActive && effectiveSl > 0 && effectiveTp > 0) {
           if (isCurrentlyLong) {
             if (coinPrice <= effectiveSl) {
@@ -1283,6 +1309,7 @@ async function executeBotTick(uid, db, config, botSecret) {
               }
             }
             activePositionsRiskCache.delete(`${masterAddress}_${coin}`);
+            hasDispatchedTpslMap.delete(tpslKey);
           } catch (err) {
             console.error(`[${uid}] Failed to close LONG on ${coin}:`, err.message);
           }
@@ -1347,6 +1374,7 @@ async function executeBotTick(uid, db, config, botSecret) {
               }
             }
             activePositionsRiskCache.delete(`${masterAddress}_${coin}`);
+            hasDispatchedTpslMap.delete(tpslKey);
           } catch (err) {
             console.error(`[${uid}] Failed to close SHORT on ${coin}:`, err.message);
           }
@@ -1554,6 +1582,27 @@ async function executeBotTick(uid, db, config, botSecret) {
                     leverage: effectiveLeverage,
                     margin: marginUsd
                   });
+
+                  // Dispatch real native on-chain Hyperliquid TP/SL trigger orders immediately upon fill
+                  if (bestEntrySignal.stopLoss > 0 || bestEntrySignal.takeProfit > 0) {
+                    try {
+                      console.log(`[${uid}] 🛡️ Dispatching native on-chain Hyperliquid TP/SL trigger orders for ${coin}...`);
+                      const tpslResult = await placeAgentPositionTpslOrders({
+                        agentPrivateKey,
+                        masterAddress,
+                        assetIndex: assetIdx,
+                        isLong: isOrderBuy,
+                        sz: formattedSz,
+                        stopLoss: bestEntrySignal.stopLoss || 0,
+                        takeProfit: bestEntrySignal.takeProfit || 0,
+                        szDec
+                      });
+                      hasDispatchedTpslMap.set(`${masterAddress.toLowerCase()}_${coin.toUpperCase()}`, Date.now());
+                      console.log(`[${uid}] ✅ Native TP/SL trigger orders confirmed on Hyperliquid for ${coin}:`, tpslResult?.data?.response || tpslResult?.data || "ok");
+                    } catch (tpSlErr) {
+                      console.warn(`[${uid}] ⚠️ Native TP/SL trigger order note for ${coin}:`, tpSlErr.message);
+                    }
+                  }
                   await writeBotStatus({
                     last_order_result: {
                       timestamp: Date.now(),

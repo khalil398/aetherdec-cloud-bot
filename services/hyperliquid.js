@@ -368,11 +368,82 @@ function formatPriceForHyperliquid(price, szDecimals = null, isSpot = false) {
 }
 
 /**
+ * Signs and submits an arbitrary Hyperliquid L1 action payload using delegated Agent Key EIP-712.
+ */
+async function signAndSubmitAgentAction(agentPrivateKey, action) {
+  const nonce = Date.now();
+  const actionBytes = msgpack.encode(action);
+
+  const nonceBuffer = Buffer.alloc(8);
+  nonceBuffer.writeBigUInt64BE(BigInt(nonce));
+  const vaultMarker = Buffer.from([0x00]);
+  const connectionIdBytes = Buffer.concat([actionBytes, nonceBuffer, vaultMarker]);
+  const connectionId = ethers.keccak256(connectionIdBytes);
+
+  const domainSeparator = ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["bytes32", "bytes32", "bytes32", "uint256", "address"],
+      [
+        ethers.id("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+        ethers.id("Exchange"),
+        ethers.id("1"),
+        1337,
+        ethers.ZeroAddress
+      ]
+    )
+  );
+
+  const agentStructHash = ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ["bytes32", "bytes32", "bytes32"],
+      [
+        ethers.id("Agent(string source,bytes32 connectionId)"),
+        ethers.id("a"),
+        connectionId
+      ]
+    )
+  );
+
+  const digest = ethers.keccak256(
+    Buffer.concat([
+      Buffer.from("1901", "hex"),
+      Buffer.from(domainSeparator.slice(2), "hex"),
+      Buffer.from(agentStructHash.slice(2), "hex")
+    ])
+  );
+
+  const wallet = new ethers.Wallet(agentPrivateKey);
+  const signature = wallet.signingKey.sign(digest);
+
+  const payload = {
+    action,
+    nonce,
+    signature: {
+      r: signature.r,
+      s: signature.s,
+      v: signature.v
+    },
+    vaultAddress: null
+  };
+
+  const response = await axios.post(`${HYPERLIQUID_API_URL}/exchange`, payload, {
+    headers: { "Content-Type": "application/json" },
+    timeout: 10000
+  });
+
+  if (response.data && response.data.status === "err") {
+    const errMsg = typeof response.data.response === "string" ? response.data.response : JSON.stringify(response.data.response);
+    throw new Error(errMsg);
+  }
+
+  return response;
+}
+
+/**
  * Places an L1 Order signed using the delegated Agent Key.
  */
-async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isBuy, limitPx, sz, orderType = { limit: { tif: "Gtc" } }, reduceOnly = false }) {
+async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isBuy, limitPx, sz, orderType = { limit: { tif: "Gtc" } }, reduceOnly = false, grouping = "na" }) {
   try {
-    const nonce = Date.now();
     // Defensive tick size compliance guard: Ensure limitPx conforms to Hyperliquid tick rules
     const formattedLimitPx = formatPriceForHyperliquid(limitPx);
     const orderWire = {
@@ -387,77 +458,10 @@ async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isB
     const action = {
       type: "order",
       orders: [orderWire],
-      grouping: "na"
+      grouping: grouping
     };
 
-    // Serialize action via msgpack
-    const actionBytes = msgpack.encode(action);
-    
-    // Hash connectionId = actionBytes + nonceBytes + vaultMarker(0x00)
-    const nonceBuffer = Buffer.alloc(8);
-    nonceBuffer.writeBigUInt64BE(BigInt(nonce));
-    const vaultMarker = Buffer.from([0x00]);
-    const connectionIdBytes = Buffer.concat([actionBytes, nonceBuffer, vaultMarker]);
-    const connectionId = ethers.keccak256(connectionIdBytes);
-
-    // EIP-712 Agent digest computation
-    const domainSeparator = ethers.keccak256(
-      ethers.AbiCoder.defaultAbiCoder().encode(
-        ["bytes32", "bytes32", "bytes32", "uint256", "address"],
-        [
-          ethers.id("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-          ethers.id("Exchange"),
-          ethers.id("1"),
-          1337,
-          ethers.ZeroAddress
-        ]
-      )
-    );
-
-    const agentStructHash = ethers.keccak256(
-      ethers.AbiCoder.defaultAbiCoder().encode(
-        ["bytes32", "bytes32", "bytes32"],
-        [
-          ethers.id("Agent(string source,bytes32 connectionId)"),
-          ethers.id("a"),
-          connectionId
-        ]
-      )
-    );
-
-    const digest = ethers.keccak256(
-      Buffer.concat([
-        Buffer.from("1901", "hex"),
-        Buffer.from(domainSeparator.slice(2), "hex"),
-        Buffer.from(agentStructHash.slice(2), "hex")
-      ])
-    );
-
-    // Sign digest using Agent Private Key
-    const wallet = new ethers.Wallet(agentPrivateKey);
-    const signature = wallet.signingKey.sign(digest);
-
-    const payload = {
-      action,
-      nonce,
-      signature: {
-        r: signature.r,
-        s: signature.s,
-        v: signature.v
-      },
-      vaultAddress: null
-    };
-
-    const response = await axios.post(`${HYPERLIQUID_API_URL}/exchange`, payload, {
-      headers: { "Content-Type": "application/json" },
-      timeout: 10000
-    });
-
-    if (response.data && response.data.status === "err") {
-      const errMsg = typeof response.data.response === "string" ? response.data.response : JSON.stringify(response.data.response);
-      console.error("[Hyperliquid] Agent order placement rejected by exchange:", errMsg);
-      throw new Error(errMsg);
-    }
+    const response = await signAndSubmitAgentAction(agentPrivateKey, action);
 
     // Invalidate clearinghouse cache immediately so fresh balances/positions reflect on next tick
     invalidateClearinghouseCache(masterAddress);
@@ -466,6 +470,96 @@ async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isB
     return response.data;
   } catch (error) {
     console.error("[Hyperliquid] Agent order placement failed:", error.response?.data || error.message);
+    throw error;
+  }
+}
+
+/**
+ * Places native on-chain TP and SL trigger orders on Hyperliquid (reduceOnly: true, grouping: "positionTpsl").
+ * Protects open positions natively on-chain against sudden market slippage or daemon lag.
+ */
+async function placeAgentPositionTpslOrders({
+  agentPrivateKey,
+  masterAddress,
+  assetIndex,
+  isLong,
+  sz,
+  stopLoss,
+  takeProfit,
+  szDec = 2
+}) {
+  try {
+    const isCloseBuy = !isLong; // Closing LONG requires SELL (false); closing SHORT requires BUY (true)
+    const orders = [];
+
+    // 1. Take Profit Trigger Order
+    if (takeProfit && takeProfit > 0) {
+      const formattedTp = formatPriceForHyperliquid(takeProfit, szDec, false);
+      const tpLimitPx = isCloseBuy
+        ? formatPriceForHyperliquid(takeProfit * 1.02, szDec, false)
+        : formatPriceForHyperliquid(takeProfit * 0.98, szDec, false);
+
+      orders.push({
+        a: assetIndex,
+        b: isCloseBuy,
+        p: tpLimitPx,
+        s: sz.toString(),
+        r: true,
+        t: {
+          trigger: {
+            isMarket: true,
+            triggerPx: formattedTp,
+            tpsl: "tp"
+          }
+        }
+      });
+    }
+
+    // 2. Stop Loss Trigger Order
+    if (stopLoss && stopLoss > 0) {
+      const formattedSl = formatPriceForHyperliquid(stopLoss, szDec, false);
+      const slLimitPx = isCloseBuy
+        ? formatPriceForHyperliquid(stopLoss * 1.05, szDec, false)
+        : formatPriceForHyperliquid(stopLoss * 0.95, szDec, false);
+
+      orders.push({
+        a: assetIndex,
+        b: isCloseBuy,
+        p: slLimitPx,
+        s: sz.toString(),
+        r: true,
+        t: {
+          trigger: {
+            isMarket: true,
+            triggerPx: formattedSl,
+            tpsl: "sl"
+          }
+        }
+      });
+    }
+
+    if (orders.length === 0) return null;
+
+    let action = {
+      type: "order",
+      orders: orders,
+      grouping: "positionTpsl"
+    };
+
+    let response;
+    try {
+      response = await signAndSubmitAgentAction(agentPrivateKey, action);
+    } catch (posErr) {
+      console.warn(`[Hyperliquid] positionTpsl grouping note: ${posErr.message}. Retrying with grouping: "na"...`);
+      action.grouping = "na";
+      response = await signAndSubmitAgentAction(agentPrivateKey, action);
+    }
+
+    invalidateClearinghouseCache(masterAddress);
+    console.log(`[Hyperliquid] Native TP/SL trigger orders placed for asset ${assetIndex} (${orders.length} orders):`, response.data);
+    return response.data;
+  } catch (error) {
+    console.error("[Hyperliquid] Failed to place native TP/SL trigger orders:", error.response?.data || error.message);
     throw error;
   }
 }
@@ -669,6 +763,27 @@ async function fetchUserFills(userAddress) {
   }
 }
 
+/**
+ * Fetches current open orders and trigger orders for a user (including native TP/SL orders).
+ */
+async function fetchFrontendOpenOrders(userAddress) {
+  if (!userAddress) return [];
+  try {
+    const response = await postInfoWithThrottle({
+      type: "frontendOpenOrders",
+      user: userAddress
+    }, 10000);
+    return Array.isArray(response.data) ? response.data : [];
+  } catch (error) {
+    if (error.response?.status === 429) {
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on frontendOpenOrders for ${userAddress}.`);
+    } else {
+      console.error(`[Hyperliquid] Error fetching frontendOpenOrders for ${userAddress}:`, error.message);
+    }
+    return [];
+  }
+}
+
 module.exports = {
   fetchUserClearinghouseState,
   invalidateClearinghouseCache,
@@ -678,10 +793,12 @@ module.exports = {
   fetchPerpMetaAndCtxs,
   fetchCandleSnapshot,
   placeAgentOrder,
+  placeAgentPositionTpslOrders,
   updateAgentLeverage,
   checkUserAbstraction,
   formatPriceForHyperliquid,
-  fetchUserFills
+  fetchUserFills,
+  fetchFrontendOpenOrders
 };
 
 
