@@ -1,5 +1,6 @@
 const {
   fetchUserClearinghouseState,
+  invalidateClearinghouseCache,
   fetchSpotClearinghouseState,
   fetchSpotMetaAndCtxs,
   fetchPerpMetaAndCtxs,
@@ -1031,6 +1032,9 @@ async function executeBotTick(uid, db, config, botSecret) {
     if (isEmaStrategyActive) {
       console.log(`[${uid}] 🎯 Futures whitelisted asset locked: [${scanQueue.join(", ")}] on ${futuresInterval} (Strategy: ${futuresStrategyList.join("+")}, Margin: ${marginMode}). Paced sequential evaluation.`);
 
+      // Deliberate pacing delay: ensures account state polling and market candle fetching are separated by >= 1000ms
+      await sleep(1000);
+
       const scanResults = [];
       for (let i = 0; i < scanQueue.length; i++) {
         if (i > 0) {
@@ -1150,6 +1154,7 @@ async function executeBotTick(uid, db, config, botSecret) {
             });
             console.log(`[${uid}] ✅ Futures LONG closed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
             currentPositionsMap.delete(coin); // Mark position deleted to allow immediate two-way SHORT reversal
+            invalidateClearinghouseCache(masterAddress);
 
             // Archive closed trade record to Firestore users/{walletAddress}/trade_history
             const entryPx = parseFloat(currentPos.entryPx || coinPrice);
@@ -1213,6 +1218,7 @@ async function executeBotTick(uid, db, config, botSecret) {
             });
             console.log(`[${uid}] ✅ Futures SHORT closed for ${coin}:`, exitResult?.response?.data?.statuses?.[0] || exitResult);
             currentPositionsMap.delete(coin); // Mark position deleted to allow immediate two-way LONG reversal
+            invalidateClearinghouseCache(masterAddress);
 
             // Archive closed trade record to Firestore users/{walletAddress}/trade_history
             const entryPx = parseFloat(currentPos.entryPx || coinPrice);
@@ -1327,6 +1333,7 @@ async function executeBotTick(uid, db, config, botSecret) {
               });
               marginConfiguredOk = !levResult?.response?.data?.error && levResult?.status !== "err";
               if (marginConfiguredOk) {
+                invalidateClearinghouseCache(masterAddress);
                 configuredLeverageCache.set(cacheKey, { isCross: !isIsolated, leverage: effectiveLeverage, timestamp: Date.now() });
               }
             } catch (levErr) {
@@ -1345,6 +1352,7 @@ async function executeBotTick(uid, db, config, botSecret) {
                   effectiveLeverage = fallbackLev;
                   marginConfiguredOk = !fallbackResult?.response?.data?.error && fallbackResult?.status !== "err";
                   if (marginConfiguredOk) {
+                    invalidateClearinghouseCache(masterAddress);
                     configuredLeverageCache.set(cacheKey, { isCross: !isIsolated, leverage: effectiveLeverage, timestamp: Date.now() });
                     console.log(`[${uid}] ✅ Leverage fallback succeeded: Applied ${effectiveLeverage}x on ${coin}`);
                   }
@@ -1418,6 +1426,7 @@ async function executeBotTick(uid, db, config, botSecret) {
                   }, true);
                 } else {
                   console.log(`[${uid}] ✅ Futures ${targetSide} order submitted successfully on Hyperliquid for ${coin}`);
+                  invalidateClearinghouseCache(masterAddress);
                   activePositionsRiskCache.set(`${masterAddress}_${coin}`, {
                     stopLoss: bestEntrySignal.stopLoss || 0,
                     takeProfit: bestEntrySignal.takeProfit || 0,

@@ -4,30 +4,111 @@ const msgpack = require("msgpack-lite");
 
 const HYPERLIQUID_API_URL = process.env.HYPERLIQUID_API_URL || "https://api.hyperliquid.xyz";
 
+// ============================================================================
+// CENTRALIZED RATE LIMITER & SEQUENTIAL FIFO REQUEST QUEUE
+// ============================================================================
+
+let infoQueueTail = Promise.resolve();
+let lastInfoRequestTime = 0;
+const MIN_INFO_INTERVAL_MS = 1000; // Guarantee >= 1000ms spacing between any two /info calls
+let global429BackoffUntil = 0;
+
+/**
+ * Checks whether global 429 rate limit backoff is currently active.
+ */
+function isGlobal429Active() {
+  return Date.now() < global429BackoffUntil;
+}
+
+/**
+ * Serializes and paces all POST requests to /info with a minimum delay between consecutive calls.
+ * If 429 occurs, activates a 15-second backoff.
+ */
+function postInfoWithThrottle(payload, timeout = 10000) {
+  const task = async () => {
+    const now = Date.now();
+    if (global429BackoffUntil > now) {
+      const waitMs = global429BackoffUntil - now;
+      console.warn(`[Hyperliquid] ⏳ In global 429 cooldown. Pacing ${(waitMs / 1000).toFixed(1)}s before /info call (${payload?.type || "info"})...`);
+      await new Promise(r => setTimeout(r, waitMs));
+    }
+
+    const elapsed = Date.now() - lastInfoRequestTime;
+    if (elapsed < MIN_INFO_INTERVAL_MS) {
+      await new Promise(r => setTimeout(r, MIN_INFO_INTERVAL_MS - elapsed));
+    }
+
+    try {
+      const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, payload, { timeout });
+      lastInfoRequestTime = Date.now();
+      return response;
+    } catch (err) {
+      lastInfoRequestTime = Date.now();
+      if (err.response?.status === 429) {
+        global429BackoffUntil = Date.now() + 15000;
+        console.warn(`[Hyperliquid] ⚠️ HTTP 429 detected on type: "${payload?.type || 'info'}". Activated 15s global /info cooldown.`);
+      }
+      throw err;
+    }
+  };
+
+  const nextPromise = infoQueueTail.then(task, task);
+  infoQueueTail = nextPromise.catch(() => {});
+  return nextPromise;
+}
+
 const clearinghouseCache = new Map();
 
 /**
- * Fetches Hyperliquid L1 Clearinghouse state for a user (throttled & cached for 6s).
+ * Invalidates the cached clearinghouse state for a user.
+ */
+function invalidateClearinghouseCache(userAddress) {
+  if (!userAddress) {
+    clearinghouseCache.clear();
+  } else {
+    clearinghouseCache.delete(userAddress.toLowerCase());
+  }
+}
+
+/**
+ * Fetches Hyperliquid L1 Clearinghouse state for a user.
+ * Adaptive TTL:
+ * - 30 seconds if user has 0 active positions (idle state)
+ * - 12 seconds if user has active positions
+ * Gracefully falls back to stale cache on 429 or network errors.
  */
 async function fetchUserClearinghouseState(userAddress) {
+  if (!userAddress) return null;
+  const key = userAddress.toLowerCase();
   const now = Date.now();
-  const cached = clearinghouseCache.get(userAddress);
-  if (cached && (now - cached.time < 6000)) {
-    return cached.data;
+  const cached = clearinghouseCache.get(key);
+
+  if (cached && cached.data) {
+    const hasPositions = (cached.data.assetPositions || []).length > 0;
+    const ttl = hasPositions ? 12000 : 30000;
+    if (now - cached.time < ttl) {
+      return cached.data;
+    }
+    // If in 429 cooldown and we have a cached state, return it immediately rather than queuing
+    if (isGlobal429Active()) {
+      return cached.data;
+    }
   }
+
   try {
-    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+    const response = await postInfoWithThrottle({
       type: "clearinghouseState",
       user: userAddress
-    }, { timeout: 10000 });
+    }, 10000);
+
     if (response.data) {
-      clearinghouseCache.set(userAddress, { data: response.data, time: now });
+      clearinghouseCache.set(key, { data: response.data, time: Date.now() });
+      return response.data;
     }
-    return response.data;
+    return cached ? cached.data : null;
   } catch (error) {
     if (error.response?.status === 429) {
-      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on clearinghouseState for ${userAddress}`);
-      if (cached) return cached.data;
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on clearinghouseState for ${userAddress}. Serving cached snapshot.`);
     } else {
       console.error(`[Hyperliquid] Error fetching clearinghouseState for ${userAddress}:`, error.message);
     }
@@ -40,10 +121,10 @@ async function fetchUserClearinghouseState(userAddress) {
  */
 async function fetchSpotClearinghouseState(userAddress) {
   try {
-    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+    const response = await postInfoWithThrottle({
       type: "spotClearinghouseState",
       user: userAddress
-    }, { timeout: 10000 });
+    }, 10000);
     return response.data;
   } catch (error) {
     if (error.response?.status === 429) {
@@ -60,9 +141,9 @@ async function fetchSpotClearinghouseState(userAddress) {
  */
 async function fetchAllMids() {
   try {
-    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+    const response = await postInfoWithThrottle({
       type: "allMids"
-    }, { timeout: 10000 });
+    }, 10000);
     return response.data;
   } catch (error) {
     if (error.response?.status === 429) {
@@ -85,10 +166,13 @@ async function fetchSpotMetaAndCtxs() {
   if (cachedSpotMarkets && (now - lastSpotMarketsFetch < 120000)) {
     return cachedSpotMarkets;
   }
+  if (isGlobal429Active() && cachedSpotMarkets) {
+    return cachedSpotMarkets;
+  }
   try {
-    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+    const response = await postInfoWithThrottle({
       type: "spotMetaAndAssetCtxs"
-    }, { timeout: 10000 });
+    }, 10000);
     const rootData = response.data;
     const spotMarkets = [];
 
@@ -153,21 +237,54 @@ async function fetchSpotMetaAndCtxs() {
   }
 }
 
+const candleCache = new Map();
+
+function getIntervalMs(interval) {
+  switch (interval) {
+    case "1m": return 60 * 1000;
+    case "3m": return 3 * 60 * 1000;
+    case "5m": return 5 * 60 * 1000;
+    case "15m": return 15 * 60 * 1000;
+    case "30m": return 30 * 60 * 1000;
+    case "1h": return 60 * 60 * 1000;
+    case "2h": return 2 * 60 * 60 * 1000;
+    case "4h": return 4 * 60 * 60 * 1000;
+    case "8h": return 8 * 60 * 60 * 1000;
+    case "1d": return 24 * 60 * 60 * 1000;
+    default: return 5 * 60 * 1000;
+  }
+}
 
 /**
- * Fetches OHLCV candle snapshot from Hyperliquid API.
+ * Fetches OHLCV candle snapshot from Hyperliquid API with candle-boundary caching.
+ * - Same candle interval: cached for up to 20 seconds
+ * - Candle boundary crossed: immediately refreshes to capture closed bars
+ * - Fallback on 429: Returns cached candles to ensure zero signal drops
  */
 async function fetchCandleSnapshot(coin = "BTC", interval = "5m", count = 300) {
+  const cacheKey = `${coin.toUpperCase()}_${interval}_${count}`;
+  const now = Date.now();
+  const intervalMs = getIntervalMs(interval);
+  const currentBoundary = Math.floor(now / intervalMs) * intervalMs;
+  const cached = candleCache.get(cacheKey);
+
+  if (cached && cached.data && cached.data.length > 0) {
+    const isSameCandle = cached.boundary === currentBoundary;
+    const isWithinIntraBarTtl = (now - cached.timestamp) < 20000;
+
+    if (isSameCandle && isWithinIntraBarTtl) {
+      return cached.data;
+    }
+
+    if (isGlobal429Active()) {
+      console.warn(`[Hyperliquid] In 429 cooldown. Serving cached candle snapshot for ${coin} (${interval}).`);
+      return cached.data;
+    }
+  }
+
   try {
-    const now = Date.now();
-    const intervalMinutes = interval === "1h" ? 60 :
-                            interval === "30m" ? 30 :
-                            interval === "15m" ? 15 :
-                            interval === "1m" ? 1 :
-                            interval === "4h" ? 240 :
-                            interval === "1d" ? 1440 : 5;
-    const startTime = now - (count * intervalMinutes * 60 * 1000);
-    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+    const startTime = now - (count * intervalMs);
+    const response = await postInfoWithThrottle({
       type: "candleSnapshot",
       req: {
         coin,
@@ -175,16 +292,29 @@ async function fetchCandleSnapshot(coin = "BTC", interval = "5m", count = 300) {
         startTime,
         endTime: now
       }
-    }, { timeout: 10000 });
-    return response.data || [];
+    }, 10000);
+
+    const candles = response.data || [];
+    if (Array.isArray(candles) && candles.length > 0) {
+      candleCache.set(cacheKey, {
+        data: candles,
+        timestamp: Date.now(),
+        boundary: currentBoundary
+      });
+      return candles;
+    }
+    return cached ? cached.data : candles;
   } catch (error) {
     if (error.response?.status === 429) {
-      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on candleSnapshot for ${coin} (${interval}). Triggering 15s pause.`);
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on candleSnapshot for ${coin} (${interval}). Serving cached snapshot.`);
+      if (cached && cached.data && cached.data.length > 0) {
+        return cached.data;
+      }
       return { rateLimited: true, candles: [] };
     } else {
       console.error(`[Hyperliquid] Error fetching candleSnapshot for ${coin} (${interval}):`, error.message);
     }
-    return [];
+    return cached ? cached.data : [];
   }
 }
 
@@ -279,6 +409,9 @@ async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isB
       throw new Error(errMsg);
     }
 
+    // Invalidate clearinghouse cache immediately so fresh balances/positions reflect on next tick
+    invalidateClearinghouseCache(masterAddress);
+
     console.log(`[Hyperliquid] Agent order placed for asset ${assetIndex}:`, response.data);
     return response.data;
   } catch (error) {
@@ -298,10 +431,13 @@ async function fetchPerpMetaAndCtxs() {
   if (cachedPerpMarkets && (now - lastPerpMarketsFetch < 120000)) {
     return cachedPerpMarkets;
   }
+  if (isGlobal429Active() && cachedPerpMarkets) {
+    return cachedPerpMarkets;
+  }
   try {
-    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+    const response = await postInfoWithThrottle({
       type: "metaAndAssetCtxs"
-    }, { timeout: 10000 });
+    }, 10000);
     const rootData = response.data;
     const perpMarkets = [];
     if (Array.isArray(rootData) && rootData.length >= 2) {
@@ -406,6 +542,9 @@ async function updateAgentLeverage({ agentPrivateKey, masterAddress, assetIndex,
       throw new Error(errMsg);
     }
 
+    // Invalidate clearinghouse cache immediately so fresh leverage reflects on next tick
+    invalidateClearinghouseCache(masterAddress);
+
     console.log(`[Hyperliquid] Agent updateLeverage for asset ${assetIndex} (isCross=${isCross}, leverage=${leverage}):`, response.data);
     return response.data;
   } catch (error) {
@@ -425,11 +564,14 @@ async function checkUserAbstraction(userAddress) {
   if (cached && (Date.now() - cached.timestamp < 3600000)) {
     return cached.val;
   }
+  if (isGlobal429Active() && cached) {
+    return cached.val;
+  }
   try {
-    const response = await axios.post(`${HYPERLIQUID_API_URL}/info`, {
+    const response = await postInfoWithThrottle({
       type: "userAbstraction",
       user: userAddress
-    }, { timeout: 10000 });
+    }, 10000);
     const val = response.data || "disabled";
     userAbstractionCache.set(userAddress, { val, timestamp: Date.now() });
     return val;
@@ -446,6 +588,7 @@ async function checkUserAbstraction(userAddress) {
 
 module.exports = {
   fetchUserClearinghouseState,
+  invalidateClearinghouseCache,
   fetchSpotClearinghouseState,
   fetchAllMids,
   fetchSpotMetaAndCtxs,
