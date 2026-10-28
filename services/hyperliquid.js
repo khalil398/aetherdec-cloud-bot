@@ -636,6 +636,39 @@ async function checkUserAbstraction(userAddress) {
   }
 }
 
+const userFillsCache = new Map();
+
+/**
+ * Fetches recent trade execution fills for a user (cached for 15s).
+ */
+async function fetchUserFills(userAddress) {
+  if (!userAddress) return [];
+  const key = userAddress.toLowerCase();
+  const cached = userFillsCache.get(key);
+  if (cached && (Date.now() - cached.timestamp < 15000)) {
+    return cached.data;
+  }
+  if (isGlobal429Active() && cached) {
+    return cached.data;
+  }
+  try {
+    const response = await postInfoWithThrottle({
+      type: "userFills",
+      user: userAddress
+    }, 10000);
+    const fills = Array.isArray(response.data) ? response.data : [];
+    userFillsCache.set(key, { data: fills, timestamp: Date.now() });
+    return fills;
+  } catch (error) {
+    if (error.response?.status === 429) {
+      console.warn(`[Hyperliquid] ⚠️ Rate limit (429) on userFills for ${userAddress}. Serving cached fills.`);
+    } else {
+      console.error(`[Hyperliquid] Error fetching userFills for ${userAddress}:`, error.message);
+    }
+    return cached ? cached.data : [];
+  }
+}
+
 module.exports = {
   fetchUserClearinghouseState,
   invalidateClearinghouseCache,
@@ -647,7 +680,8 @@ module.exports = {
   placeAgentOrder,
   updateAgentLeverage,
   checkUserAbstraction,
-  formatPriceForHyperliquid
+  formatPriceForHyperliquid,
+  fetchUserFills
 };
 
 

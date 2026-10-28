@@ -7,7 +7,9 @@ const {
   fetchCandleSnapshot,
   placeAgentOrder,
   updateAgentLeverage,
-  checkUserAbstraction
+  checkUserAbstraction,
+  formatPriceForHyperliquid,
+  fetchUserFills
 } = require("../services/hyperliquid");
 
 /**
@@ -32,16 +34,108 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // Rate limit cooldown map: symbol -> timestamp until which requests for this symbol are paused (15s backoff)
 const rateLimitedSymbols = new Map();
 
+// Order rejection cooldown map: symbol -> timestamp until which order placement for this symbol is paused (30s backoff)
+const orderRejectionCooldowns = new Map();
+
+// Candle timestamp of last executed signal per symbol (ensures strictly 1 order per candle close)
+const lastTriggeredCandleTimeBySymbol = new Map();
+
+function cleanCoinSymbol(coin) {
+  if (!coin) return "";
+  return coin.toString().toUpperCase().trim()
+    .replace("/USDC", "")
+    .replace("/USDT", "")
+    .replace("USDC", "")
+    .replace("USDT", "")
+    .replace("/", "");
+}
+
 function isSymbolCoolingDown(symbol) {
-  const clean = (symbol || "").toString().toUpperCase().trim().replace("/USDC", "").replace("/USDT", "").replace("/", "");
+  const clean = cleanCoinSymbol(symbol);
   const expiry = rateLimitedSymbols.get(clean) || 0;
   return Date.now() < expiry;
 }
 
 function recordSymbol429(symbol) {
-  const clean = (symbol || "").toString().toUpperCase().trim().replace("/USDC", "").replace("/USDT", "").replace("/", "");
+  const clean = cleanCoinSymbol(symbol);
   console.warn(`[Hyperliquid] ⚠️ Rate limit (429) active for ${clean}. Pausing evaluation for 15 seconds.`);
   rateLimitedSymbols.set(clean, Date.now() + 15000);
+}
+
+function recordOrderRejection(symbol, cooldownMs = 30000) {
+  const clean = cleanCoinSymbol(symbol);
+  console.warn(`[Hyperliquid] ⏳ Activated ${cooldownMs / 1000}s order rejection cooldown for ${clean}.`);
+  orderRejectionCooldowns.set(clean, Date.now() + cooldownMs);
+}
+
+function isOrderInRejectionCooldown(symbol) {
+  const clean = cleanCoinSymbol(symbol);
+  const expiry = orderRejectionCooldowns.get(clean) || 0;
+  return Date.now() < expiry;
+}
+
+/**
+ * Synchronizes recent Hyperliquid trade fills to Firestore users/{targetId}/trade_history.
+ * Captures manual closes, SL/TP fills, and bot fills so Trade History is never out of sync.
+ */
+async function syncUserFillsToFirestore(db, masterAddress, writeStatusTargets) {
+  if (!db || !masterAddress) return;
+  try {
+    const fills = await fetchUserFills(masterAddress);
+    if (!Array.isArray(fills) || fills.length === 0) return;
+
+    // Filter for closed position fills
+    const closeFills = fills.filter(f => {
+      const isClose = f.dir && f.dir.toLowerCase().includes("close");
+      const hasClosedPnl = f.closedPnl !== undefined && f.closedPnl !== null && parseFloat(f.closedPnl) !== 0;
+      return isClose || hasClosedPnl;
+    });
+
+    for (const fill of closeFills) {
+      const fillTime = Number(fill.time || 0);
+      const tid = fill.tid || fill.hash || fill.oid || fillTime;
+      const tradeId = `hl_fill_${tid}`;
+
+      const exitPrice = parseFloat(fill.px || 0);
+      const realizedPnl = parseFloat(fill.closedPnl || 0);
+      const szCrypto = parseFloat(fill.sz || 0);
+      const posSizeUsd = szCrypto * exitPrice;
+      const isLong = fill.dir ? fill.dir.toLowerCase().includes("long") : (fill.side === "A");
+
+      let entryPx = exitPrice;
+      if (szCrypto > 0 && realizedPnl !== 0) {
+        entryPx = isLong ? (exitPrice - (realizedPnl / szCrypto)) : (exitPrice + (realizedPnl / szCrypto));
+      }
+
+      const closedRecord = {
+        id: tradeId,
+        symbol: `${fill.coin}/USDC`,
+        coin: fill.coin,
+        isLong: isLong,
+        side: isLong ? "LONG" : "SHORT",
+        leverage: 10,
+        margin: parseFloat((posSizeUsd / 10).toFixed(2)),
+        positionSizeUsdc: parseFloat(posSizeUsd.toFixed(2)),
+        entryPrice: parseFloat(entryPx.toFixed(2)),
+        exitPrice: parseFloat(exitPrice.toFixed(2)),
+        realizedPnl: parseFloat(realizedPnl.toFixed(4)),
+        realizedPnlPercent: posSizeUsd > 0 ? parseFloat(((realizedPnl / (posSizeUsd / 10)) * 100).toFixed(2)) : 0.0,
+        closeReason: fill.dir || "Hyperliquid Fill",
+        fee: parseFloat(fill.fee || 0),
+        timestamp: fillTime,
+        isDemo: false,
+        walletAddress: masterAddress
+      };
+
+      for (const targetId of writeStatusTargets) {
+        try {
+          await db.collection(`users/${targetId}/trade_history`).doc(tradeId).set(closedRecord, { merge: true });
+        } catch (_) {}
+      }
+    }
+  } catch (err) {
+    console.error(`[Hyperliquid] Error syncing userFills to trade_history:`, err.message);
+  }
 }
 
 /**
@@ -72,53 +166,6 @@ function formatSizeForHyperliquid(size, szDecimals = 2) {
   return floored.toFixed(dec);
 }
 
-/**
- * Formats limit price to comply strictly with Hyperliquid L1 tick size rules:
- * 1. Whole number (integer) rule: For prices >= 10,000 (e.g. BTC), integer rounding is strictly enforced.
- * 2. Maximum of 5 significant figures.
- * 3. Decimal place cap: MAX_DECIMALS - szDecimals (6 for perps, 8 for spot).
- * 4. Strips trailing zeros to prevent serialization/hash discrepancies.
- */
-function formatPriceForHyperliquid(price, szDecimals = null, isSpot = false) {
-  if (!price || price <= 0) return "0";
-  const num = Number(price);
-  if (!Number.isFinite(num)) return "0";
-
-  // 1. Whole number (integer) rule:
-  // Any number >= 10,000 has 5 or more integer digits.
-  // Any decimal added would exceed 5 significant figures.
-  // Hyperliquid permits integers of any size, and ticks for >= 10,000 assets (e.g. BTC) are integer.
-  if (Math.abs(num) >= 10000) {
-    return Math.round(num).toString();
-  }
-
-  // 2. Max decimals allowed by exchange metadata:
-  const metaMaxDec = (szDecimals !== null && szDecimals !== undefined)
-    ? Math.max(0, (isSpot ? 8 : 6) - Number(szDecimals))
-    : (isSpot ? 8 : 6);
-
-  // 3. Significant figures precision constraint (max 5 significant figures):
-  let sigFigMaxDec = 5;
-  if (num >= 1000) sigFigMaxDec = 1;
-  else if (num >= 100) sigFigMaxDec = 2;
-  else if (num >= 10) sigFigMaxDec = 3;
-  else if (num >= 1) sigFigMaxDec = 4;
-  else {
-    const leadingZeros = Math.max(0, -Math.floor(Math.log10(num)) - 1);
-    sigFigMaxDec = leadingZeros + 5;
-  }
-
-  const effectiveDecimals = Math.min(metaMaxDec, sigFigMaxDec);
-
-  const factor = Math.pow(10, effectiveDecimals);
-  const rounded = Math.round(num * factor) / factor;
-
-  let str = rounded.toFixed(effectiveDecimals);
-  if (str.includes(".")) {
-    str = str.replace(/\.?0+$/, "");
-  }
-  return str || "0";
-}
 
 /**
  * Dynamically calculates relative distance between White Channel (EMA 8 High/Low)
@@ -696,6 +743,7 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   }
 
   const idx = n - 1;
+  const lastClosedIdx = n >= 2 ? n - 2 : idx;
   const currentE134H = r1Ema134High[idx];
   const currentE134L = r1Ema134Low[idx];
   const currentE20 = ma1_20[idx];
@@ -703,6 +751,9 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
 
   const isBuyTriggeredNow = buySignals[idx];
   const isSellTriggeredNow = sellSignals[idx];
+  const isBuyTriggeredOnClose = buySignals[lastClosedIdx] === true;
+  const isSellTriggeredOnClose = sellSignals[lastClosedIdx] === true;
+  const latestClosedCandleTime = Number(candles[lastClosedIdx]?.t || 0);
 
   const isBuySignal = (lastSignalDirection === 1);
   const isSellSignal = (lastSignalDirection === -1);
@@ -778,6 +829,9 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
     isSellSignal,
     isBuyTriggered: isBuyTriggeredNow,
     isSellTriggered: isSellTriggeredNow,
+    isBuyTriggeredOnClose,
+    isSellTriggeredOnClose,
+    latestClosedCandleTime,
     breakoutCandleOffset,
     exitCandleOffset,
     stopLoss: returnSl,
@@ -820,6 +874,10 @@ async function executeBotTick(uid, db, config, botSecret) {
       } catch (e) {}
     }
   };
+
+  // 0. Synchronize recent Hyperliquid trade fills to Firestore users/{uid}/trade_history
+  // Captures manual closes from web UI, SL/TP fills, and bot fills so Trade History is never out of sync.
+  await syncUserFillsToFirestore(db, masterAddress, writeStatusTargets);
 
   // 1. Decoupled Market Activation States - Evaluated FIRST before any network calls
   const isSpotActive = config.is_spot_bot_active !== undefined
@@ -1304,12 +1362,28 @@ async function executeBotTick(uid, db, config, botSecret) {
         const currentSzi = currentPos ? parseFloat(currentPos.szi || 0) : 0;
         if (Math.abs(currentSzi) > 0.0001) return false; // Already has open position
 
-        // Bullish opportunity -> Open LONG
-        const isBuyOpportunity = (r.isBuySignal || (r.proximityScore >= 100 && r.isCurrentAbove));
+        // 1. Must not be in 30s rejection cooldown
+        if (isOrderInRejectionCooldown(r.coin)) return false;
 
-        // Bearish opportunity -> Open SHORT
-        const isSellOpportunity = (r.isSellSignal || (r.proximityScore <= 0 && !r.isCurrentAbove));
+        // 2. Strict Candle Close & Signal Transition check:
+        // Entry requires a fresh signal confirmation on the latest completed (closed) candle.
+        // We reject stale persistent state where the crossover happened bars ago.
+        const closedTime = r.latestClosedCandleTime || 0;
+        const lastTriggeredTime = lastTriggeredCandleTimeBySymbol.get(r.coin) || 0;
+        const isNewClosedCandle = closedTime > lastTriggeredTime;
 
+        // Fresh trigger check: either triggered on the latest closed candle, or breakout offset <= 1
+        const isFreshBuy = (r.isBuyTriggeredOnClose || (r.breakoutCandleOffset !== undefined && r.breakoutCandleOffset >= 0 && r.breakoutCandleOffset <= 1));
+        const isFreshSell = (r.isSellTriggeredOnClose || (r.exitCandleOffset !== undefined && r.exitCandleOffset >= 0 && r.exitCandleOffset <= 1));
+
+        if (isDualRibbonActive) {
+          if (!isNewClosedCandle) return false;
+          return isFreshBuy || isFreshSell;
+        }
+
+        if (!isNewClosedCandle) return false;
+        const isBuyOpportunity = isFreshBuy || (r.proximityScore >= 100 && r.isCurrentAbove && r.breakoutCandleOffset <= 1);
+        const isSellOpportunity = isFreshSell || (r.proximityScore <= 0 && !r.isCurrentAbove && r.exitCandleOffset <= 1);
         return isBuyOpportunity || isSellOpportunity;
       });
 
@@ -1406,8 +1480,10 @@ async function executeBotTick(uid, db, config, botSecret) {
           if (isIsolated && !marginConfiguredOk) {
             console.error(`[${uid}] ⛔ STRICT ISOLATION GUARD: Aborting ${targetSide} on ${coin}. Bot is strictly configured for Isolated margin and will NEVER place a Cross-margin order.`);
           } else {
-            const allocPct = (futuresAllocPct || 25) / 100.0;
-            const marginUsd = perpBalance * allocPct;
+            // Sizing with safe margin buffer for exchange taker fees and liquidation cushion (max 95% allocation)
+            const SAFE_MARGIN_RATIO = 0.95;
+            const effectiveAllocPct = Math.min(futuresAllocPct || 25, 95) / 100.0;
+            const marginUsd = perpBalance * effectiveAllocPct * SAFE_MARGIN_RATIO;
             const notionalUsd = marginUsd * effectiveLeverage;
             const rawSize = notionalUsd / coinPrice;
             let formattedSz = formatSizeForHyperliquid(rawSize, szDec);
@@ -1437,6 +1513,7 @@ async function executeBotTick(uid, db, config, botSecret) {
                 const statusEntry = orderResult?.response?.data?.statuses?.[0];
                 if (statusEntry?.error) {
                   console.error(`[${uid}] ❌ Futures ${targetSide} REJECTED by Hyperliquid: "${statusEntry.error}"`);
+                  recordOrderRejection(coin, 30000);
                   await writeBotStatus({
                     last_order_result: {
                       timestamp: Date.now(),
@@ -1457,6 +1534,17 @@ async function executeBotTick(uid, db, config, botSecret) {
                 } else {
                   console.log(`[${uid}] ✅ Futures ${targetSide} order submitted successfully on Hyperliquid for ${coin}`);
                   invalidateClearinghouseCache(masterAddress);
+                  lastTriggeredCandleTimeBySymbol.set(coin, bestEntrySignal.latestClosedCandleTime || Date.now());
+
+                  // Re-fetch clearinghouse state so active_positions telemetry reflects the fresh fill immediately
+                  try {
+                    await sleep(1000);
+                    const freshPerpState = await fetchUserClearinghouseState(masterAddress);
+                    if (freshPerpState) {
+                      perpClearinghouse = freshPerpState;
+                    }
+                  } catch (_) {}
+
                   activePositionsRiskCache.set(`${masterAddress}_${coin}`, {
                     stopLoss: bestEntrySignal.stopLoss || 0,
                     takeProfit: bestEntrySignal.takeProfit || 0,
@@ -1488,6 +1576,7 @@ async function executeBotTick(uid, db, config, botSecret) {
                 }
               } catch (err) {
                 console.error(`[${uid}] Futures ${targetSide} Execution Failed for ${coin}:`, err.message);
+                recordOrderRejection(coin, 30000);
               }
             }
           }
