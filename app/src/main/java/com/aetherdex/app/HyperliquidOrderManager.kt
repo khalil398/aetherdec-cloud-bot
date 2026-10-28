@@ -1707,6 +1707,39 @@ object HyperliquidOrderManager {
     }
 
     /**
+     * Fetches recent trade execution fills for a user directly from Hyperliquid L1 info API.
+     */
+    suspend fun fetchUserFills(userAddress: String): JSONArray? = withContext(Dispatchers.IO) {
+        if (userAddress.isBlank()) return@withContext null
+        try {
+            val url = URL("$HYPERLIQUID_API_URL/info")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+
+            val body = JSONObject().apply {
+                put("type", "userFills")
+                put("user", userAddress)
+            }
+
+            conn.outputStream.use { os ->
+                os.write(body.toString().toByteArray(Charsets.UTF_8))
+            }
+
+            if (conn.responseCode == 200) {
+                val responseText = conn.inputStream.bufferedReader().readText()
+                JSONArray(responseText)
+            } else null
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch user fills", e)
+            null
+        }
+    }
+
+    /**
      * Checks account abstraction mode on Hyperliquid Info API (e.g., "unifiedAccount", "portfolioMargin", "disabled", "default").
      */
     suspend fun checkUserAbstraction(userAddress: String): String = withContext(Dispatchers.IO) {

@@ -53,7 +53,9 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
@@ -160,6 +162,7 @@ class MainActivity : AppCompatActivity(),
     private var spotBotJob: kotlinx.coroutines.Job? = null
     private var botStatusListener: com.google.firebase.firestore.ListenerRegistration? = null
     private var tradeHistoryListener: com.google.firebase.firestore.ListenerRegistration? = null
+    private var liveTelemetryPollJob: kotlinx.coroutines.Job? = null
 
     // Demo Trading State & Order Form UI handles
     private var demoBalance: Double = 0.00
@@ -426,11 +429,16 @@ class MainActivity : AppCompatActivity(),
         if (::webViewChart.isInitialized) {
             webViewChart.onResume()
         }
+        fetchHyperliquidBalance()
         startTradeHistoryListener()
+        checkAndManageBotLoop()
+        startLiveTelemetryPolling()
         syncCurrentPositionRiskToChart()
     }
 
     override fun onPause() {
+        liveTelemetryPollJob?.cancel()
+        liveTelemetryPollJob = null
         if (::webViewChart.isInitialized) {
             extractAndSaveTradingViewState()
             try {
@@ -4823,6 +4831,95 @@ class MainActivity : AppCompatActivity(),
                 closedPositions.addAll(realHistory)
                 closedPositions.sortByDescending { it.timestamp }
                 updateHistoryListUi()
+            }
+        }
+    }
+
+    private fun startLiveTelemetryPolling() {
+        liveTelemetryPollJob?.cancel()
+        liveTelemetryPollJob = lifecycleScope.launch(Dispatchers.IO) {
+            while (isActive) {
+                try {
+                    val walletAddr = EmbeddedWalletManager.getActiveEvmAddress(this@MainActivity)
+                    if (walletAddr.isNotBlank() && walletAddr != "0x0000...0000") {
+                        fetchHyperliquidBalance()
+                        syncHyperliquidFillsDirectly(walletAddr)
+                    }
+                } catch (e: Exception) {
+                    Log.w("MainActivity", "Live telemetry poll error: ${e.message}")
+                }
+                delay(20000)
+            }
+        }
+    }
+
+    private suspend fun syncHyperliquidFillsDirectly(walletAddr: String) {
+        val fillsArray = HyperliquidOrderManager.fetchUserFills(walletAddr) ?: return
+        if (fillsArray.length() == 0) return
+
+        val newClosedPositions = mutableListOf<ClosedPosition>()
+        for (i in 0 until fillsArray.length()) {
+            val fill = fillsArray.optJSONObject(i) ?: continue
+            val dir = fill.optString("dir", "")
+            val closedPnlStr = fill.optString("closedPnl", "")
+            val closedPnl = closedPnlStr.toDoubleOrNull() ?: 0.0
+            val isClose = dir.lowercase(Locale.US).contains("close") || closedPnl != 0.0
+            if (!isClose) continue
+
+            val fillTime = fill.optLong("time", 0L)
+            val tid = fill.optString("tid", fill.optString("hash", fillTime.toString()))
+            val tradeId = "hl_fill_$tid"
+
+            val exitPx = fill.optString("px", "0.0").toDoubleOrNull() ?: 0.0
+            val szCrypto = fill.optString("sz", "0.0").toDoubleOrNull() ?: 0.0
+            val posSizeUsd = szCrypto * exitPx
+            val isLong = if (dir.isNotBlank()) dir.lowercase(Locale.US).contains("long") else (fill.optString("side", "") == "A")
+            val coin = fill.optString("coin", "BTC")
+
+            var entryPx = exitPx
+            if (szCrypto > 0 && closedPnl != 0.0) {
+                entryPx = if (isLong) (exitPx - (closedPnl / szCrypto)) else (exitPx + (closedPnl / szCrypto))
+            }
+
+            val margin = if (posSizeUsd > 0) posSizeUsd / 10.0 else 0.0
+            val pnlPct = if (margin > 0) (closedPnl / margin) * 100.0 else 0.0
+
+            val closedPos = ClosedPosition(
+                id = tradeId,
+                symbol = "$coin/USDC",
+                isLong = isLong,
+                leverage = 10,
+                margin = margin,
+                positionSizeUsdc = posSizeUsd,
+                entryPrice = entryPx,
+                exitPrice = exitPx,
+                realizedPnl = closedPnl,
+                realizedPnlPercent = pnlPct,
+                closeReason = if (dir.isNotBlank()) dir else "Hyperliquid Fill",
+                timestamp = if (fillTime > 0) fillTime else System.currentTimeMillis(),
+                isDemo = false
+            )
+            newClosedPositions.add(closedPos)
+        }
+
+        if (newClosedPositions.isNotEmpty()) {
+            withContext(Dispatchers.Main) {
+                var hasNew = false
+                for (cp in newClosedPositions) {
+                    if (closedPositions.none { it.id == cp.id }) {
+                        closedPositions.add(cp)
+                        hasNew = true
+                        FirebaseSyncManager.archiveTradeToFirestore(
+                            walletAddress = walletAddr,
+                            accountId = currentUserProfile.accountId,
+                            closedPos = cp
+                        )
+                    }
+                }
+                if (hasNew) {
+                    closedPositions.sortByDescending { it.timestamp }
+                    updateHistoryListUi()
+                }
             }
         }
     }
