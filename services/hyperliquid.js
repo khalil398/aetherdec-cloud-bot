@@ -320,15 +320,65 @@ async function fetchCandleSnapshot(coin = "BTC", interval = "5m", count = 300) {
 
 
 /**
+ * Formats limit price to comply strictly with Hyperliquid L1 tick size rules:
+ * 1. Whole number (integer) rule: For prices >= 10,000 (e.g. BTC), integer rounding is strictly enforced.
+ * 2. Maximum of 5 significant figures.
+ * 3. Decimal place cap: MAX_DECIMALS - szDecimals (6 for perps, 8 for spot).
+ * 4. Strips trailing zeros to prevent serialization/hash discrepancies.
+ */
+function formatPriceForHyperliquid(price, szDecimals = null, isSpot = false) {
+  if (!price || price <= 0) return "0";
+  const num = Number(price);
+  if (!Number.isFinite(num)) return "0";
+
+  // 1. Whole number (integer) rule:
+  // Any number >= 10,000 has 5 or more integer digits.
+  // Any decimal added would exceed 5 significant figures.
+  // Hyperliquid permits integers of any size, and ticks for >= 10,000 assets (e.g. BTC) are integer.
+  if (Math.abs(num) >= 10000) {
+    return Math.round(num).toString();
+  }
+
+  // 2. Max decimals allowed by exchange metadata:
+  const metaMaxDec = (szDecimals !== null && szDecimals !== undefined)
+    ? Math.max(0, (isSpot ? 8 : 6) - Number(szDecimals))
+    : (isSpot ? 8 : 6);
+
+  // 3. Significant figures precision constraint (max 5 significant figures):
+  let sigFigMaxDec = 5;
+  if (num >= 1000) sigFigMaxDec = 1;
+  else if (num >= 100) sigFigMaxDec = 2;
+  else if (num >= 10) sigFigMaxDec = 3;
+  else if (num >= 1) sigFigMaxDec = 4;
+  else {
+    const leadingZeros = Math.max(0, -Math.floor(Math.log10(num)) - 1);
+    sigFigMaxDec = leadingZeros + 5;
+  }
+
+  const effectiveDecimals = Math.min(metaMaxDec, sigFigMaxDec);
+
+  const factor = Math.pow(10, effectiveDecimals);
+  const rounded = Math.round(num * factor) / factor;
+
+  let str = rounded.toFixed(effectiveDecimals);
+  if (str.includes(".")) {
+    str = str.replace(/\.?0+$/, "");
+  }
+  return str || "0";
+}
+
+/**
  * Places an L1 Order signed using the delegated Agent Key.
  */
 async function placeAgentOrder({ agentPrivateKey, masterAddress, assetIndex, isBuy, limitPx, sz, orderType = { limit: { tif: "Gtc" } }, reduceOnly = false }) {
   try {
     const nonce = Date.now();
+    // Defensive tick size compliance guard: Ensure limitPx conforms to Hyperliquid tick rules
+    const formattedLimitPx = formatPriceForHyperliquid(limitPx);
     const orderWire = {
       a: assetIndex,
       b: isBuy,
-      p: limitPx.toString(),
+      p: formattedLimitPx,
       s: sz.toString(),
       r: reduceOnly,
       t: orderType
@@ -596,7 +646,8 @@ module.exports = {
   fetchCandleSnapshot,
   placeAgentOrder,
   updateAgentLeverage,
-  checkUserAbstraction
+  checkUserAbstraction,
+  formatPriceForHyperliquid
 };
 
 

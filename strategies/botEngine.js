@@ -73,21 +73,51 @@ function formatSizeForHyperliquid(size, szDecimals = 2) {
 }
 
 /**
- * Formats limit price to comply strictly with Hyperliquid rules:
- * Max 5 significant figures, formatted cleanly.
+ * Formats limit price to comply strictly with Hyperliquid L1 tick size rules:
+ * 1. Whole number (integer) rule: For prices >= 10,000 (e.g. BTC), integer rounding is strictly enforced.
+ * 2. Maximum of 5 significant figures.
+ * 3. Decimal place cap: MAX_DECIMALS - szDecimals (6 for perps, 8 for spot).
+ * 4. Strips trailing zeros to prevent serialization/hash discrepancies.
  */
-function formatPriceForHyperliquid(price) {
+function formatPriceForHyperliquid(price, szDecimals = null, isSpot = false) {
   if (!price || price <= 0) return "0";
   const num = Number(price);
-  if (num >= 100000) return Math.round(num).toString();
-  if (num >= 10000) return (Math.round(num * 10) / 10).toFixed(1);
-  if (num >= 1000) return (Math.round(num * 10) / 10).toFixed(1);
-  if (num >= 100) return (Math.round(num * 100) / 100).toFixed(2);
-  if (num >= 10) return (Math.round(num * 100) / 100).toFixed(2);
-  if (num >= 1) return (Math.round(num * 1000) / 1000).toFixed(3);
-  if (num >= 0.1) return (Math.round(num * 10000) / 10000).toFixed(4);
-  if (num >= 0.01) return (Math.round(num * 100000) / 100000).toFixed(5);
-  return Number(num.toPrecision(5)).toString();
+  if (!Number.isFinite(num)) return "0";
+
+  // 1. Whole number (integer) rule:
+  // Any number >= 10,000 has 5 or more integer digits.
+  // Any decimal added would exceed 5 significant figures.
+  // Hyperliquid permits integers of any size, and ticks for >= 10,000 assets (e.g. BTC) are integer.
+  if (Math.abs(num) >= 10000) {
+    return Math.round(num).toString();
+  }
+
+  // 2. Max decimals allowed by exchange metadata:
+  const metaMaxDec = (szDecimals !== null && szDecimals !== undefined)
+    ? Math.max(0, (isSpot ? 8 : 6) - Number(szDecimals))
+    : (isSpot ? 8 : 6);
+
+  // 3. Significant figures precision constraint (max 5 significant figures):
+  let sigFigMaxDec = 5;
+  if (num >= 1000) sigFigMaxDec = 1;
+  else if (num >= 100) sigFigMaxDec = 2;
+  else if (num >= 10) sigFigMaxDec = 3;
+  else if (num >= 1) sigFigMaxDec = 4;
+  else {
+    const leadingZeros = Math.max(0, -Math.floor(Math.log10(num)) - 1);
+    sigFigMaxDec = leadingZeros + 5;
+  }
+
+  const effectiveDecimals = Math.min(metaMaxDec, sigFigMaxDec);
+
+  const factor = Math.pow(10, effectiveDecimals);
+  const rounded = Math.round(num * factor) / factor;
+
+  let str = rounded.toFixed(effectiveDecimals);
+  if (str.includes(".")) {
+    str = str.replace(/\.?0+$/, "");
+  }
+  return str || "0";
 }
 
 /**
@@ -1139,7 +1169,7 @@ async function executeBotTick(uid, db, config, botSecret) {
         // Two-Way Futures: Exit Long on SELL breakdown or SL/TP trigger
         if (isCurrentlyLong && (isSellSignal || isDualRibbonLongExit) && isFuturesActive) {
           const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
-          const limitPx = formatPriceForHyperliquid(coinPrice * 0.98); // 2% market slippage buffer
+          const limitPx = formatPriceForHyperliquid(coinPrice * 0.98, szDec, false); // 2% market slippage buffer
           const reasonStr = exitReason || "30m/5m BEARISH SELL breakdown";
           console.log(`[${uid}] 🔻 TWO-WAY FUTURES: Closing LONG on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on ${reasonStr}`);
           try {
@@ -1203,7 +1233,7 @@ async function executeBotTick(uid, db, config, botSecret) {
         // Two-Way Futures: Exit Short on BUY breakout or SL/TP trigger
         if (isCurrentlyShort && (isBuySignal || isDualRibbonShortExit) && isFuturesActive) {
           const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
-          const limitPx = formatPriceForHyperliquid(coinPrice * 1.02); // 2% market slippage buffer
+          const limitPx = formatPriceForHyperliquid(coinPrice * 1.02, szDec, false); // 2% market slippage buffer
           const reasonStr = exitReason || "30m/5m BULLISH BUY breakout";
           console.log(`[${uid}] 🔺 TWO-WAY FUTURES: Closing SHORT on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on ${reasonStr}`);
           try {
@@ -1387,8 +1417,8 @@ async function executeBotTick(uid, db, config, botSecret) {
             }
 
             const limitPx = isOrderBuy
-              ? formatPriceForHyperliquid(coinPrice * 1.02)
-              : formatPriceForHyperliquid(coinPrice * 0.98);
+              ? formatPriceForHyperliquid(coinPrice * 1.02, szDec, false)
+              : formatPriceForHyperliquid(coinPrice * 0.98, szDec, false);
 
             if (parseFloat(formattedSz) > 0) {
               console.log(`[${uid}] 🚀 TWO-WAY FUTURES ENGINE: Executing ${marginMode} ${effectiveLeverage}x ${targetSide} on ${coin} (Size: ${formattedSz}, Notional: ~$${notionalUsd.toFixed(2)} USD, Margin: ~$${marginUsd.toFixed(2)} USDC @ limit ${limitPx})...`);
@@ -1667,7 +1697,7 @@ async function executeBotTick(uid, db, config, botSecret) {
             ? resolvedMarket.szDecimals 
             : (szDecimalsMap.get(coin) !== undefined ? szDecimalsMap.get(coin) : 2);
           const formattedSz = formatSizeForHyperliquid(heldBalance, szDec);
-          const limitPx = formatPriceForHyperliquid(coinPrice * 0.99);
+          const limitPx = formatPriceForHyperliquid(coinPrice * 0.99, szDec, true);
 
           if (parseFloat(formattedSz) > 0) {
             const sellResult = await placeAgentOrder({
@@ -1752,7 +1782,7 @@ async function executeBotTick(uid, db, config, botSecret) {
           formattedSz = minStep.toFixed(szDec);
         }
 
-        const limitPx = formatPriceForHyperliquid(coinPrice * 1.02); // 2% market buy slippage cap
+        const limitPx = formatPriceForHyperliquid(coinPrice * 1.02, szDec, true); // 2% market buy slippage cap
         const assetIdx = resolvedMarket ? resolvedMarket.l1AssetIndex : (assetIndexMap.get(coin) || 10000);
 
         if (parseFloat(formattedSz) > 0) {
