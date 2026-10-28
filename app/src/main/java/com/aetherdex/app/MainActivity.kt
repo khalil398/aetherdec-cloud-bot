@@ -4930,12 +4930,14 @@ class MainActivity : AppCompatActivity(),
         val currentPos = activePositions.find {
             (!it.isDemo || isDemoModeActive) && (it.symbol.replace("/", "").uppercase(java.util.Locale.US) == currentPairClean)
         }
-        if (currentPos != null && currentPos.tp > 0 && currentPos.sl > 0) {
+        if (currentPos != null && (currentPos.tp > 0 || currentPos.sl > 0)) {
+            val notional = if (currentPos.positionSizeUsdc > 0) currentPos.positionSizeUsdc else (currentPos.margin * currentPos.leverage)
             botChartFrag.setExplicitRiskLevels(
                 currentPos.entryPrice,
                 currentPos.sl,
                 currentPos.tp,
-                currentPos.isLong
+                currentPos.isLong,
+                notional
             )
         } else {
             botChartFrag.clearExplicitRiskLevels()
@@ -5867,6 +5869,10 @@ class MainActivity : AppCompatActivity(),
 
                     val assetPositions = response.optJSONArray("assetPositions")
                     if (assetPositions != null && !isDemoModeActive) {
+                        val openOrders = try {
+                            HyperliquidOrderManager.fetchFrontendOpenOrders(userAddress)
+                        } catch (_: Exception) { null }
+
                         val livePositions = mutableListOf<Position>()
                         for (i in 0 until assetPositions.length()) {
                             val item = assetPositions.optJSONObject(i) ?: continue
@@ -5882,8 +5888,45 @@ class MainActivity : AppCompatActivity(),
                                 val coinSymbol = "$coin/USDC"
 
                                 val existing = activePositions.find { it.symbol == coinSymbol || it.symbol.startsWith(coin) }
-                                val tp = existing?.tp ?: 0.0
-                                val sl = existing?.sl ?: 0.0
+                                var tp = existing?.tp ?: 0.0
+                                var sl = existing?.sl ?: 0.0
+
+                                // Query native on-chain TP/SL trigger orders from Hyperliquid
+                                if (openOrders != null) {
+                                    var foundNativeTp = 0.0
+                                    var foundNativeSl = 0.0
+                                    for (j in 0 until openOrders.length()) {
+                                        val ord = openOrders.optJSONObject(j) ?: continue
+                                        val ordCoin = ord.optString("coin", "")
+                                        if (!ordCoin.equals(coin, ignoreCase = true)) continue
+
+                                        val ordType = ord.optString("orderType", "")
+                                        val trigCond = ord.optString("triggerCondition", "")
+                                        val tpsl = ord.optString("tpsl", "")
+                                        val trigPxStr = ord.optString("triggerPx", "").ifBlank { ord.optString("limitPx", "0.0") }
+                                        val trigPx = trigPxStr.toDoubleOrNull() ?: 0.0
+
+                                        if (trigPx > 0.0) {
+                                            val isTpOrder = tpsl.equals("tp", ignoreCase = true) ||
+                                                    ordType.contains("Take Profit", ignoreCase = true) ||
+                                                    trigCond.contains("Take Profit", ignoreCase = true) ||
+                                                    (if (isLong) trigPx > entryPx else (trigPx < entryPx && !ordType.contains("Stop", ignoreCase = true)))
+
+                                            val isSlOrder = tpsl.equals("sl", ignoreCase = true) ||
+                                                    ordType.contains("Stop", ignoreCase = true) ||
+                                                    trigCond.contains("Stop", ignoreCase = true) ||
+                                                    (if (isLong) trigPx < entryPx else (trigPx > entryPx && !ordType.contains("Take Profit", ignoreCase = true)))
+
+                                            if (isTpOrder && foundNativeTp == 0.0) {
+                                                foundNativeTp = trigPx
+                                            } else if (isSlOrder && foundNativeSl == 0.0) {
+                                                foundNativeSl = trigPx
+                                            }
+                                        }
+                                    }
+                                    if (foundNativeTp > 0.0) tp = foundNativeTp
+                                    if (foundNativeSl > 0.0) sl = foundNativeSl
+                                }
 
                                 livePositions.add(
                                     Position(
@@ -6911,6 +6954,7 @@ class MainActivity : AppCompatActivity(),
                     activePositions[index] = activePositions[index].copy(tp = newTp, sl = newSl)
                     saveDemoTradingState()
                     updatePositionsListUi()
+                    syncCurrentPositionRiskToChart()
                     snackString("TP/SL updated for ${pos.symbol}")
                 }
                 dialog.dismiss()

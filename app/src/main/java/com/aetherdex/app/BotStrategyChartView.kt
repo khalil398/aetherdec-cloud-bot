@@ -304,12 +304,15 @@ class BotStrategyChartView @JvmOverloads constructor(
         private set
     var explicitIsLong: Boolean? = null
         private set
+    var explicitPositionSizeUsd: Double = 0.0
+        private set
 
-    fun setExplicitPositionRiskLevels(entryPrice: Double, sl: Double, tp: Double, isLong: Boolean) {
+    fun setExplicitPositionRiskLevels(entryPrice: Double, sl: Double, tp: Double, isLong: Boolean, positionSizeUsd: Double = 0.0) {
         explicitEntryPrice = entryPrice
         explicitStopLoss = sl
         explicitTakeProfit = tp
         explicitIsLong = isLong
+        explicitPositionSizeUsd = positionSizeUsd
         postInvalidate()
     }
 
@@ -318,6 +321,7 @@ class BotStrategyChartView @JvmOverloads constructor(
         explicitStopLoss = 0.0
         explicitTakeProfit = 0.0
         explicitIsLong = null
+        explicitPositionSizeUsd = 0.0
         postInvalidate()
     }
 
@@ -1994,21 +1998,60 @@ class BotStrategyChartView @JvmOverloads constructor(
                         candles[lastDualRibbonSigIdx].close
                     } else 0.0
 
-                    // Calculate projected Profit & Loss in dollar terms based on Futures Balance & Leverage
-                    val estProfit = if (entryPrice > 0.0 && currentBalance > 0.0 && currentLeverage > 0) {
-                        val pnlRatio = if (isLong) (tp - entryPrice) / entryPrice else (entryPrice - tp) / entryPrice
-                        (pnlRatio * currentBalance * currentLeverage).coerceAtLeast(0.0)
-                    } else 0.0
-
-                    val estLoss = if (entryPrice > 0.0 && currentBalance > 0.0 && currentLeverage > 0) {
-                        val pnlRatio = if (isLong) (entryPrice - sl) / entryPrice else (sl - entryPrice) / entryPrice
-                        (pnlRatio * currentBalance * currentLeverage).coerceAtLeast(0.0)
-                    } else 0.0
-
-                    val balLabel = if (currentBalance > 0.0) {
-                        String.format(Locale.US, "Bal: $%.2f (%dx)", currentBalance, currentLeverage)
+                    // Calculate projected Profit & Loss in dollar terms based on actual Notional Position Size ($Size * |ΔP| / Entry)
+                    val effectiveNotionalSize = if (hasExplicitRisk && explicitPositionSizeUsd > 0.0) {
+                        explicitPositionSizeUsd
                     } else {
-                        String.format(Locale.US, "Bal: $0.00 (%dx)", currentLeverage)
+                        // Fallback: Check if an active position exists in preferences for this symbol
+                        val savedNotional = try {
+                            val prefs = context.getSharedPreferences("aetherdex_prefs", Context.MODE_PRIVATE)
+                            val activePosJson = prefs.getString("active_positions_json", null)
+                            var foundSz = 0.0
+                            if (!activePosJson.isNullOrBlank()) {
+                                val arr = org.json.JSONArray(activePosJson)
+                                for (i in 0 until arr.length()) {
+                                    val obj = arr.optJSONObject(i) ?: continue
+                                    val posSzUsd = obj.optDouble("positionSizeUsdc", 0.0)
+                                    val m = obj.optDouble("margin", 0.0)
+                                    val l = obj.optInt("leverage", currentLeverage)
+                                    val sz = if (posSzUsd > 0.0) posSzUsd else (m * l)
+                                    if (sz > 0.0) {
+                                        foundSz = sz
+                                        val sym = obj.optString("symbol", "").replace("/", "").uppercase(Locale.US)
+                                        if (sym.contains("BTC")) {
+                                            break
+                                        }
+                                    }
+                                }
+                            }
+                            foundSz
+                        } catch (_: Exception) { 0.0 }
+
+                        if (savedNotional > 0.0) {
+                            savedNotional
+                        } else {
+                            val prefs = context.getSharedPreferences("aetherdex_prefs", Context.MODE_PRIVATE)
+                            val hlBal = prefs.getFloat("hyperliquid_l1_balance", 0.0f).toDouble()
+                            val totalBal = if (hlBal > 0.0) hlBal else currentBalance
+                            (totalBal * currentLeverage).coerceAtLeast(0.0)
+                        }
+                    }
+
+                    val pnlRatioProfit = if (entryPrice > 0.0) {
+                        (if (isLong) (tp - entryPrice) / entryPrice else (entryPrice - tp) / entryPrice).coerceAtLeast(0.0)
+                    } else 0.0
+
+                    val pnlRatioLoss = if (entryPrice > 0.0) {
+                        (if (isLong) (entryPrice - sl) / entryPrice else (sl - entryPrice) / entryPrice).coerceAtLeast(0.0)
+                    } else 0.0
+
+                    val estProfit = (effectiveNotionalSize * pnlRatioProfit).coerceAtLeast(0.0)
+                    val estLoss = (effectiveNotionalSize * pnlRatioLoss).coerceAtLeast(0.0)
+
+                    val balLabel = if (effectiveNotionalSize > 0.0) {
+                        String.format(Locale.US, "Size: $%.2f (%dx)", effectiveNotionalSize, currentLeverage)
+                    } else {
+                        String.format(Locale.US, "Bal: $%.2f (%dx)", currentBalance, currentLeverage)
                     }
 
                     val profitStr = if (estProfit > 0.0) {

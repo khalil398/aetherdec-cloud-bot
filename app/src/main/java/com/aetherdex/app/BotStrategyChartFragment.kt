@@ -1174,9 +1174,9 @@ class BotStrategyChartFragment : Fragment() {
         }
     }
 
-    fun setExplicitRiskLevels(entryPrice: Double, sl: Double, tp: Double, isLong: Boolean) {
+    fun setExplicitRiskLevels(entryPrice: Double, sl: Double, tp: Double, isLong: Boolean, positionSizeUsd: Double = 0.0) {
         if (::botChartView.isInitialized) {
-            botChartView.setExplicitPositionRiskLevels(entryPrice, sl, tp, isLong)
+            botChartView.setExplicitPositionRiskLevels(entryPrice, sl, tp, isLong, positionSizeUsd)
         }
     }
 
