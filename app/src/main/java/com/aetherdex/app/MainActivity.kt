@@ -4475,8 +4475,9 @@ class MainActivity : AppCompatActivity(),
         val direction = if (::btnShort.isInitialized && btnShort.isChecked && !btnLong.isChecked) "SHORT" else "LONG"
         val marginMode = if (marginModeIsolated) "ISOLATED" else "CROSS"
 
-        val effectiveSpotActive = if (isSpotMode && isActiveState != null) isActiveState else isSpotBotActive
-        val effectiveFuturesActive = if (isActiveState == true) true else (if (!isSpotMode && isActiveState != null) isActiveState else isFuturesBotActive)
+        val effectiveSpotActive = if (isActiveState == false && isSpotMode) false else (if (isSpotMode && isActiveState != null) isActiveState else isSpotBotActive)
+        val effectiveFuturesActive = if (isActiveState == false && !isSpotMode) false else (if (isActiveState == true) true else (if (!isSpotMode && isActiveState != null) isActiveState else isFuturesBotActive))
+        val isAnyActive = if (isActiveState == false && (!effectiveSpotActive || isSpotMode) && (!effectiveFuturesActive || !isSpotMode)) false else (effectiveSpotActive || effectiveFuturesActive)
 
         val internalAddr = EmbeddedWalletManager.getActiveEvmAddress(this)
         val wcAddr = connectedAddress ?: WalletConnectionManager.getPersistedSession()?.address
@@ -4484,7 +4485,7 @@ class MainActivity : AppCompatActivity(),
 
         FirebaseSyncManager.syncBotConfigToFirestore(
             context = this,
-            active = effectiveSpotActive || effectiveFuturesActive,
+            active = isAnyActive,
             strategy = if (isSpotMode) spotBotStrategy else futuresBotStrategy,
             allocationPct = if (isSpotMode) spotBotAllocationPct else futuresBotAllocationPct,
             targetCoin = currentDisplaySymbol,
@@ -4727,6 +4728,16 @@ class MainActivity : AppCompatActivity(),
         } else {
             tvBotStatusBadge.text = "● IDLE (Disabled)"
             tvBotStatusBadge.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+        }
+
+        // Keep toggle switch visually synchronized with active status to prevent UI desync
+        if (::switchBotActive.isInitialized && switchBotActive.isChecked != isCurrentlyActive) {
+            isUpdatingBotUiProgrammatically = true
+            try {
+                switchBotActive.isChecked = isCurrentlyActive
+            } finally {
+                isUpdatingBotUiProgrammatically = false
+            }
         }
 
         val activeTrades = if (isSpotMode) spotBotActiveTradesCount else futuresBotActiveTradesCount

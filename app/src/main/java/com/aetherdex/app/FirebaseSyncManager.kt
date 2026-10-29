@@ -214,7 +214,7 @@ object FirebaseSyncManager {
                 currentEnabled.add(cleanTarget)
             }
             val enabledAssetsList = currentEnabled.toList()
-            val isAnyActive = isSpotBotActive || isFuturesBotActive || active
+            val isAnyActive = (isSpotBotActive || isFuturesBotActive) && active
 
             val finalSpotStrats = if (spotStrategies.isNotEmpty()) spotStrategies else (if (spotStrategy.contains(",")) spotStrategy.split(",").map { it.trim() } else listOf(spotStrategy))
             val finalFuturesStrats = if (futuresStrategies.isNotEmpty()) futuresStrategies else (if (futuresStrategy.contains(",")) futuresStrategy.split(",").map { it.trim() } else listOf(futuresStrategy))
