@@ -885,23 +885,78 @@ async function executeBotTick(uid, db, config, botSecret) {
   await syncUserFillsToFirestore(db, masterAddress, writeStatusTargets);
 
   // 1. Decoupled Market Activation States - Evaluated FIRST before any network calls
-  const isSpotActive = config.is_spot_bot_active !== undefined
-    ? Boolean(config.is_spot_bot_active)
-    : (config.spot_active !== undefined
-      ? Boolean(config.spot_active)
-      : (config.market_type === "SPOT" ? Boolean(config.active) : false));
+  const isFuturesExplicitlyDisabled = 
+    config.is_futures_bot_active === false || 
+    config.futures_active === false || 
+    config.futures_config?.active === false ||
+    config.futures_config?.is_futures_bot_active === false ||
+    config.active === false;
 
-  const isFuturesActive = config.is_futures_bot_active !== undefined
-    ? Boolean(config.is_futures_bot_active)
-    : (config.futures_active !== undefined
-      ? Boolean(config.futures_active)
-      : (config.market_type === "PERP" || config.market_type === "FUTURES" || config.is_spot === false ? Boolean(config.active) : false));
+  const isFuturesActive = !isFuturesExplicitlyDisabled && Boolean(
+    config.is_futures_bot_active ||
+    config.futures_active ||
+    config.futures_config?.active ||
+    config.futures_config?.is_futures_bot_active ||
+    ((config.market_type === "PERP" || config.market_type === "FUTURES") && config.active)
+  );
+
+  const isSpotExplicitlyDisabled = 
+    config.is_spot_bot_active === false || 
+    config.spot_active === false || 
+    config.spot_config?.active === false ||
+    config.active === false;
+
+  const isSpotActive = !isSpotExplicitlyDisabled && Boolean(
+    config.is_spot_bot_active ||
+    config.spot_active ||
+    config.spot_config?.active ||
+    (config.market_type === "SPOT" && config.active)
+  );
 
   console.log(`[${uid}] ⚡ Bot Tick Evaluation: isSpotActive=${isSpotActive}, isFuturesActive=${isFuturesActive}`);
 
   if (!isSpotActive && !isFuturesActive) {
-    console.log(`[${uid}] ⏸️ Both Spot and Futures bot engines are INACTIVE. Skipping tick.`);
+    console.log(`[${uid}] 🛑 HARD-FAIL GUARD: Both Spot and Futures bot engines are INACTIVE (Disabled). Skipping tick.`);
+    await writeBotStatus({
+      status: "IDLE",
+      active: false,
+      is_futures_bot_active: false,
+      is_spot_bot_active: false,
+      active_trades: 0,
+      pnl_usd: 0.0,
+      updated_at: Date.now()
+    }, true);
     return;
+  }
+
+  // LIVE FIRESTORE FRESHNESS GUARD:
+  // Directly verify live Firestore configuration to guarantee that a user toggle-off
+  // immediately halts trading, even if an in-memory worker interval has not yet re-read state.
+  if (db && masterAddress) {
+    try {
+      const targets = Array.from(new Set([masterAddress, masterAddress.toLowerCase(), uid])).filter(Boolean);
+      for (const t of targets) {
+        const snap = await db.doc(`users/${t}/bot/bot_config`).get();
+        if (snap.exists) {
+          const liveData = snap.data();
+          if (liveData) {
+            const liveFuturesDisabled = 
+              liveData.is_futures_bot_active === false || 
+              liveData.futures_active === false || 
+              liveData.active === false ||
+              liveData.futures_config?.active === false ||
+              liveData.futures_config?.is_futures_bot_active === false;
+            
+            if (liveFuturesDisabled && isFuturesActive) {
+              console.log(`[${uid}] 🛑 LIVE FIRESTORE GUARD: Live bot_config under users/${t}/bot/bot_config is DISABLED (active=${liveData.active}, futures=${liveData.is_futures_bot_active}). Aborting tick.`);
+              return;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn(`[${uid}] Live Firestore guard warning:`, e.message);
+    }
   }
 
   console.log(`[${uid}] ⚡ Running Engine (Master Wallet: ${masterAddress}, Strategy: '${config.strategy || config.futures_strategy || '5m Dual-Ribbon'}', Alloc: ${config.allocation_pct || config.futures_allocation_pct || 25}%)...`);
@@ -1525,6 +1580,27 @@ async function executeBotTick(uid, db, config, botSecret) {
               : formatPriceForHyperliquid(coinPrice * 0.98, szDec, false);
 
             if (parseFloat(formattedSz) > 0) {
+              // STRICT PRE-ORDER ASSERTION: Verify futures bot is actively enabled
+              if (!isFuturesActive) {
+                console.error(`[${uid}] ⛔ CRITICAL SECURITY GUARD: Attempted to place Futures ${targetSide} on ${coin} while isFuturesActive=false! Order BLOCKED.`);
+                return;
+              }
+
+              // Live Firestore check immediately before order signature/dispatch
+              if (db && masterAddress) {
+                try {
+                  const checkRef = db.doc(`users/${masterAddress}/bot/bot_config`);
+                  const checkSnap = await checkRef.get();
+                  if (checkSnap.exists) {
+                    const d = checkSnap.data();
+                    if (d && (d.is_futures_bot_active === false || d.futures_active === false || d.active === false)) {
+                      console.error(`[${uid}] ⛔ CRITICAL PRE-ORDER GUARD: Live Firestore shows Futures is DISABLED for ${masterAddress}! Order BLOCKED.`);
+                      return;
+                    }
+                  }
+                } catch (_) {}
+              }
+
               console.log(`[${uid}] 🚀 TWO-WAY FUTURES ENGINE: Executing ${marginMode} ${effectiveLeverage}x ${targetSide} on ${coin} (Size: ${formattedSz}, Notional: ~$${notionalUsd.toFixed(2)} USD, Margin: ~$${marginUsd.toFixed(2)} USDC @ limit ${limitPx})...`);
 
               try {

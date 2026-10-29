@@ -81,32 +81,42 @@ if (admin.apps.length > 0) {
       config.walletAddress = walletAddress;
     }
 
-    const isSpotActive = Boolean(
+    const isFuturesExplicitlyDisabled = 
+      config.is_futures_bot_active === false || 
+      config.futures_active === false || 
+      config.futures_config?.active === false ||
+      config.futures_config?.is_futures_bot_active === false ||
+      config.active === false;
+
+    const isFuturesActive = !isFuturesExplicitlyDisabled && Boolean(
+      config.is_futures_bot_active ||
+      config.futures_active ||
+      config.futures_config?.active ||
+      config.futures_config?.is_futures_bot_active ||
+      ((config.market_type === "PERP" || config.market_type === "FUTURES") && config.active)
+    );
+
+    const isSpotExplicitlyDisabled = 
+      config.is_spot_bot_active === false || 
+      config.spot_active === false || 
+      config.spot_config?.active === false ||
+      config.active === false;
+
+    const isSpotActive = !isSpotExplicitlyDisabled && Boolean(
       config.is_spot_bot_active ||
       config.spot_active ||
       config.spot_config?.active ||
       (config.market_type === "SPOT" && config.active)
     );
 
-    const isFuturesActive = Boolean(
-      config.is_futures_bot_active ||
-      config.futures_active ||
-      config.futures_config?.active ||
-      ((config.market_type === "PERP" || config.market_type === "FUTURES") && config.active) ||
-      (config.active && (
-        String(config.strategy || "").toLowerCase().includes("dual-ribbon") ||
-        String(config.futures_strategy || "").toLowerCase().includes("dual-ribbon") ||
-        (Array.isArray(config.strategies) && config.strategies.some(s => String(s).toLowerCase().includes("dual-ribbon"))) ||
-        (Array.isArray(config.futures_strategies) && config.futures_strategies.some(s => String(s).toLowerCase().includes("dual-ribbon")))
-      ))
-    );
-
-    const isAnyActive = isSpotActive || isFuturesActive || config.active === true;
+    const isAnyActive = (isSpotActive || isFuturesActive) && config.active !== false;
 
     console.log(`🔔 Bot config update for UID [${uid}] (Wallet: ${walletAddress || "N/A"}): spotActive=${isSpotActive}, futuresActive=${isFuturesActive}, anyActive=${isAnyActive}`);
 
     // Map to a consolidated worker key (prefer lowercase wallet address)
-    const workerKey = walletAddress ? walletAddress.toLowerCase() : uid;
+    const workerKey = (walletAddress && walletAddress.startsWith("0x"))
+      ? walletAddress.toLowerCase()
+      : (uid.startsWith("0x") ? uid.toLowerCase() : uid);
 
     if (isAnyActive) {
       if (activeEngines.has(workerKey)) {
@@ -117,7 +127,7 @@ if (admin.apps.length > 0) {
       }
       startWorker(workerKey, db, config, uid, walletAddress);
     } else {
-      stopWorker(workerKey);
+      stopWorker(workerKey, walletAddress || uid);
     }
   };
 
@@ -149,7 +159,7 @@ async function startWorker(workerKey, db, config, uid, walletAddress) {
   pendingWorkerStarts.add(workerKey);
 
   try {
-    stopWorker(workerKey);
+    stopWorker(workerKey, walletAddress || uid);
 
     // Multi-path lookup for restricted Agent Key secret:
     // 1. users/${walletAddress}/bot/bot_secret
@@ -241,16 +251,24 @@ async function startWorker(workerKey, db, config, uid, walletAddress) {
   }
 }
 
-function stopWorker(workerKey) {
-  pendingWorkerStarts.delete(workerKey);
-  if (activeEngines.has(workerKey)) {
-    const worker = activeEngines.get(workerKey);
-    if (worker.intervalId) {
-      clearInterval(worker.intervalId);
+function stopWorker(targetKey, targetAddress = null) {
+  pendingWorkerStarts.delete(targetKey);
+  const cleanTarget = targetKey ? targetKey.toLowerCase() : "";
+  const cleanAddr = targetAddress ? targetAddress.toLowerCase() : cleanTarget;
+
+  const toDelete = [];
+  for (const [key, worker] of activeEngines.entries()) {
+    const k = key.toLowerCase();
+    const workerAddr = (worker.botSecret?.masterAddress || worker.config?.masterAddress || worker.config?.wallet_address || "").toLowerCase();
+    if (k === cleanTarget || (cleanAddr && (k === cleanAddr || workerAddr === cleanAddr))) {
+      if (worker.intervalId) {
+        clearInterval(worker.intervalId);
+      }
+      toDelete.push(key);
+      console.log(`⏸️ Worker engine permanently STOPPED for [${key}] (Wallet: ${workerAddr || k})`);
     }
-    activeEngines.delete(workerKey);
-    console.log(`⏸️ Worker engine paused for [${workerKey}]`);
   }
+  toDelete.forEach(k => activeEngines.delete(k));
 }
 
 app.listen(PORT, () => {
