@@ -1433,7 +1433,7 @@ async function executeBotTick(uid, db, config, botSecret) {
   const configuredLeverage = Math.max(1, Math.min(50, parseInt(futuresConfig.leverage || config.leverage) || 10));
   const marginMode = (futuresConfig.margin_mode || config.margin_mode || (config.is_isolated !== false ? "ISOLATED" : "CROSS")).toUpperCase();
   const isIsolated = marginMode === "ISOLATED" || futuresConfig.is_isolated === true || config.is_isolated === true;
-  const positionDirection = (futuresConfig.position_direction || config.position_direction || "LONG").toUpperCase();
+  const positionDirection = (futuresConfig.position_direction || config.position_direction || "TWO-WAY").toUpperCase();
 
   // =========================================================================
   // DUAL-MARKET ENGINE: 1. PERPETUAL FUTURES MODE
@@ -1789,7 +1789,9 @@ async function executeBotTick(uid, db, config, botSecret) {
 
       if (bestEntrySignal && perpBalance >= 1.0 && isFuturesActive) {
         const { coin, coinPrice, proximityScore, isBuySignal, isSellSignal, isCurrentAbove, market } = bestEntrySignal;
-        const isEnteringLong = isBuySignal || (!isSellSignal && proximityScore >= 100 && isCurrentAbove);
+        const isEnteringLong = (isAndeanActive || isDualRibbonActive)
+          ? isBuySignal
+          : (isBuySignal || (!isSellSignal && proximityScore >= 100 && isCurrentAbove));
 
         const targetSide = isEnteringLong ? "BUY/LONG" : "SELL/SHORT";
         const isOrderBuy = isEnteringLong;
@@ -1884,7 +1886,17 @@ async function executeBotTick(uid, db, config, botSecret) {
             const SAFE_MARGIN_RATIO = 0.95;
             const effectiveAllocPct = Math.min(futuresAllocPct || 25, 95) / 100.0;
             const marginUsd = perpBalance * effectiveAllocPct * SAFE_MARGIN_RATIO;
-            const notionalUsd = marginUsd * effectiveLeverage;
+            let notionalUsd = marginUsd * effectiveLeverage;
+
+            // Hyperliquid Minimum Order Notional Guard:
+            // Hyperliquid strictly enforces a minimum notional value of $10.00 USD per perp order.
+            // If the user's available margin supports at least $10.50 with leverage, ensure notionalUsd meets this threshold
+            // so small balances (like $12-$15) are not rejected by the exchange.
+            const minNotionalRequired = 10.5;
+            if (notionalUsd < minNotionalRequired && (perpBalance * SAFE_MARGIN_RATIO * effectiveLeverage) >= minNotionalRequired) {
+              notionalUsd = minNotionalRequired;
+            }
+
             const rawSize = notionalUsd / coinPrice;
             let formattedSz = formatSizeForHyperliquid(rawSize, szDec);
 
