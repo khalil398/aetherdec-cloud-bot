@@ -398,14 +398,18 @@ class BotStrategyChartFragment : Fragment() {
     }
 
     fun selectTimeframe(timeframe: String) {
+        if (!::botChartView.isInitialized) {
+            currentTimeframe = timeframe
+            return
+        }
         if (currentTimeframe == timeframe && botChartView.candles.isNotEmpty()) return
         currentTimeframe = timeframe
         botChartView.timeframeLabel = timeframe
         updateTimeframeButtonsUi()
         // ── Persist timeframe so it survives app restart ──
         try {
-            requireContext().getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
-                .edit().putString("bot_chart_timeframe", timeframe).apply()
+            context?.getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
+                ?.edit()?.putString("bot_chart_timeframe", timeframe)?.apply()
         } catch (_: Exception) { }
         fetchCandleHistory(currentPair, currentTimeframe)
         val hlCoin = getHyperliquidCoin(currentPair)
@@ -919,7 +923,7 @@ class BotStrategyChartFragment : Fragment() {
                         }
                         list.sortBy { it.timestamp }
                         withContext(Dispatchers.Main) {
-                            if (!isActive) return@withContext
+                            if (!isActive || !::botChartView.isInitialized || !isAdded) return@withContext
                             progressBar.visibility = View.GONE
                             botChartView.candles = list
                             if (list.isNotEmpty()) {
@@ -958,7 +962,7 @@ class BotStrategyChartFragment : Fragment() {
                             candleList.add(BotStrategyChartView.Candle(open, high, low, close, vol, timestamp))
                         }
                         withContext(Dispatchers.Main) {
-                            if (!isActive) return@withContext
+                            if (!isActive || !::botChartView.isInitialized || !isAdded) return@withContext
                             progressBar.visibility = View.GONE
                             botChartView.candles = candleList
                             if (candleList.isNotEmpty()) {
@@ -1163,17 +1167,25 @@ class BotStrategyChartFragment : Fragment() {
         // ── can restore reliably without depending on is_spot_mode timing         ──
         if (strategies.isNotEmpty()) {
             try {
-                requireContext().getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
-                    .edit().putStringSet("bot_chart_active_strategies", strategies).apply()
+                context?.getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
+                    ?.edit()?.putStringSet("bot_chart_active_strategies", strategies)?.apply()
             } catch (_: Exception) { }
         }
         if (strategies.any { it.contains("Andean", ignoreCase = true) || it.contains("1m", ignoreCase = true) }) {
             if (currentTimeframe != "1m") {
-                selectTimeframe("1m")
+                if (::botChartView.isInitialized) {
+                    selectTimeframe("1m")
+                } else {
+                    currentTimeframe = "1m"
+                }
             }
         } else if (strategies.any { it.contains("Dual-Ribbon", ignoreCase = true) || it.contains("5m", ignoreCase = true) }) {
             if (currentTimeframe != "5m") {
-                selectTimeframe("5m")
+                if (::botChartView.isInitialized) {
+                    selectTimeframe("5m")
+                } else {
+                    currentTimeframe = "5m"
+                }
             }
         }
     }
@@ -1210,8 +1222,9 @@ class BotStrategyChartFragment : Fragment() {
 
     private fun syncStrategiesFromPrefs() {
         if (!::botChartView.isInitialized) return
+        val ctx = context ?: return
         try {
-            val botPrefs = requireContext().getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
+            val botPrefs = ctx.getSharedPreferences("aetherdex_bot_prefs", Context.MODE_PRIVATE)
 
             // ── PRIORITY 1: Dedicated bot-chart key (written by updateActiveStrategies /
             //   saveBotPrefs). This is mode-independent and always reflects the user's

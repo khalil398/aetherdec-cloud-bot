@@ -1081,7 +1081,37 @@ class BotStrategyChartView @JvmOverloads constructor(
 
     private fun recalculateIndicators() {
         val n = candles.size
-        if (n == 0) return
+        if (n < 5) {
+            ema8HighSeries = DoubleArray(0)
+            ema8LowSeries = DoubleArray(0)
+            ema34HighSeries = DoubleArray(0)
+            ema34LowSeries = DoubleArray(0)
+            ema200Series = DoubleArray(0)
+            ema233Series = DoubleArray(0)
+            rsiSeries = DoubleArray(0)
+            rsiMaSeries = DoubleArray(0)
+            ema7Series = DoubleArray(0)
+            ema30Series = DoubleArray(0)
+            andeanBullSeries = DoubleArray(0)
+            andeanBearSeries = DoubleArray(0)
+            andeanSignalSeries = DoubleArray(0)
+            andeanSignals = IntArray(0)
+            andeanSlSeries = DoubleArray(0)
+            andeanTpSeries = DoubleArray(0)
+            andeanEntrySeries = DoubleArray(0)
+            ema134HighSeries = DoubleArray(0)
+            ema134LowSeries = DoubleArray(0)
+            kryptEmaSeries = emptyList()
+            dualRibbonSignals = IntArray(0)
+            dualRibbonSlSeries = DoubleArray(0)
+            dualRibbonTpSeries = DoubleArray(0)
+            dualRibbonEntrySeries = DoubleArray(0)
+            signalSeries = IntArray(0)
+            fractalLevels = emptyList()
+            marketSwings = emptyList()
+            chochSignals = IntArray(0)
+            return
+        }
 
         val opens = DoubleArray(n) { candles[it].open }
         val highs = DoubleArray(n) { candles[it].high }
@@ -1103,157 +1133,162 @@ class BotStrategyChartView @JvmOverloads constructor(
         ema7Series = calculateEMA(closes, 7)
         ema30Series = calculateEMA(closes, 30)
 
-        // Andean Oscillator (length = 50, sig_length = 9)
-        val andeanAlpha = 2.0 / (50.0 + 1.0)
+        // Andean Oscillator (length = 50, sig_length = 9) requires at least 50 candles
         andeanBullSeries = DoubleArray(n)
         andeanBearSeries = DoubleArray(n)
-        val compMax = DoubleArray(n)
-
-        var up1 = 0.0
-        var up2 = 0.0
-        var dn1 = 0.0
-        var dn2 = 0.0
-
-        for (i in 0 until n) {
-            val c = closes[i]
-            val o = opens[i]
-
-            if (i == 0) {
-                up1 = max(c, o)
-                up2 = max(c * c, o * o)
-                dn1 = min(c, o)
-                dn2 = min(c * c, o * o)
-            } else {
-                up1 = max(c, max(o, up1 - (up1 - c) * andeanAlpha))
-                up2 = max(c * c, max(o * o, up2 - (up2 - c * c) * andeanAlpha))
-                dn1 = min(c, min(o, dn1 + (c - dn1) * andeanAlpha))
-                dn2 = min(c * c, min(o * o, dn2 + (c * c - dn2) * andeanAlpha))
-            }
-
-            val b1 = sqrt(max(0.0, dn2 - dn1 * dn1))
-            val b2 = sqrt(max(0.0, up2 - up1 * up1))
-            andeanBullSeries[i] = b1
-            andeanBearSeries[i] = b2
-            compMax[i] = max(b1, b2)
-        }
-        andeanSignalSeries = calculateEMA(compMax, 9)
-
+        andeanSignalSeries = DoubleArray(n)
         andeanSignals = IntArray(n)
         andeanSlSeries = DoubleArray(n)
         andeanTpSeries = DoubleArray(n)
         andeanEntrySeries = DoubleArray(n)
 
-        var andeanPosState = 0 // 0 = NEUTRAL, 1 = IN_LONG, -1 = IN_SHORT
-        var lastEmaBullCross = -999
-        var lastEmaBearCross = -999
-        var lastAndeanBullCross = -999
-        var lastAndeanBearCross = -999
+        if (n >= 50) {
+            val andeanAlpha = 2.0 / (50.0 + 1.0)
+            val compMax = DoubleArray(n)
 
-        for (i in 1 until n) {
-            val c = closes[i]
-            val e7 = ema7Series[i]
-            val e30 = ema30Series[i]
-            val prevE7 = ema7Series[i - 1]
-            val prevE30 = ema30Series[i - 1]
+            var up1 = 0.0
+            var up2 = 0.0
+            var dn1 = 0.0
+            var dn2 = 0.0
 
-            val bull = andeanBullSeries[i]
-            val bear = andeanBearSeries[i]
-            val prevBull = andeanBullSeries[i - 1]
-            val prevBear = andeanBearSeries[i - 1]
+            for (i in 0 until n) {
+                val c = closes[i]
+                val o = opens[i]
 
-            val e200 = if (i < ema200Series.size) ema200Series[i] else 0.0
-            val e233 = if (i < ema233Series.size) ema233Series[i] else e200
-            val baselineMin = min(e200, e233)
-            val baselineMax = max(e200, e233)
+                if (i == 0) {
+                    up1 = max(c, o)
+                    up2 = max(c * c, o * o)
+                    dn1 = min(c, o)
+                    dn2 = min(c * c, o * o)
+                } else {
+                    up1 = max(c, max(o, up1 - (up1 - c) * andeanAlpha))
+                    up2 = max(c * c, max(o * o, up2 - (up2 - c * c) * andeanAlpha))
+                    dn1 = min(c, min(o, dn1 + (c - dn1) * andeanAlpha))
+                    dn2 = min(c * c, min(o * o, dn2 + (c * c - dn2) * andeanAlpha))
+                }
 
-            val isEmaBullCross = (e7 > e30 && prevE7 <= prevE30)
-            val isEmaBearCross = (e7 < e30 && prevE7 >= prevE30)
-            val isAndeanBullCross = (bull > bear && prevBull <= prevBear)
-            val isAndeanBearCross = (bear > bull && prevBear <= prevBull)
-
-            if (isEmaBullCross) {
-                lastEmaBullCross = i
-                lastEmaBearCross = -999
+                val b1 = sqrt(max(0.0, dn2 - dn1 * dn1))
+                val b2 = sqrt(max(0.0, up2 - up1 * up1))
+                andeanBullSeries[i] = b1
+                andeanBearSeries[i] = b2
+                compMax[i] = max(b1, b2)
             }
-            if (isEmaBearCross) {
-                lastEmaBearCross = i
-                lastEmaBullCross = -999
-            }
-            if (isAndeanBullCross) {
-                lastAndeanBullCross = i
-                lastAndeanBearCross = -999
-            }
-            if (isAndeanBearCross) {
-                lastAndeanBearCross = i
-                lastAndeanBullCross = -999
-            }
+            andeanSignalSeries = calculateEMA(compMax, 9)
 
-            // Exits for active position:
-            if (andeanPosState == -1) {
-                // In SHORT: Exit when EMA 7 crosses above 30 AND Andean red crosses below green within <= 3 candles
-                val diffExit = abs(lastEmaBullCross - lastAndeanBullCross)
-                val exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 3
-                if (exitTriggeredNow) {
-                    andeanSignals[i] = -2 // EXIT SHORT
-                    andeanPosState = 0
+            var andeanPosState = 0 // 0 = NEUTRAL, 1 = IN_LONG, -1 = IN_SHORT
+            var lastEmaBullCross = -999
+            var lastEmaBearCross = -999
+            var lastAndeanBullCross = -999
+            var lastAndeanBearCross = -999
+
+            for (i in 1 until n) {
+                val c = closes[i]
+                val e7 = ema7Series[i]
+                val e30 = ema30Series[i]
+                val prevE7 = ema7Series[i - 1]
+                val prevE30 = ema30Series[i - 1]
+
+                val bull = andeanBullSeries[i]
+                val bear = andeanBearSeries[i]
+                val prevBull = andeanBullSeries[i - 1]
+                val prevBear = andeanBearSeries[i - 1]
+
+                // Trend baseline filter (EMA 200 & EMA 233) - only enforce when sufficient candles exist
+                val hasBaseline = (n >= 200 && i in ema200Series.indices && ema200Series[i] > 0.0)
+                val e200 = if (hasBaseline) ema200Series[i] else 0.0
+                val e233 = if (n >= 233 && i in ema233Series.indices && ema233Series[i] > 0.0) ema233Series[i] else e200
+                val baselineMin = min(e200, e233)
+                val baselineMax = max(e200, e233)
+
+                val isEmaBullCross = (e7 > e30 && prevE7 <= prevE30)
+                val isEmaBearCross = (e7 < e30 && prevE7 >= prevE30)
+                val isAndeanBullCross = (bull > bear && prevBull <= prevBear)
+                val isAndeanBearCross = (bear > bull && prevBear <= prevBull)
+
+                if (isEmaBullCross) {
+                    lastEmaBullCross = i
+                    lastEmaBearCross = -999
+                }
+                if (isEmaBearCross) {
+                    lastEmaBearCross = i
                     lastEmaBullCross = -999
+                }
+                if (isAndeanBullCross) {
+                    lastAndeanBullCross = i
+                    lastAndeanBearCross = -999
+                }
+                if (isAndeanBearCross) {
+                    lastAndeanBearCross = i
                     lastAndeanBullCross = -999
                 }
-            } else if (andeanPosState == 1) {
-                // In LONG: Exit when EMA 7 crosses below 30 AND Andean bull crosses below bear within <= 3 candles
-                val diffExit = abs(lastEmaBearCross - lastAndeanBearCross)
-                val exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 3
-                if (exitTriggeredNow) {
-                    andeanSignals[i] = 2 // EXIT LONG
-                    andeanPosState = 0
-                    lastEmaBearCross = -999
-                    lastAndeanBearCross = -999
-                }
-            }
 
-            // Entries if NEUTRAL:
-            if (andeanPosState == 0) {
-                // SHORT: Below EMA 200 & 233 channel and dual bearish cross within <= 3 candles
-                val diffShort = abs(lastEmaBearCross - lastAndeanBearCross)
-                val shortTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffShort <= 3
-                val isBelowBaseline = (baselineMin <= 0.0 || c < baselineMin)
-
-                if (shortTriggeredNow && isBelowBaseline) {
-                    andeanSignals[i] = -1 // SELL/SHORT ENTRY
-                    andeanPosState = -1
-                    lastEmaBearCross = -999
-                    lastAndeanBearCross = -999
-
-                    val recentHigh = (max(0, i - 10)..i).maxOf { highs[it] }
-                    var sl = max(recentHigh, e30 * 1.002)
-                    val risk = max(sl - c, c * 0.005)
-                    sl = c + risk
-                    val tp = c - (risk * 2.0)
-
-                    andeanEntrySeries[i] = c
-                    andeanSlSeries[i] = sl
-                    andeanTpSeries[i] = tp
-                } else {
-                    // LONG: Above EMA 200 & 233 channel and dual bullish cross within <= 3 candles
-                    val diffLong = abs(lastEmaBullCross - lastAndeanBullCross)
-                    val longTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffLong <= 3
-                    val isAboveBaseline = (baselineMax <= 0.0 || c > baselineMax)
-
-                    if (longTriggeredNow && isAboveBaseline) {
-                        andeanSignals[i] = 1 // BUY/LONG ENTRY
-                        andeanPosState = 1
+                // Exits for active position:
+                if (andeanPosState == -1) {
+                    // In SHORT: Exit when EMA 7 crosses above 30 AND Andean red crosses below green within <= 3 candles
+                    val diffExit = abs(lastEmaBullCross - lastAndeanBullCross)
+                    val exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 3
+                    if (exitTriggeredNow) {
+                        andeanSignals[i] = -2 // EXIT SHORT
+                        andeanPosState = 0
                         lastEmaBullCross = -999
                         lastAndeanBullCross = -999
+                    }
+                } else if (andeanPosState == 1) {
+                    // In LONG: Exit when EMA 7 crosses below 30 AND Andean bull crosses below bear within <= 3 candles
+                    val diffExit = abs(lastEmaBearCross - lastAndeanBearCross)
+                    val exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 3
+                    if (exitTriggeredNow) {
+                        andeanSignals[i] = 2 // EXIT LONG
+                        andeanPosState = 0
+                        lastEmaBearCross = -999
+                        lastAndeanBearCross = -999
+                    }
+                }
 
-                        val recentLow = (max(0, i - 10)..i).minOf { lows[it] }
-                        var sl = min(recentLow, e30 * 0.998)
-                        val risk = max(c - sl, c * 0.005)
-                        sl = c - risk
-                        val tp = c + (risk * 2.0)
+                // Entries if NEUTRAL:
+                if (andeanPosState == 0) {
+                    // SHORT: Below EMA 200 & 233 channel and dual bearish cross within <= 3 candles
+                    val diffShort = abs(lastEmaBearCross - lastAndeanBearCross)
+                    val shortTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffShort <= 3
+                    val isBelowBaseline = (!hasBaseline || baselineMin <= 0.0 || c < baselineMin)
+
+                    if (shortTriggeredNow && isBelowBaseline) {
+                        andeanSignals[i] = -1 // SELL/SHORT ENTRY
+                        andeanPosState = -1
+                        lastEmaBearCross = -999
+                        lastAndeanBearCross = -999
+
+                        val recentHigh = (max(0, i - 10)..i).maxOf { highs[it] }
+                        var sl = max(recentHigh, e30 * 1.002)
+                        val risk = max(sl - c, c * 0.005)
+                        sl = c + risk
+                        val tp = c - (risk * 2.0)
 
                         andeanEntrySeries[i] = c
                         andeanSlSeries[i] = sl
                         andeanTpSeries[i] = tp
+                    } else {
+                        // LONG: Above EMA 200 & 233 channel and dual bullish cross within <= 3 candles
+                        val diffLong = abs(lastEmaBullCross - lastAndeanBullCross)
+                        val longTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffLong <= 3
+                        val isAboveBaseline = (!hasBaseline || baselineMax <= 0.0 || c > baselineMax)
+
+                        if (longTriggeredNow && isAboveBaseline) {
+                            andeanSignals[i] = 1 // BUY/LONG ENTRY
+                            andeanPosState = 1
+                            lastEmaBullCross = -999
+                            lastAndeanBullCross = -999
+
+                            val recentLow = (max(0, i - 10)..i).minOf { lows[it] }
+                            var sl = min(recentLow, e30 * 0.998)
+                            val risk = max(c - sl, c * 0.005)
+                            sl = c - risk
+                            val tp = c + (risk * 2.0)
+
+                            andeanEntrySeries[i] = c
+                            andeanSlSeries[i] = sl
+                            andeanTpSeries[i] = tp
+                        }
                     }
                 }
             }
@@ -1633,8 +1668,12 @@ class BotStrategyChartView @JvmOverloads constructor(
         canvas.drawColor(colorBg)
 
         val totalCandles = candles.size
-        if (totalCandles == 0) {
-            val emptyMsg = "Fetching 30m Bot Strategy Candles..."
+        val showAndeanStrategy = activeStrategies.any {
+            it.contains("Andean", ignoreCase = true) ||
+            it.contains("1m", ignoreCase = true)
+        }
+        if (totalCandles < 5) {
+            val emptyMsg = if (showAndeanStrategy) "Fetching 1m Bot Strategy Candles (Requires >= 50 candles)..." else "Fetching Bot Strategy Candles..."
             canvas.drawText(emptyMsg, width / 4f, height / 2f, paintTextSec)
             return
         }
@@ -1670,10 +1709,6 @@ class BotStrategyChartView @JvmOverloads constructor(
             it.contains("EMA High/Low", ignoreCase = true) ||
             it.contains("EMA Channel", ignoreCase = true)
         }
-        val showAndeanStrategy = activeStrategies.any {
-            it.contains("Andean", ignoreCase = true) ||
-            it.contains("1m", ignoreCase = true)
-        }
         val showDualRibbon = !showAndeanStrategy && activeStrategies.any {
             it.contains("Dual-Ribbon", ignoreCase = true) ||
             it.contains("Combined Ribbon", ignoreCase = true) ||
@@ -1688,46 +1723,46 @@ class BotStrategyChartView @JvmOverloads constructor(
 
         // Compute Min & Max price in visible range
         var minPrice = Double.MAX_VALUE
-        var maxPrice = Double.MIN_VALUE
+        var maxPrice = -Double.MAX_VALUE
 
         for (i in calcStartIndex..calcEndIndex) {
             val c = candles[i]
-            if (c.low < minPrice) minPrice = c.low
-            if (c.high > maxPrice) maxPrice = c.high
+            if (c.low > 0.0 && !c.low.isNaN() && !c.low.isInfinite() && c.low < minPrice) minPrice = c.low
+            if (c.high > 0.0 && !c.high.isNaN() && !c.high.isInfinite() && c.high > maxPrice) maxPrice = c.high
 
             if (showEmaStrategy) {
-                if (i < ema8LowSeries.size && ema8LowSeries[i] > 0 && ema8LowSeries[i] < minPrice) minPrice = ema8LowSeries[i]
-                if (i < ema8HighSeries.size && ema8HighSeries[i] > maxPrice) maxPrice = ema8HighSeries[i]
-                if (i < ema34LowSeries.size && ema34LowSeries[i] > 0 && ema34LowSeries[i] < minPrice) minPrice = ema34LowSeries[i]
-                if (i < ema34HighSeries.size && ema34HighSeries[i] > maxPrice) maxPrice = ema34HighSeries[i]
-                if (i < ema200Series.size && ema200Series[i] > 0 && ema200Series[i] < minPrice) minPrice = ema200Series[i]
-                if (i < ema200Series.size && ema200Series[i] > maxPrice) maxPrice = ema200Series[i]
-                if (i < ema233Series.size && ema233Series[i] > 0 && ema233Series[i] < minPrice) minPrice = ema233Series[i]
-                if (i < ema233Series.size && ema233Series[i] > maxPrice) maxPrice = ema233Series[i]
+                if (i in ema8LowSeries.indices && ema8LowSeries[i] > 0 && !ema8LowSeries[i].isNaN() && ema8LowSeries[i] < minPrice) minPrice = ema8LowSeries[i]
+                if (i in ema8HighSeries.indices && !ema8HighSeries[i].isNaN() && ema8HighSeries[i] > maxPrice) maxPrice = ema8HighSeries[i]
+                if (i in ema34LowSeries.indices && ema34LowSeries[i] > 0 && !ema34LowSeries[i].isNaN() && ema34LowSeries[i] < minPrice) minPrice = ema34LowSeries[i]
+                if (i in ema34HighSeries.indices && !ema34HighSeries[i].isNaN() && ema34HighSeries[i] > maxPrice) maxPrice = ema34HighSeries[i]
+                if (i in ema200Series.indices && ema200Series[i] > 0 && !ema200Series[i].isNaN() && ema200Series[i] < minPrice) minPrice = ema200Series[i]
+                if (i in ema200Series.indices && !ema200Series[i].isNaN() && ema200Series[i] > maxPrice) maxPrice = ema200Series[i]
+                if (i in ema233Series.indices && ema233Series[i] > 0 && !ema233Series[i].isNaN() && ema233Series[i] < minPrice) minPrice = ema233Series[i]
+                if (i in ema233Series.indices && !ema233Series[i].isNaN() && ema233Series[i] > maxPrice) maxPrice = ema233Series[i]
             }
 
             if (showAndeanStrategy) {
-                if (i < ema7Series.size && ema7Series[i] > 0 && ema7Series[i] < minPrice) minPrice = ema7Series[i]
-                if (i < ema7Series.size && ema7Series[i] > maxPrice) maxPrice = ema7Series[i]
-                if (i < ema30Series.size && ema30Series[i] > 0 && ema30Series[i] < minPrice) minPrice = ema30Series[i]
-                if (i < ema30Series.size && ema30Series[i] > maxPrice) maxPrice = ema30Series[i]
-                if (i < ema200Series.size && ema200Series[i] > 0 && ema200Series[i] < minPrice) minPrice = ema200Series[i]
-                if (i < ema200Series.size && ema200Series[i] > maxPrice) maxPrice = ema200Series[i]
-                if (i < ema233Series.size && ema233Series[i] > 0 && ema233Series[i] < minPrice) minPrice = ema233Series[i]
-                if (i < ema233Series.size && ema233Series[i] > maxPrice) maxPrice = ema233Series[i]
+                if (i in ema7Series.indices && ema7Series[i] > 0 && !ema7Series[i].isNaN() && ema7Series[i] < minPrice) minPrice = ema7Series[i]
+                if (i in ema7Series.indices && !ema7Series[i].isNaN() && ema7Series[i] > maxPrice) maxPrice = ema7Series[i]
+                if (i in ema30Series.indices && ema30Series[i] > 0 && !ema30Series[i].isNaN() && ema30Series[i] < minPrice) minPrice = ema30Series[i]
+                if (i in ema30Series.indices && !ema30Series[i].isNaN() && ema30Series[i] > maxPrice) maxPrice = ema30Series[i]
+                if (i in ema200Series.indices && ema200Series[i] > 0 && !ema200Series[i].isNaN() && ema200Series[i] < minPrice) minPrice = ema200Series[i]
+                if (i in ema200Series.indices && !ema200Series[i].isNaN() && ema200Series[i] > maxPrice) maxPrice = ema200Series[i]
+                if (i in ema233Series.indices && ema233Series[i] > 0 && !ema233Series[i].isNaN() && ema233Series[i] < minPrice) minPrice = ema233Series[i]
+                if (i in ema233Series.indices && !ema233Series[i].isNaN() && ema233Series[i] > maxPrice) maxPrice = ema233Series[i]
             }
 
             if (showDualRibbon) {
-                if (i < ema134LowSeries.size && ema134LowSeries[i] > 0 && ema134LowSeries[i] < minPrice) minPrice = ema134LowSeries[i]
-                if (i < ema134HighSeries.size && ema134HighSeries[i] > maxPrice) maxPrice = ema134HighSeries[i]
+                if (i in ema134LowSeries.indices && ema134LowSeries[i] > 0 && !ema134LowSeries[i].isNaN() && ema134LowSeries[i] < minPrice) minPrice = ema134LowSeries[i]
+                if (i in ema134HighSeries.indices && !ema134HighSeries[i].isNaN() && ema134HighSeries[i] > maxPrice) maxPrice = ema134HighSeries[i]
                 if (kryptEmaSeries.isNotEmpty()) {
                     val ma1 = kryptEmaSeries[0]
                     val ma8 = kryptEmaSeries[7]
-                    if (i < ma1.size && ma1[i] > 0) {
+                    if (i in ma1.indices && ma1[i] > 0 && !ma1[i].isNaN()) {
                         if (ma1[i] < minPrice) minPrice = ma1[i]
                         if (ma1[i] > maxPrice) maxPrice = ma1[i]
                     }
-                    if (i < ma8.size && ma8[i] > 0) {
+                    if (i in ma8.indices && ma8[i] > 0 && !ma8[i].isNaN()) {
                         if (ma8[i] < minPrice) minPrice = ma8[i]
                         if (ma8[i] > maxPrice) maxPrice = ma8[i]
                     }
@@ -1748,28 +1783,30 @@ class BotStrategyChartView @JvmOverloads constructor(
             }
         }
 
-        if (minPrice >= maxPrice) {
-            minPrice *= 0.99
-            maxPrice *= 1.01
+        if (minPrice >= maxPrice || minPrice <= 0.0 || minPrice == Double.MAX_VALUE || maxPrice == -Double.MAX_VALUE || minPrice.isNaN() || minPrice.isInfinite() || maxPrice.isNaN() || maxPrice.isInfinite()) {
+            val fallback = if (candles.isNotEmpty() && candles.last().close > 0.0) candles.last().close else 100.0
+            minPrice = fallback * 0.95
+            maxPrice = fallback * 1.05
         }
 
         // Add 22% vertical padding so candles have comfortable breathing room and are smaller
-        val rawSpan = maxPrice - minPrice
+        val rawSpan = max(1e-6, maxPrice - minPrice)
         val paddingSpan = rawSpan * 0.22
         val fittedMinPrice = minPrice - paddingSpan
         val fittedMaxPrice = maxPrice + paddingSpan
 
-        val effectiveSpan = (fittedMaxPrice - fittedMinPrice) * yScaleMultiplier
+        val effectiveSpan = max(1e-6, (fittedMaxPrice - fittedMinPrice) * yScaleMultiplier)
         val midPrice = (fittedMaxPrice + fittedMinPrice) / 2.0 + verticalPriceOffset
         val currentMinPrice = midPrice - (effectiveSpan / 2.0)
         val currentMaxPrice = midPrice + (effectiveSpan / 2.0)
-        val priceRange = if (currentMaxPrice > currentMinPrice) currentMaxPrice - currentMinPrice else 1.0
+        val priceRange = if (currentMaxPrice > currentMinPrice && !currentMinPrice.isNaN() && !currentMaxPrice.isNaN()) max(1e-6, currentMaxPrice - currentMinPrice) else 1.0
         lastPriceRange = priceRange
 
-        val candleWidth = max(0.5f, chartWidth / visibleCandleCount)
+        val candleWidth = max(0.5f, chartWidth / max(1f, visibleCandleCount))
         val getX = { index: Int -> paddingLeftPx + (index - floatStartIndex) * candleWidth + candleWidth / 2f }
         val getY = { price: Double ->
-            val ratio = (price - currentMinPrice) / priceRange
+            val safePrice = if (price.isNaN() || price.isInfinite()) currentMinPrice else price
+            val ratio = ((safePrice - currentMinPrice) / priceRange).coerceIn(-5.0, 5.0)
             (paddingTopPx + candleChartHeight - ratio * candleChartHeight).toFloat()
         }
 
@@ -2130,23 +2167,25 @@ class BotStrategyChartView @JvmOverloads constructor(
             }
 
             // Translucent fill between EMA 200 & EMA 233
+            var firstBaseline = true
             for (i in renderStartIndex..renderEndIndex) {
-                if (i in ema200Series.indices && ema200Series[i] > 0) {
+                if (i in ema200Series.indices && ema200Series[i] > 0.0 && !ema200Series[i].isNaN()) {
                     val cx = getX(i)
                     val y200 = getY(ema200Series[i])
-                    if (i == renderStartIndex) pathBaselineChannel.moveTo(cx, y200) else pathBaselineChannel.lineTo(cx, y200)
+                    if (firstBaseline) { pathBaselineChannel.moveTo(cx, y200); firstBaseline = false } else { pathBaselineChannel.lineTo(cx, y200) }
                 }
             }
             for (i in renderEndIndex downTo renderStartIndex) {
-                if (i in ema233Series.indices && ema233Series[i] > 0) {
+                if (i in ema233Series.indices && ema233Series[i] > 0.0 && !ema233Series[i].isNaN()) {
                     val cx = getX(i)
                     val y233 = getY(ema233Series[i])
-                    pathBaselineChannel.lineTo(cx, y233)
+                    if (firstBaseline) { pathBaselineChannel.moveTo(cx, y233); firstBaseline = false } else { pathBaselineChannel.lineTo(cx, y233) }
                 }
             }
-            pathBaselineChannel.close()
-
-            canvas.drawPath(pathBaselineChannel, paintBaselineFill)
+            if (!firstBaseline) {
+                pathBaselineChannel.close()
+                canvas.drawPath(pathBaselineChannel, paintBaselineFill)
+            }
             canvas.drawPath(pathEma200, paintEma200Line)
             canvas.drawPath(pathEma233, paintEma233Line)
             canvas.drawPath(pathEma30, paintEma30Line)
@@ -2319,35 +2358,36 @@ class BotStrategyChartView @JvmOverloads constructor(
         }
 
         // Render Clean Active SL / TP Risk Management
-        val lastAndeanSigIdx = if (showAndeanStrategy) andeanSignals.indexOfLast { it == 1 || it == -1 } else -1
+        val lastAndeanSigIdx = if (showAndeanStrategy && andeanSignals.isNotEmpty()) andeanSignals.indexOfLast { it == 1 || it == -1 } else -1
         val hasExplicitRisk = explicitStopLoss > 0.0 && explicitTakeProfit > 0.0 && explicitIsLong != null
-        if ((showAndeanStrategy && lastAndeanSigIdx >= 0 && lastAndeanSigIdx < andeanSlSeries.size) || (showDualRibbon && lastDualRibbonSigIdx >= 0 && lastDualRibbonSigIdx < dualRibbonSlSeries.size) || hasExplicitRisk) {
+        if ((showAndeanStrategy && lastAndeanSigIdx >= 0 && lastAndeanSigIdx in andeanSlSeries.indices) || (showDualRibbon && lastDualRibbonSigIdx >= 0 && lastDualRibbonSigIdx in dualRibbonSlSeries.indices) || hasExplicitRisk) {
             val lastSig = if (hasExplicitRisk) {
                 if (explicitIsLong == true) 1 else -1
             } else if (showAndeanStrategy) {
-                andeanSignals[lastAndeanSigIdx]
+                if (lastAndeanSigIdx in andeanSignals.indices) andeanSignals[lastAndeanSigIdx] else 0
             } else {
-                dualRibbonSignals[lastDualRibbonSigIdx]
+                if (lastDualRibbonSigIdx in dualRibbonSignals.indices) dualRibbonSignals[lastDualRibbonSigIdx] else 0
             }
             val sl = if (hasExplicitRisk) {
                 explicitStopLoss
             } else if (showAndeanStrategy) {
-                andeanSlSeries[lastAndeanSigIdx]
+                if (lastAndeanSigIdx in andeanSlSeries.indices) andeanSlSeries[lastAndeanSigIdx] else 0.0
             } else {
-                dualRibbonSlSeries[lastDualRibbonSigIdx]
+                if (lastDualRibbonSigIdx in dualRibbonSlSeries.indices) dualRibbonSlSeries[lastDualRibbonSigIdx] else 0.0
             }
             val tp = if (hasExplicitRisk) {
                 explicitTakeProfit
             } else if (showAndeanStrategy) {
-                andeanTpSeries[lastAndeanSigIdx]
+                if (lastAndeanSigIdx in andeanTpSeries.indices) andeanTpSeries[lastAndeanSigIdx] else 0.0
             } else {
-                dualRibbonTpSeries[lastDualRibbonSigIdx]
+                if (lastDualRibbonSigIdx in dualRibbonTpSeries.indices) dualRibbonTpSeries[lastDualRibbonSigIdx] else 0.0
             }
 
-            if (sl > 0.0 && tp > 0.0) {
+            if (sl > 0.0 && tp > 0.0 && !sl.isNaN() && !tp.isNaN()) {
                 val ySl = getY(sl)
                 val yTp = getY(tp)
-                val startX = if (hasExplicitRisk) paddingLeftPx else max(paddingLeftPx, getX(lastDualRibbonSigIdx))
+                val activeSigIdx = if (showAndeanStrategy) lastAndeanSigIdx else lastDualRibbonSigIdx
+                val startX = if (hasExplicitRisk) paddingLeftPx else if (activeSigIdx in candles.indices) max(paddingLeftPx, getX(activeSigIdx)) else paddingLeftPx
                 val endX = paddingLeftPx + chartWidth
 
                 if (endX > startX) {
@@ -2356,10 +2396,12 @@ class BotStrategyChartView @JvmOverloads constructor(
 
                     val entryPrice = if (hasExplicitRisk && explicitEntryPrice > 0.0) {
                         explicitEntryPrice
-                    } else if (lastDualRibbonSigIdx < dualRibbonEntrySeries.size && dualRibbonEntrySeries[lastDualRibbonSigIdx] > 0.0) {
+                    } else if (showAndeanStrategy && lastAndeanSigIdx in andeanEntrySeries.indices && andeanEntrySeries[lastAndeanSigIdx] > 0.0) {
+                        andeanEntrySeries[lastAndeanSigIdx]
+                    } else if (showDualRibbon && lastDualRibbonSigIdx in dualRibbonEntrySeries.indices && dualRibbonEntrySeries[lastDualRibbonSigIdx] > 0.0) {
                         dualRibbonEntrySeries[lastDualRibbonSigIdx]
-                    } else if (lastDualRibbonSigIdx < candles.size) {
-                        candles[lastDualRibbonSigIdx].close
+                    } else if (activeSigIdx in candles.indices) {
+                        candles[activeSigIdx].close
                     } else 0.0
 
                     // Calculate projected Profit & Loss in dollar terms based on actual Notional Position Size ($Size * |ΔP| / Entry)
@@ -2557,13 +2599,14 @@ class BotStrategyChartView @JvmOverloads constructor(
             // ── ANDEAN OSCILLATOR RENDERING (Bull Green, Bear Red, Signal Orange) ──
             var maxOsc = 10.0
             for (i in calcStartIndex..calcEndIndex) {
-                if (i in andeanBullSeries.indices && andeanBullSeries[i] > maxOsc) maxOsc = andeanBullSeries[i]
-                if (i in andeanBearSeries.indices && andeanBearSeries[i] > maxOsc) maxOsc = andeanBearSeries[i]
-                if (i in andeanSignalSeries.indices && andeanSignalSeries[i] > maxOsc) maxOsc = andeanSignalSeries[i]
+                if (i in andeanBullSeries.indices && andeanBullSeries[i] > maxOsc && !andeanBullSeries[i].isNaN() && !andeanBullSeries[i].isInfinite()) maxOsc = andeanBullSeries[i]
+                if (i in andeanBearSeries.indices && andeanBearSeries[i] > maxOsc && !andeanBearSeries[i].isNaN() && !andeanBearSeries[i].isInfinite()) maxOsc = andeanBearSeries[i]
+                if (i in andeanSignalSeries.indices && andeanSignalSeries[i] > maxOsc && !andeanSignalSeries[i].isNaN() && !andeanSignalSeries[i].isInfinite()) maxOsc = andeanSignalSeries[i]
             }
-            val oscMaxSpan = maxOsc * 1.15
+            val oscMaxSpan = max(1.0, maxOsc * 1.15)
             val getOscY = { v: Double ->
-                val clamped = v.coerceIn(0.0, oscMaxSpan)
+                val safeV = if (v.isNaN() || v.isInfinite()) 0.0 else v
+                val clamped = safeV.coerceIn(0.0, oscMaxSpan)
                 (rsiPlotBottom - (clamped / oscMaxSpan) * rsiPlotHeight).toFloat()
             }
 
