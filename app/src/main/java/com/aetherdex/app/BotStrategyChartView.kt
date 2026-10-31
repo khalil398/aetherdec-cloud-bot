@@ -1222,11 +1222,11 @@ class BotStrategyChartView @JvmOverloads constructor(
                     lastAndeanBullCross = -999
                 }
 
-                // Exits for active position:
+                // Exits for active position (Extended window <= 6 candles):
                 if (andeanPosState == -1) {
-                    // In SHORT: Exit when EMA 7 crosses above 30 AND Andean red crosses below green within <= 3 candles
+                    // In SHORT: Exit when EMA 7 crosses above 30 AND Andean red crosses below green within <= 6 candles
                     val diffExit = abs(lastEmaBullCross - lastAndeanBullCross)
-                    val exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 3
+                    val exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 6
                     if (exitTriggeredNow) {
                         andeanSignals[i] = -2 // EXIT SHORT
                         andeanPosState = 0
@@ -1234,9 +1234,9 @@ class BotStrategyChartView @JvmOverloads constructor(
                         lastAndeanBullCross = -999
                     }
                 } else if (andeanPosState == 1) {
-                    // In LONG: Exit when EMA 7 crosses below 30 AND Andean bull crosses below bear within <= 3 candles
+                    // In LONG: Exit when EMA 7 crosses below 30 AND Andean bull crosses below bear within <= 6 candles
                     val diffExit = abs(lastEmaBearCross - lastAndeanBearCross)
-                    val exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 3
+                    val exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 6
                     if (exitTriggeredNow) {
                         andeanSignals[i] = 2 // EXIT LONG
                         andeanPosState = 0

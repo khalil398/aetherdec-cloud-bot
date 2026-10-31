@@ -562,7 +562,7 @@ class BotStrategyChartFragment : Fragment() {
 
         val tvDesc = TextView(context).apply {
             text = when {
-                isAndean -> "1m High-Speed Execution: EMA 7 (Orange) & EMA 30 (Cyan/Blue) with Andean Oscillator (Bull/Bear/Signal). Trend filtered by EMA 200/233 channel with 3-candle dual confirmation."
+                isAndean -> "1m High-Speed Execution: EMA 7 (Orange) & EMA 30 (Cyan/Blue) with Andean Oscillator (Bull/Bear/Signal). Trend filtered by EMA 200/233 channel with 3-candle entry & 6-candle exit dual confirmation."
                 isDualRibbon -> "Combined Ribbon: 134 EMA High/Low Green Band (#00E676) + Ribbon 2 (Krypt Fast 8 EMAs 20-55 on close)."
                 else -> "Dual EMA channel breakout engine on 30m candles with strict breakout crossover verification."
             }
@@ -627,7 +627,7 @@ class BotStrategyChartFragment : Fragment() {
             addLegendRow(Color.parseColor("#FF9800"), "Andean Signal", "Signal / Range Filter (Orange)")
             addLegendRow(Color.parseColor("#00E676"), "▲ BUY", "Long Entry: Price > 200/233 & Dual Cross <= 3 bars")
             addLegendRow(Color.parseColor("#FF5252"), "▼ SELL", "Short Entry: Price < 200/233 & Dual Cross <= 3 bars")
-            addLegendRow(Color.parseColor("#FF9800"), "✕ EXIT", "Dual Reversal Exit within <= 3 bars")
+            addLegendRow(Color.parseColor("#FF9800"), "✕ EXIT", "Dual Reversal Exit within <= 6 bars")
         } else if (isDualRibbon) {
             addLegendRow(Color.parseColor("#00E676"), "Ribbon 1", "134 EMA High/Low Green Band")
             addLegendRow(Color.parseColor("#F5EB5D"), "MA-1 (20)", "Primary Yellow Reference Line")
