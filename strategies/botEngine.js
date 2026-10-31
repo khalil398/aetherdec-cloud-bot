@@ -849,6 +849,306 @@ async function evaluateDualRibbonStrategy(coin = "BTC", candles) {
   };
 }
 
+/**
+ * Calculates Andean Oscillator components:
+ * - Bullish Component (Green)
+ * - Bearish Component (Red)
+ * - Signal EMA Line (Orange)
+ * 
+ * Based on Alex Grover's Andean Oscillator online algorithm for trend & volatility analysis.
+ */
+function calculateAndeanOscillator(candles, length = 50, sigLength = 9) {
+  const n = candles.length;
+  const alpha = 2 / (length + 1);
+  const bull = new Array(n).fill(0);
+  const bear = new Array(n).fill(0);
+  const compMax = new Array(n).fill(0);
+
+  let up1 = 0, up2 = 0, dn1 = 0, dn2 = 0;
+
+  for (let i = 0; i < n; i++) {
+    const C = parseFloat(candles[i].c);
+    const O = candles[i].o !== undefined ? parseFloat(candles[i].o) : C;
+
+    if (i === 0) {
+      up1 = Math.max(C, O);
+      up2 = Math.max(C * C, O * O);
+      dn1 = Math.min(C, O);
+      dn2 = Math.min(C * C, O * O);
+    } else {
+      up1 = Math.max(C, Math.max(O, up1 - (up1 - C) * alpha));
+      up2 = Math.max(C * C, Math.max(O * O, up2 - (up2 - C * C) * alpha));
+      dn1 = Math.min(C, Math.min(O, dn1 + (C - dn1) * alpha));
+      dn2 = Math.min(C * C, Math.min(O * O, dn2 + (C * C - dn2) * alpha));
+    }
+
+    const b1 = Math.sqrt(Math.max(0, dn2 - dn1 * dn1));
+    const b2 = Math.sqrt(Math.max(0, up2 - up1 * up1));
+    bull[i] = b1;
+    bear[i] = b2;
+    compMax[i] = Math.max(b1, b2);
+  }
+
+  const signal = calculateEMA(compMax, sigLength);
+  return { bull, bear, signal };
+}
+
+/**
+ * Evaluates 1-Minute Andean Oscillator + EMA Strategy:
+ * 
+ * 1. Trend Baseline Filter (EMA 200 & EMA 233 Channel):
+ *    - Price below both EMA 200 and EMA 233: ONLY SHORT / SELL trades allowed.
+ *    - Price above both EMA 200 and EMA 233: ONLY LONG / BUY trades allowed.
+ * 
+ * 2. Range / Consolidation Context:
+ *    - When Orange Signal > Bull (Green) AND Orange Signal > Bear (Red), the market is in range/consolidation (hunting zone).
+ * 
+ * 3. Dual-Confirmation Entry Setup (Window <= 3 candles):
+ *    - SHORT Entry:
+ *      - Signal 1: EMA 7 (orange) crosses below EMA 30 (blue).
+ *      - Signal 2: Andean Oscillator Bear (red) crosses above Bull (green).
+ *      - Both signals must occur within at most 3 candles of each other (|t1 - t2| <= 3).
+ *      - If 3 candles pass without the second signal, the pending signal expires.
+ *      - Price strictly below EMA 200 & EMA 233 channel.
+ *    - LONG Entry:
+ *      - Signal 1: EMA 7 crosses above EMA 30.
+ *      - Signal 2: Andean Oscillator Bull (green) crosses above Bear (red).
+ *      - Both signals must occur within at most 3 candles of each other (|t1 - t2| <= 3).
+ *      - Price strictly above EMA 200 & EMA 233 channel.
+ * 
+ * 4. Dual-Confirmation Exit Setup (Window <= 3 candles):
+ *    - SHORT Exit:
+ *      - EMA 7 crosses above EMA 30 AND Andean Bear (red) crosses below Bull (green) within <= 3 candles.
+ *      - If one crosses but the second does not occur within 3 candles, ignore and stay in position.
+ *    - LONG Exit:
+ *      - EMA 7 crosses below EMA 30 AND Andean Bull (green) crosses below Bear (red) within <= 3 candles.
+ */
+async function evaluateAndeanEmaStrategy(coin = "BTC", candles) {
+  if (!candles || candles.length < 50) {
+    console.warn(`[Andean+EMA] Insufficient 1m candles for ${coin} (${candles?.length || 0}/50 required)`);
+    return {
+      isUptrend: false,
+      isBuySignal: false,
+      isSellSignal: false,
+      isExitBuy: false,
+      isExitSell: false,
+      isBuyTriggered: false,
+      isSellTriggered: false,
+      isBuyTriggeredOnClose: false,
+      isSellTriggeredOnClose: false,
+      isExitBuyTriggeredOnClose: false,
+      isExitSellTriggeredOnClose: false,
+      latestClosedCandleTime: 0,
+      breakoutCandleOffset: -1,
+      exitCandleOffset: -1,
+      stopLoss: 0,
+      takeProfit: 0,
+      entryPrice: 0,
+      riskRewardRatio: 2.0,
+      proximityScore: 0,
+      currentPositionState: "NEUTRAL",
+      metrics: {}
+    };
+  }
+
+  const n = candles.length;
+  const closePrices = candles.map(c => parseFloat(c.c));
+  const openPrices = candles.map(c => parseFloat(c.o !== undefined ? c.o : c.c));
+  const highPrices = candles.map(c => parseFloat(c.h));
+  const lowPrices = candles.map(c => parseFloat(c.l));
+
+  const ema7 = calculateEMA(closePrices, 7);
+  const ema30 = calculateEMA(closePrices, 30);
+  const ema200 = calculateEMA(closePrices, 200);
+  const ema233 = calculateEMA(closePrices, 233);
+
+  const { bull, bear, signal } = calculateAndeanOscillator(candles, 50, 9);
+
+  let posState = "NEUTRAL"; // "NEUTRAL", "IN_BUY", "IN_SELL"
+  let lastBuySignalIdx = -1;
+  let lastSellSignalIdx = -1;
+  let lastExitBuyIdx = -1;
+  let lastExitSellIdx = -1;
+
+  let lastEmaBullCross = -999;
+  let lastEmaBearCross = -999;
+  let lastAndeanBullCross = -999;
+  let lastAndeanBearCross = -999;
+
+  let entryPrice = 0;
+  let returnSl = 0;
+  let returnTp = 0;
+
+  for (let i = 1; i < n; i++) {
+    const c = closePrices[i];
+    const e7 = ema7[i];
+    const e30 = ema30[i];
+    const prevE7 = ema7[i - 1];
+    const prevE30 = ema30[i - 1];
+
+    const bBull = bull[i];
+    const bBear = bear[i];
+    const prevBull = bull[i - 1];
+    const prevBear = bear[i - 1];
+
+    const e200Val = (ema200 && ema200[i]) ? ema200[i] : 0;
+    const e233Val = (ema233 && ema233[i]) ? ema233[i] : e200Val;
+    const baselineMin = Math.min(e200Val, e233Val);
+    const baselineMax = Math.max(e200Val, e233Val);
+
+    const isEmaBullCross = (e7 > e30 && prevE7 <= prevE30);
+    const isEmaBearCross = (e7 < e30 && prevE7 >= prevE30);
+    const isAndeanBullCross = (bBull > bBear && prevBull <= prevBear);
+    const isAndeanBearCross = (bBear > bBull && prevBear <= prevBull);
+
+    if (isEmaBullCross) {
+      lastEmaBullCross = i;
+      lastEmaBearCross = -999;
+    }
+    if (isEmaBearCross) {
+      lastEmaBearCross = i;
+      lastEmaBullCross = -999;
+    }
+    if (isAndeanBullCross) {
+      lastAndeanBullCross = i;
+      lastAndeanBearCross = -999;
+    }
+    if (isAndeanBearCross) {
+      lastAndeanBearCross = i;
+      lastAndeanBullCross = -999;
+    }
+
+    // 1. Process EXITS for active positions
+    if (posState === "IN_SELL") { // In Short
+      const diffExit = Math.abs(lastEmaBullCross - lastAndeanBullCross);
+      const exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 3;
+      if (exitTriggeredNow) {
+        posState = "NEUTRAL";
+        lastExitSellIdx = i;
+        lastEmaBullCross = -999;
+        lastAndeanBullCross = -999;
+      }
+    } else if (posState === "IN_BUY") { // In Long
+      const diffExit = Math.abs(lastEmaBearCross - lastAndeanBearCross);
+      const exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 3;
+      if (exitTriggeredNow) {
+        posState = "NEUTRAL";
+        lastExitBuyIdx = i;
+        lastEmaBearCross = -999;
+        lastAndeanBearCross = -999;
+      }
+    }
+
+    // 2. Process ENTRIES if NEUTRAL
+    if (posState === "NEUTRAL") {
+      // SHORT ENTRY: Below EMA 200 & 233 baseline, and dual bearish cross within <= 3 candles
+      const diffShort = Math.abs(lastEmaBearCross - lastAndeanBearCross);
+      const shortTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffShort <= 3;
+      const isBelowBaseline = (baselineMin <= 0 || c < baselineMin);
+
+      if (shortTriggeredNow && isBelowBaseline) {
+        posState = "IN_SELL";
+        lastSellSignalIdx = i;
+        lastEmaBearCross = -999;
+        lastAndeanBearCross = -999;
+
+        const recentHigh = Math.max(...highPrices.slice(Math.max(0, i - 10), i + 1));
+        let sl = Math.max(recentHigh, e30 * 1.002);
+        const risk = Math.max(sl - c, c * 0.005);
+        sl = c + risk;
+        const tp = c - (risk * 2.0); // Exact 1:2 RRR
+
+        entryPrice = c;
+        returnSl = sl;
+        returnTp = tp;
+      } else {
+        // LONG ENTRY: Above EMA 200 & 233 baseline, and dual bullish cross within <= 3 candles
+        const diffLong = Math.abs(lastEmaBullCross - lastAndeanBullCross);
+        const longTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffLong <= 3;
+        const isAboveBaseline = (baselineMax <= 0 || c > baselineMax);
+
+        if (longTriggeredNow && isAboveBaseline) {
+          posState = "IN_BUY";
+          lastBuySignalIdx = i;
+          lastEmaBullCross = -999;
+          lastAndeanBullCross = -999;
+
+          const recentLow = Math.min(...lowPrices.slice(Math.max(0, i - 10), i + 1));
+          let sl = Math.min(recentLow, e30 * 0.998);
+          const risk = Math.max(c - sl, c * 0.005);
+          sl = c - risk;
+          const tp = c + (risk * 2.0); // Exact 1:2 RRR
+
+          entryPrice = c;
+          returnSl = sl;
+          returnTp = tp;
+        }
+      }
+    }
+  }
+
+  const closedIdx = n - 2;
+  const closedCandle = candles[closedIdx] || candles[n - 1];
+  const latestClosedCandleTime = closedCandle ? Number(closedCandle.t || closedCandle.timestamp || 0) : 0;
+
+  const isBuyTriggeredOnClose = (lastBuySignalIdx === closedIdx || lastBuySignalIdx === n - 1);
+  const isSellTriggeredOnClose = (lastSellSignalIdx === closedIdx || lastSellSignalIdx === n - 1);
+  const isExitBuyTriggeredOnClose = (lastExitBuyIdx === closedIdx || lastExitBuyIdx === n - 1);
+  const isExitSellTriggeredOnClose = (lastExitSellIdx === closedIdx || lastExitSellIdx === n - 1);
+
+  const breakoutCandleOffset = lastBuySignalIdx >= 0 ? (n - 1 - lastBuySignalIdx) : -1;
+  const exitCandleOffset = lastSellSignalIdx >= 0 ? (n - 1 - lastSellSignalIdx) : -1;
+
+  const isBuySignal = (posState === "IN_BUY");
+  const isSellSignal = (posState === "IN_SELL");
+
+  const curBull = bull[n - 1] || 0;
+  const curBear = bear[n - 1] || 0;
+  const curSig = signal[n - 1] || 0;
+  const isRanging = (curSig > curBull && curSig > curBear);
+
+  const proximityScore = isBuySignal ? 100 : (isSellSignal ? 100 : (isRanging ? 65 : 35));
+
+  const metrics = {
+    ema7: ema7[n - 1] || 0,
+    ema30: ema30[n - 1] || 0,
+    ema200: ema200[n - 1] || 0,
+    ema233: ema233[n - 1] || 0,
+    andeanBull: curBull,
+    andeanBear: curBear,
+    andeanSignal: curSig,
+    isRanging,
+    currentPositionState: posState,
+    breakoutCandleOffset,
+    exitCandleOffset,
+    proximityScore
+  };
+
+  return {
+    isUptrend: isBuySignal,
+    isBuySignal,
+    isSellSignal,
+    isExitBuy: (posState === "NEUTRAL" && lastExitBuyIdx >= n - 2),
+    isExitSell: (posState === "NEUTRAL" && lastExitSellIdx >= n - 2),
+    isBuyTriggered: isBuyTriggeredOnClose,
+    isSellTriggered: isSellTriggeredOnClose,
+    isBuyTriggeredOnClose,
+    isSellTriggeredOnClose,
+    isExitBuyTriggeredOnClose,
+    isExitSellTriggeredOnClose,
+    latestClosedCandleTime,
+    breakoutCandleOffset,
+    exitCandleOffset,
+    stopLoss: returnSl,
+    takeProfit: returnTp,
+    entryPrice,
+    riskRewardRatio: 2.0,
+    proximityScore,
+    currentPositionState: posState,
+    metrics
+  };
+}
+
 // In-memory cache for active position dynamic risk parameters (SL/TP)
 const activePositionsRiskCache = new Map();
 
@@ -1158,20 +1458,24 @@ async function executeBotTick(uid, db, config, botSecret) {
     // Completely bypass scanning all 239 pairs in the background to eliminate 429 rate limits!
     const scanQueue = whitelistedAssets;
 
-    const isDualRibbonActive = futuresStrategyList.some(s =>
+    const isAndeanActive = futuresStrategyList.some(s =>
+      s.toLowerCase().includes("andean") ||
+      s.toLowerCase().includes("1m")
+    );
+    const isDualRibbonActive = !isAndeanActive && futuresStrategyList.some(s =>
       s.toLowerCase().includes("dual-ribbon") ||
       s.toLowerCase().includes("combined ribbon") ||
       s.toLowerCase().includes("krypt") ||
       s.toLowerCase().includes("5m ribbon") ||
       s.toLowerCase().includes("dual ribbon")
     );
-    const isChochActive = !isDualRibbonActive && futuresStrategyList.some(s => 
+    const isChochActive = !isAndeanActive && !isDualRibbonActive && futuresStrategyList.some(s => 
       s.toLowerCase().includes("choch") || s.toLowerCase().includes("fractal") || s.toLowerCase().includes("ict")
     );
-    const futuresInterval = isDualRibbonActive ? "5m" : "30m";
-    const minCandlesReq = isDualRibbonActive ? 136 : (isChochActive ? 15 : 35);
+    const futuresInterval = isAndeanActive ? "1m" : (isDualRibbonActive ? "5m" : "30m");
+    const minCandlesReq = isAndeanActive ? 60 : (isDualRibbonActive ? 136 : (isChochActive ? 15 : 35));
 
-    const isEmaStrategyActive = isDualRibbonActive || isChochActive || futuresStrategyList.some(s => 
+    const isEmaStrategyActive = isAndeanActive || isDualRibbonActive || isChochActive || futuresStrategyList.some(s => 
       s.includes("EMA") || s.includes("Trend") || s.includes("DCA") || s.includes("Grid")
     ) || futuresStrategyList.length === 0;
 
@@ -1217,11 +1521,13 @@ async function executeBotTick(uid, db, config, botSecret) {
           const coinPrice = parseFloat(latestCandle.close || (market ? market.markPrice : 0) || 0);
           if (coinPrice <= 0) continue;
 
-          const signalResult = isDualRibbonActive
-            ? await evaluateDualRibbonStrategy(cleanCoin, candles)
-            : (isChochActive
-              ? await evaluateIctMarketStructure(cleanCoin, candles)
-              : await evaluateEmaRibbonStrategy(cleanCoin, candles));
+          const signalResult = isAndeanActive
+            ? await evaluateAndeanEmaStrategy(cleanCoin, candles)
+            : (isDualRibbonActive
+              ? await evaluateDualRibbonStrategy(cleanCoin, candles)
+              : (isChochActive
+                ? await evaluateIctMarketStructure(cleanCoin, candles)
+                : await evaluateEmaRibbonStrategy(cleanCoin, candles)));
 
           scanResults.push({ coin: cleanCoin, coinPrice, market, ...signalResult });
         } catch (e) {
@@ -1285,31 +1591,31 @@ async function executeBotTick(uid, db, config, botSecret) {
           });
         }
 
-        if (isDualRibbonActive && effectiveSl > 0 && effectiveTp > 0) {
+        if ((isDualRibbonActive || isAndeanActive) && effectiveSl > 0 && effectiveTp > 0) {
           if (isCurrentlyLong) {
             if (coinPrice <= effectiveSl) {
               isDualRibbonLongExit = true;
-              exitReason = `Dual-Ribbon Stop Loss Triggered (${coinPrice} <= SL: ${effectiveSl})`;
+              exitReason = `Stop Loss Triggered (${coinPrice} <= SL: ${effectiveSl})`;
             } else if (coinPrice >= effectiveTp) {
               isDualRibbonLongExit = true;
-              exitReason = `Dual-Ribbon Take Profit (1:2 RRR) Triggered (${coinPrice} >= TP: ${effectiveTp})`;
+              exitReason = `Take Profit (1:2 RRR) Triggered (${coinPrice} >= TP: ${effectiveTp})`;
             }
           } else if (isCurrentlyShort) {
             if (coinPrice >= effectiveSl) {
               isDualRibbonShortExit = true;
-              exitReason = `Dual-Ribbon Stop Loss Triggered (${coinPrice} >= SL: ${effectiveSl})`;
+              exitReason = `Stop Loss Triggered (${coinPrice} >= SL: ${effectiveSl})`;
             } else if (coinPrice <= effectiveTp) {
               isDualRibbonShortExit = true;
-              exitReason = `Dual-Ribbon Take Profit (1:2 RRR) Triggered (${coinPrice} <= TP: ${effectiveTp})`;
+              exitReason = `Take Profit (1:2 RRR) Triggered (${coinPrice} <= TP: ${effectiveTp})`;
             }
           }
         }
 
-        // Two-Way Futures: Exit Long on SELL breakdown or SL/TP trigger
-        if (isCurrentlyLong && (isSellSignal || isDualRibbonLongExit) && isFuturesActive) {
+        // Two-Way Futures: Exit Long on SELL breakdown, Andean Long Exit, or SL/TP trigger
+        if (isCurrentlyLong && (isSellSignal || isDualRibbonLongExit || res.isExitBuyTriggeredOnClose || res.isExitBuy) && isFuturesActive) {
           const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
           const limitPx = formatPriceForHyperliquid(coinPrice * 0.98, szDec, false); // 2% market slippage buffer
-          const reasonStr = exitReason || "30m/5m BEARISH SELL breakdown";
+          const reasonStr = exitReason || (res.isExitBuyTriggeredOnClose ? "1m ANDEAN DUAL REVERSAL EXIT" : "30m/5m/1m BEARISH SELL breakdown");
           console.log(`[${uid}] 🔻 TWO-WAY FUTURES: Closing LONG on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on ${reasonStr}`);
           try {
             const exitResult = await placeAgentOrder({
@@ -1370,11 +1676,11 @@ async function executeBotTick(uid, db, config, botSecret) {
           }
         }
 
-        // Two-Way Futures: Exit Short on BUY breakout or SL/TP trigger
-        if (isCurrentlyShort && (isBuySignal || isDualRibbonShortExit) && isFuturesActive) {
+        // Two-Way Futures: Exit Short on BUY breakout, Andean Short Exit, or SL/TP trigger
+        if (isCurrentlyShort && (isBuySignal || isDualRibbonShortExit || res.isExitSellTriggeredOnClose || res.isExitSell) && isFuturesActive) {
           const closeSz = formatSizeForHyperliquid(Math.abs(currentSzi), szDec);
           const limitPx = formatPriceForHyperliquid(coinPrice * 1.02, szDec, false); // 2% market slippage buffer
-          const reasonStr = exitReason || "30m/5m BULLISH BUY breakout";
+          const reasonStr = exitReason || (res.isExitSellTriggeredOnClose ? "1m ANDEAN DUAL REVERSAL EXIT" : "30m/5m/1m BULLISH BUY breakout");
           console.log(`[${uid}] 🔺 TWO-WAY FUTURES: Closing SHORT on ${coin} (${closeSz} size, assetIndex: ${assetIdx}) @ limit ${limitPx} on ${reasonStr}`);
           try {
             const exitResult = await placeAgentOrder({
@@ -1459,7 +1765,7 @@ async function executeBotTick(uid, db, config, botSecret) {
         const isFreshBuy = (r.isBuyTriggeredOnClose || (r.breakoutCandleOffset !== undefined && r.breakoutCandleOffset >= 0 && r.breakoutCandleOffset <= 1));
         const isFreshSell = (r.isSellTriggeredOnClose || (r.exitCandleOffset !== undefined && r.exitCandleOffset >= 0 && r.exitCandleOffset <= 1));
 
-        if (isDualRibbonActive) {
+        if (isAndeanActive || isDualRibbonActive) {
           if (!isNewClosedCandle) return false;
           return isFreshBuy || isFreshSell;
         }
@@ -1471,8 +1777,8 @@ async function executeBotTick(uid, db, config, botSecret) {
       });
 
       if (bestEntrySignal && perpBalance >= 1.0 && isFuturesActive) {
-        const { coin, coinPrice, proximityScore, isBuySignal, isCurrentAbove, market } = bestEntrySignal;
-        const isEnteringLong = (isBuySignal || (proximityScore >= 100 && isCurrentAbove));
+        const { coin, coinPrice, proximityScore, isBuySignal, isSellSignal, isCurrentAbove, market } = bestEntrySignal;
+        const isEnteringLong = isBuySignal || (!isSellSignal && proximityScore >= 100 && isCurrentAbove);
 
         const targetSide = isEnteringLong ? "BUY/LONG" : "SELL/SHORT";
         const isOrderBuy = isEnteringLong;
@@ -1827,20 +2133,24 @@ async function executeBotTick(uid, db, config, botSecret) {
     const scanQueue = whitelistedAssets;
 
     const pnlPct = accountValue > 0 ? (totalPnlUsd / accountValue) * 100.0 : 0.0;
-    const isDualRibbonActive = spotStrategyList.some(s =>
+    const isAndeanActive = spotStrategyList.some(s =>
+      s.toLowerCase().includes("andean") ||
+      s.toLowerCase().includes("1m")
+    );
+    const isDualRibbonActive = !isAndeanActive && spotStrategyList.some(s =>
       s.toLowerCase().includes("dual-ribbon") ||
       s.toLowerCase().includes("combined ribbon") ||
       s.toLowerCase().includes("krypt") ||
       s.toLowerCase().includes("5m ribbon") ||
       s.toLowerCase().includes("dual ribbon")
     );
-    const isChochActive = !isDualRibbonActive && spotStrategyList.some(s => 
+    const isChochActive = !isAndeanActive && !isDualRibbonActive && spotStrategyList.some(s => 
       s.toLowerCase().includes("choch") || s.toLowerCase().includes("fractal") || s.toLowerCase().includes("ict")
     );
-    const spotInterval = isDualRibbonActive ? "5m" : "30m";
-    const minCandlesReq = isDualRibbonActive ? 136 : (isChochActive ? 15 : 35);
+    const spotInterval = isAndeanActive ? "1m" : (isDualRibbonActive ? "5m" : "30m");
+    const minCandlesReq = isAndeanActive ? 60 : (isDualRibbonActive ? 136 : (isChochActive ? 15 : 35));
 
-    const isEmaStrategyActive = isDualRibbonActive || isChochActive || spotStrategyList.some(s => 
+    const isEmaStrategyActive = isAndeanActive || isDualRibbonActive || isChochActive || spotStrategyList.some(s => 
       s.includes("EMA") || s.includes("Trend") || s.includes("DCA") || s.includes("Grid")
     ) || spotStrategyList.length === 0;
 
@@ -1879,11 +2189,13 @@ async function executeBotTick(uid, db, config, botSecret) {
         const coinPrice = parseFloat(latestCandle.close || (market ? market.markPrice : 0) || 0);
         if (coinPrice <= 0) continue;
 
-        const signalResult = isDualRibbonActive
-          ? await evaluateDualRibbonStrategy(coin, candles)
-          : (isChochActive
-            ? await evaluateIctMarketStructure(coin, candles)
-            : await evaluateEmaRibbonStrategy(coin, candles));
+        const signalResult = isAndeanActive
+          ? await evaluateAndeanEmaStrategy(coin, candles)
+          : (isDualRibbonActive
+            ? await evaluateDualRibbonStrategy(coin, candles)
+            : (isChochActive
+              ? await evaluateIctMarketStructure(coin, candles)
+              : await evaluateEmaRibbonStrategy(coin, candles)));
 
         scanResults.push({ coin, coinPrice, market, ...signalResult });
       } catch (e) {
@@ -2141,6 +2453,8 @@ module.exports = {
   evaluateEmaRibbonStrategy,
   evaluateIctMarketStructure,
   evaluateDualRibbonStrategy,
+  evaluateAndeanEmaStrategy,
+  calculateAndeanOscillator,
   calculateBreakoutProximity,
   calculateEMA,
   formatSizeForHyperliquid,
