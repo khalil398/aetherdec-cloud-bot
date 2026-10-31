@@ -251,6 +251,17 @@ class BotStrategyChartView @JvmOverloads constructor(
     private var dualRibbonTpSeries: DoubleArray = DoubleArray(0)
     private var dualRibbonEntrySeries: DoubleArray = DoubleArray(0)
 
+    // 1-Minute Andean Oscillator + EMA Strategy Series
+    private var ema7Series: DoubleArray = DoubleArray(0)
+    private var ema30Series: DoubleArray = DoubleArray(0)
+    private var andeanBullSeries: DoubleArray = DoubleArray(0)
+    private var andeanBearSeries: DoubleArray = DoubleArray(0)
+    private var andeanSignalSeries: DoubleArray = DoubleArray(0)
+    private var andeanSignals: IntArray = IntArray(0) // 1 = BUY, -1 = SELL, 2 = EXIT_BUY, -2 = EXIT_SELL
+    private var andeanSlSeries: DoubleArray = DoubleArray(0)
+    private var andeanTpSeries: DoubleArray = DoubleArray(0)
+    private var andeanEntrySeries: DoubleArray = DoubleArray(0)
+
     // Signals: 1 = BUY, -1 = SELL, 0 = NONE
     private var signalSeries: IntArray = IntArray(0)
 
@@ -645,6 +656,62 @@ class BotStrategyChartView @JvmOverloads constructor(
     private val pathRibbon1Lower = Path()
     private val pathKryptEmas = Array(8) { Path() }
 
+    // 1-Minute Andean Oscillator + EMA Strategy Paints & Paths
+    private val colorEma7 = Color.parseColor("#FFAA00") // Fast EMA 7 (Orange)
+    private val colorEma30 = Color.parseColor("#00B4D8") // Slow EMA 30 (Cyan/Blue)
+    private val colorAndeanBull = Color.parseColor("#089981") // Bullish Component (Green)
+    private val colorAndeanBear = Color.parseColor("#F23645") // Bearish Component (Red)
+    private val colorAndeanSignal = Color.parseColor("#FF9800") // Signal Line (Orange)
+    private val colorBaselineFill = Color.parseColor("#18BA68C8")
+
+    private val paintEma7Line = Paint().apply {
+        color = colorEma7
+        strokeWidth = 3f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintEma30Line = Paint().apply {
+        color = colorEma30
+        strokeWidth = 3f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintAndeanBull = Paint().apply {
+        color = colorAndeanBull
+        strokeWidth = 3.2f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintAndeanBear = Paint().apply {
+        color = colorAndeanBear
+        strokeWidth = 3.2f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintAndeanSignal = Paint().apply {
+        color = colorAndeanSignal
+        strokeWidth = 3.2f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+
+    private val paintBaselineFill = Paint().apply {
+        color = colorBaselineFill
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val pathEma7 = Path()
+    private val pathEma30 = Path()
+    private val pathAndeanBull = Path()
+    private val pathAndeanBear = Path()
+    private val pathAndeanSignal = Path()
+    private val pathBaselineChannel = Path()
+
     // 5-Minute Dual-Ribbon SL/TP Risk Management Paints
     private val paintRibbonSl = Paint().apply {
         color = Color.parseColor("#FF5252") // Red for Stop Loss
@@ -1031,6 +1098,166 @@ class BotStrategyChartView @JvmOverloads constructor(
         // Calculate 14-Period RSI & RSI Moving Average (length 14) purely in-memory
         rsiSeries = calculateRSI(closes, 14)
         rsiMaSeries = calculateSMA(rsiSeries, 14)
+
+        // Calculate 1-Minute Andean Oscillator + EMA Strategy
+        ema7Series = calculateEMA(closes, 7)
+        ema30Series = calculateEMA(closes, 30)
+
+        // Andean Oscillator (length = 50, sig_length = 9)
+        val andeanAlpha = 2.0 / (50.0 + 1.0)
+        andeanBullSeries = DoubleArray(n)
+        andeanBearSeries = DoubleArray(n)
+        val compMax = DoubleArray(n)
+
+        var up1 = 0.0
+        var up2 = 0.0
+        var dn1 = 0.0
+        var dn2 = 0.0
+
+        for (i in 0 until n) {
+            val c = closes[i]
+            val o = opens[i]
+
+            if (i == 0) {
+                up1 = max(c, o)
+                up2 = max(c * c, o * o)
+                dn1 = min(c, o)
+                dn2 = min(c * c, o * o)
+            } else {
+                up1 = max(c, max(o, up1 - (up1 - c) * andeanAlpha))
+                up2 = max(c * c, max(o * o, up2 - (up2 - c * c) * andeanAlpha))
+                dn1 = min(c, min(o, dn1 + (c - dn1) * andeanAlpha))
+                dn2 = min(c * c, min(o * o, dn2 + (c * c - dn2) * andeanAlpha))
+            }
+
+            val b1 = sqrt(max(0.0, dn2 - dn1 * dn1))
+            val b2 = sqrt(max(0.0, up2 - up1 * up1))
+            andeanBullSeries[i] = b1
+            andeanBearSeries[i] = b2
+            compMax[i] = max(b1, b2)
+        }
+        andeanSignalSeries = calculateEMA(compMax, 9)
+
+        andeanSignals = IntArray(n)
+        andeanSlSeries = DoubleArray(n)
+        andeanTpSeries = DoubleArray(n)
+        andeanEntrySeries = DoubleArray(n)
+
+        var andeanPosState = 0 // 0 = NEUTRAL, 1 = IN_LONG, -1 = IN_SHORT
+        var lastEmaBullCross = -999
+        var lastEmaBearCross = -999
+        var lastAndeanBullCross = -999
+        var lastAndeanBearCross = -999
+
+        for (i in 1 until n) {
+            val c = closes[i]
+            val e7 = ema7Series[i]
+            val e30 = ema30Series[i]
+            val prevE7 = ema7Series[i - 1]
+            val prevE30 = ema30Series[i - 1]
+
+            val bull = andeanBullSeries[i]
+            val bear = andeanBearSeries[i]
+            val prevBull = andeanBullSeries[i - 1]
+            val prevBear = andeanBearSeries[i - 1]
+
+            val e200 = if (i < ema200Series.size) ema200Series[i] else 0.0
+            val e233 = if (i < ema233Series.size) ema233Series[i] else e200
+            val baselineMin = min(e200, e233)
+            val baselineMax = max(e200, e233)
+
+            val isEmaBullCross = (e7 > e30 && prevE7 <= prevE30)
+            val isEmaBearCross = (e7 < e30 && prevE7 >= prevE30)
+            val isAndeanBullCross = (bull > bear && prevBull <= prevBear)
+            val isAndeanBearCross = (bear > bull && prevBear <= prevBull)
+
+            if (isEmaBullCross) {
+                lastEmaBullCross = i
+                lastEmaBearCross = -999
+            }
+            if (isEmaBearCross) {
+                lastEmaBearCross = i
+                lastEmaBullCross = -999
+            }
+            if (isAndeanBullCross) {
+                lastAndeanBullCross = i
+                lastAndeanBearCross = -999
+            }
+            if (isAndeanBearCross) {
+                lastAndeanBearCross = i
+                lastAndeanBullCross = -999
+            }
+
+            // Exits for active position:
+            if (andeanPosState == -1) {
+                // In SHORT: Exit when EMA 7 crosses above 30 AND Andean red crosses below green within <= 3 candles
+                val diffExit = abs(lastEmaBullCross - lastAndeanBullCross)
+                val exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 3
+                if (exitTriggeredNow) {
+                    andeanSignals[i] = -2 // EXIT SHORT
+                    andeanPosState = 0
+                    lastEmaBullCross = -999
+                    lastAndeanBullCross = -999
+                }
+            } else if (andeanPosState == 1) {
+                // In LONG: Exit when EMA 7 crosses below 30 AND Andean bull crosses below bear within <= 3 candles
+                val diffExit = abs(lastEmaBearCross - lastAndeanBearCross)
+                val exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 3
+                if (exitTriggeredNow) {
+                    andeanSignals[i] = 2 // EXIT LONG
+                    andeanPosState = 0
+                    lastEmaBearCross = -999
+                    lastAndeanBearCross = -999
+                }
+            }
+
+            // Entries if NEUTRAL:
+            if (andeanPosState == 0) {
+                // SHORT: Below EMA 200 & 233 channel and dual bearish cross within <= 3 candles
+                val diffShort = abs(lastEmaBearCross - lastAndeanBearCross)
+                val shortTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffShort <= 3
+                val isBelowBaseline = (baselineMin <= 0.0 || c < baselineMin)
+
+                if (shortTriggeredNow && isBelowBaseline) {
+                    andeanSignals[i] = -1 // SELL/SHORT ENTRY
+                    andeanPosState = -1
+                    lastEmaBearCross = -999
+                    lastAndeanBearCross = -999
+
+                    val recentHigh = (max(0, i - 10)..i).maxOf { highs[it] }
+                    var sl = max(recentHigh, e30 * 1.002)
+                    val risk = max(sl - c, c * 0.005)
+                    sl = c + risk
+                    val tp = c - (risk * 2.0)
+
+                    andeanEntrySeries[i] = c
+                    andeanSlSeries[i] = sl
+                    andeanTpSeries[i] = tp
+                } else {
+                    // LONG: Above EMA 200 & 233 channel and dual bullish cross within <= 3 candles
+                    val diffLong = abs(lastEmaBullCross - lastAndeanBullCross)
+                    val longTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffLong <= 3
+                    val isAboveBaseline = (baselineMax <= 0.0 || c > baselineMax)
+
+                    if (longTriggeredNow && isAboveBaseline) {
+                        andeanSignals[i] = 1 // BUY/LONG ENTRY
+                        andeanPosState = 1
+                        lastEmaBullCross = -999
+                        lastAndeanBullCross = -999
+
+                        val recentLow = (max(0, i - 10)..i).minOf { lows[it] }
+                        var sl = min(recentLow, e30 * 0.998)
+                        val risk = max(c - sl, c * 0.005)
+                        sl = c - risk
+                        val tp = c + (risk * 2.0)
+
+                        andeanEntrySeries[i] = c
+                        andeanSlSeries[i] = sl
+                        andeanTpSeries[i] = tp
+                    }
+                }
+            }
+        }
 
         // Calculate 5-Minute Dual-Ribbon (Combined Ribbon)
         ema134HighSeries = calculateEMA(highs, 134)
@@ -1443,13 +1670,17 @@ class BotStrategyChartView @JvmOverloads constructor(
             it.contains("EMA High/Low", ignoreCase = true) ||
             it.contains("EMA Channel", ignoreCase = true)
         }
-        val showDualRibbon = activeStrategies.any {
+        val showAndeanStrategy = activeStrategies.any {
+            it.contains("Andean", ignoreCase = true) ||
+            it.contains("1m", ignoreCase = true)
+        }
+        val showDualRibbon = !showAndeanStrategy && activeStrategies.any {
             it.contains("Dual-Ribbon", ignoreCase = true) ||
             it.contains("Combined Ribbon", ignoreCase = true) ||
             it.contains("Krypt", ignoreCase = true) ||
             it.contains("Dual Ribbon", ignoreCase = true)
         }
-        val showFractalChoch = activeStrategies.any {
+        val showFractalChoch = !showAndeanStrategy && activeStrategies.any {
             it.contains("Fractal", ignoreCase = true) ||
             it.contains("CHoCh", ignoreCase = true) ||
             it.contains("MSS", ignoreCase = true)
@@ -1469,6 +1700,17 @@ class BotStrategyChartView @JvmOverloads constructor(
                 if (i < ema8HighSeries.size && ema8HighSeries[i] > maxPrice) maxPrice = ema8HighSeries[i]
                 if (i < ema34LowSeries.size && ema34LowSeries[i] > 0 && ema34LowSeries[i] < minPrice) minPrice = ema34LowSeries[i]
                 if (i < ema34HighSeries.size && ema34HighSeries[i] > maxPrice) maxPrice = ema34HighSeries[i]
+                if (i < ema200Series.size && ema200Series[i] > 0 && ema200Series[i] < minPrice) minPrice = ema200Series[i]
+                if (i < ema200Series.size && ema200Series[i] > maxPrice) maxPrice = ema200Series[i]
+                if (i < ema233Series.size && ema233Series[i] > 0 && ema233Series[i] < minPrice) minPrice = ema233Series[i]
+                if (i < ema233Series.size && ema233Series[i] > maxPrice) maxPrice = ema233Series[i]
+            }
+
+            if (showAndeanStrategy) {
+                if (i < ema7Series.size && ema7Series[i] > 0 && ema7Series[i] < minPrice) minPrice = ema7Series[i]
+                if (i < ema7Series.size && ema7Series[i] > maxPrice) maxPrice = ema7Series[i]
+                if (i < ema30Series.size && ema30Series[i] > 0 && ema30Series[i] < minPrice) minPrice = ema30Series[i]
+                if (i < ema30Series.size && ema30Series[i] > maxPrice) maxPrice = ema30Series[i]
                 if (i < ema200Series.size && ema200Series[i] > 0 && ema200Series[i] < minPrice) minPrice = ema200Series[i]
                 if (i < ema200Series.size && ema200Series[i] > maxPrice) maxPrice = ema200Series[i]
                 if (i < ema233Series.size && ema233Series[i] > 0 && ema233Series[i] < minPrice) minPrice = ema233Series[i]
@@ -1565,6 +1807,35 @@ class BotStrategyChartView @JvmOverloads constructor(
             canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBorder)
 
             val paintDot = Paint().apply { color = colorYellowChannel; style = Paint.Style.FILL; isAntiAlias = true }
+            canvas.drawCircle(legendOffsetX + 10f, legendY - 3f, 3.5f, paintDot)
+
+            val paintLbl = Paint(paintStructureLabel).apply {
+                textSize = 11f
+                color = Color.WHITE
+            }
+            canvas.drawText(pillText, legendOffsetX + 18f, legendY + 1f, paintLbl)
+            legendOffsetX += pillWidth + 8f
+        }
+
+        if (showAndeanStrategy) {
+            val pillText = "1M ANDEAN + EMA (7/30 & 200/233)"
+            val textWidth = paintStructureLabel.measureText(pillText)
+            val pillWidth = textWidth + 26f
+            val pillHeight = 22f
+            val pillRect = RectF(legendOffsetX, legendY - 14f, legendOffsetX + pillWidth, legendY - 14f + pillHeight)
+            val paintPillBg = Paint().apply {
+                color = Color.parseColor("#E6151921")
+                style = Paint.Style.FILL
+            }
+            val paintPillBorder = Paint().apply {
+                color = colorEma7
+                style = Paint.Style.STROKE
+                strokeWidth = 1.5f
+            }
+            canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBg)
+            canvas.drawRoundRect(pillRect, 6f, 6f, paintPillBorder)
+
+            val paintDot = Paint().apply { color = colorEma7; style = Paint.Style.FILL; isAntiAlias = true }
             canvas.drawCircle(legendOffsetX + 10f, legendY - 3f, 3.5f, paintDot)
 
             val paintLbl = Paint(paintStructureLabel).apply {
@@ -1821,6 +2092,67 @@ class BotStrategyChartView @JvmOverloads constructor(
             }
         }
 
+        // Draw 1-Minute Andean + EMA Strategy Lines (EMA 7, EMA 30, and EMA 200/233 Baseline Channel)
+        if (showAndeanStrategy) {
+            pathEma7.reset()
+            pathEma30.reset()
+            pathEma200.reset()
+            pathEma233.reset()
+            pathBaselineChannel.reset()
+
+            var firstP7 = true
+            var firstP30 = true
+            var firstP200 = true
+            var firstP233 = true
+
+            for (i in renderStartIndex..renderEndIndex) {
+                val cx = getX(i)
+
+                if (i in ema7Series.indices && ema7Series[i] > 0) {
+                    val y7 = getY(ema7Series[i])
+                    if (firstP7) { pathEma7.moveTo(cx, y7); firstP7 = false } else { pathEma7.lineTo(cx, y7) }
+                }
+
+                if (i in ema30Series.indices && ema30Series[i] > 0) {
+                    val y30 = getY(ema30Series[i])
+                    if (firstP30) { pathEma30.moveTo(cx, y30); firstP30 = false } else { pathEma30.lineTo(cx, y30) }
+                }
+
+                if (i in ema200Series.indices && ema200Series[i] > 0) {
+                    val y200 = getY(ema200Series[i])
+                    if (firstP200) { pathEma200.moveTo(cx, y200); firstP200 = false } else { pathEma200.lineTo(cx, y200) }
+                }
+
+                if (i in ema233Series.indices && ema233Series[i] > 0) {
+                    val y233 = getY(ema233Series[i])
+                    if (firstP233) { pathEma233.moveTo(cx, y233); firstP233 = false } else { pathEma233.lineTo(cx, y233) }
+                }
+            }
+
+            // Translucent fill between EMA 200 & EMA 233
+            for (i in renderStartIndex..renderEndIndex) {
+                if (i in ema200Series.indices && ema200Series[i] > 0) {
+                    val cx = getX(i)
+                    val y200 = getY(ema200Series[i])
+                    if (i == renderStartIndex) pathBaselineChannel.moveTo(cx, y200) else pathBaselineChannel.lineTo(cx, y200)
+                }
+            }
+            for (i in renderEndIndex downTo renderStartIndex) {
+                if (i in ema233Series.indices && ema233Series[i] > 0) {
+                    val cx = getX(i)
+                    val y233 = getY(ema233Series[i])
+                    pathBaselineChannel.lineTo(cx, y233)
+                }
+            }
+            pathBaselineChannel.close()
+
+            canvas.drawPath(pathBaselineChannel, paintBaselineFill)
+            canvas.drawPath(pathEma200, paintEma200Line)
+            canvas.drawPath(pathEma233, paintEma233Line)
+            canvas.drawPath(pathEma30, paintEma30Line)
+            canvas.drawPath(pathEma7, paintEma7Line)
+        }
+
         // Draw Fractal CHoCh (ICT) Visual Structure Lines (Horizontal structure lines across candles)
         if (showFractalChoch) {
             val visibleLevels = fractalLevels.filter { lvl ->
@@ -1949,8 +2281,10 @@ class BotStrategyChartView @JvmOverloads constructor(
             val bodyHeight = max(2f, bottomBody - topBody)
             canvas.drawRect(cx - halfBody, topBody, cx + halfBody, topBody + bodyHeight, paintBody)
 
-            // Draw Strategy Signal Badges (BUY / SELL)
-            val sig = if (showEmaStrategy && i < signalSeries.size && signalSeries[i] != 0) {
+            // Draw Strategy Signal Badges (BUY / SELL / EXIT)
+            val sig = if (showAndeanStrategy && i in andeanSignals.indices && andeanSignals[i] != 0) {
+                andeanSignals[i]
+            } else if (showEmaStrategy && i < signalSeries.size && signalSeries[i] != 0) {
                 signalSeries[i]
             } else if (showDualRibbon && i < dualRibbonSignals.size) {
                 dualRibbonSignals[i]
@@ -1970,15 +2304,45 @@ class BotStrategyChartView @JvmOverloads constructor(
                 canvas.drawRoundRect(rect, 8f, 8f, paintBadgeSell)
                 val paintSignalText = Paint(paintText).apply { textSize = 18f; color = Color.WHITE }
                 canvas.drawText("▼ SELL", cx - 30f, badgeY + 20f, paintSignalText)
+            } else if (sig == 2 || sig == -2) { // EXIT Signal
+                val isExitLong = (sig == 2)
+                val badgeY = if (isExitLong) yHigh - 32f else yLow + 24f
+                val anchorY = if (isExitLong) yHigh else yLow
+                val targetY = if (isExitLong) badgeY + 28f else badgeY
+                canvas.drawLine(cx, anchorY, cx, targetY, paintSignalLine)
+                val rect = RectF(cx - 38f, badgeY, cx + 38f, badgeY + 28f)
+                val paintExitBadge = Paint().apply { color = Color.parseColor("#E6FF9800"); style = Paint.Style.FILL; isAntiAlias = true }
+                canvas.drawRoundRect(rect, 8f, 8f, paintExitBadge)
+                val paintSignalText = Paint(paintText).apply { textSize = 17f; color = Color.BLACK; typeface = Typeface.DEFAULT_BOLD }
+                canvas.drawText("✕ EXIT", cx - 26f, badgeY + 20f, paintSignalText)
             }
         }
 
-        // Render Clean Active SL / TP Risk Management for Dual-Ribbon (or Explicit Active Position Risk Levels)
+        // Render Clean Active SL / TP Risk Management
+        val lastAndeanSigIdx = if (showAndeanStrategy) andeanSignals.indexOfLast { it == 1 || it == -1 } else -1
         val hasExplicitRisk = explicitStopLoss > 0.0 && explicitTakeProfit > 0.0 && explicitIsLong != null
-        if ((showDualRibbon && lastDualRibbonSigIdx >= 0 && lastDualRibbonSigIdx < dualRibbonSlSeries.size) || hasExplicitRisk) {
-            val lastSig = if (hasExplicitRisk) (if (explicitIsLong == true) 1 else -1) else dualRibbonSignals[lastDualRibbonSigIdx]
-            val sl = if (hasExplicitRisk) explicitStopLoss else dualRibbonSlSeries[lastDualRibbonSigIdx]
-            val tp = if (hasExplicitRisk) explicitTakeProfit else dualRibbonTpSeries[lastDualRibbonSigIdx]
+        if ((showAndeanStrategy && lastAndeanSigIdx >= 0 && lastAndeanSigIdx < andeanSlSeries.size) || (showDualRibbon && lastDualRibbonSigIdx >= 0 && lastDualRibbonSigIdx < dualRibbonSlSeries.size) || hasExplicitRisk) {
+            val lastSig = if (hasExplicitRisk) {
+                if (explicitIsLong == true) 1 else -1
+            } else if (showAndeanStrategy) {
+                andeanSignals[lastAndeanSigIdx]
+            } else {
+                dualRibbonSignals[lastDualRibbonSigIdx]
+            }
+            val sl = if (hasExplicitRisk) {
+                explicitStopLoss
+            } else if (showAndeanStrategy) {
+                andeanSlSeries[lastAndeanSigIdx]
+            } else {
+                dualRibbonSlSeries[lastDualRibbonSigIdx]
+            }
+            val tp = if (hasExplicitRisk) {
+                explicitTakeProfit
+            } else if (showAndeanStrategy) {
+                andeanTpSeries[lastAndeanSigIdx]
+            } else {
+                dualRibbonTpSeries[lastDualRibbonSigIdx]
+            }
 
             if (sl > 0.0 && tp > 0.0) {
                 val ySl = getY(sl)
@@ -2178,7 +2542,7 @@ class BotStrategyChartView @JvmOverloads constructor(
         }
 
         // ═════════════════════════════════════════════════════════════════════
-        // ── 14-PERIOD RSI SUB-PANEL (TradingView Color Scheme & Scale) ────
+        // ── DEDICATED BOTTOM SUB-PANEL (Andean Oscillator OR RSI 14) ────────
         // ═════════════════════════════════════════════════════════════════════
         // 1. Thin Divider Line (#2A2E39)
         canvas.drawLine(0f, rsiPanelTop, width.toFloat(), rsiPanelTop, paintRsiDivider)
@@ -2189,124 +2553,237 @@ class BotStrategyChartView @JvmOverloads constructor(
         val rsiPlotBottom = rsiPanelBottom - rsiPaddingBottom
         val rsiPlotHeight = max(10f, rsiPlotBottom - rsiPlotTop)
 
-        val getRsiY = { rsiVal: Double ->
-            val clamped = rsiVal.coerceIn(0.0, 100.0)
-            (rsiPlotBottom - (clamped / 100.0) * rsiPlotHeight).toFloat()
-        }
+        if (showAndeanStrategy) {
+            // ── ANDEAN OSCILLATOR RENDERING (Bull Green, Bear Red, Signal Orange) ──
+            var maxOsc = 10.0
+            for (i in calcStartIndex..calcEndIndex) {
+                if (i in andeanBullSeries.indices && andeanBullSeries[i] > maxOsc) maxOsc = andeanBullSeries[i]
+                if (i in andeanBearSeries.indices && andeanBearSeries[i] > maxOsc) maxOsc = andeanBearSeries[i]
+                if (i in andeanSignalSeries.indices && andeanSignalSeries[i] > maxOsc) maxOsc = andeanSignalSeries[i]
+            }
+            val oscMaxSpan = maxOsc * 1.15
+            val getOscY = { v: Double ->
+                val clamped = v.coerceIn(0.0, oscMaxSpan)
+                (rsiPlotBottom - (clamped / oscMaxSpan) * rsiPlotHeight).toFloat()
+            }
 
-        val y70 = getRsiY(70.0)
-        val y50 = getRsiY(50.0)
-        val y30 = getRsiY(30.0)
+            // Grid lines
+            val yMid = getOscY(oscMaxSpan * 0.5)
+            val yZero = getOscY(0.0)
+            canvas.drawLine(paddingLeftPx, yMid, paddingLeftPx + chartWidth, yMid, paintRsi50)
+            canvas.drawLine(paddingLeftPx, yZero, paddingLeftPx + chartWidth, yZero, paintRsi50)
 
-        // 2. Subtle Shaded Zone between 30 and 70
-        canvas.drawRect(paddingLeftPx, y70, paddingLeftPx + chartWidth, y30, paintRsiZone)
+            // Draw paths
+            pathAndeanBull.reset()
+            pathAndeanBear.reset()
+            pathAndeanSignal.reset()
+            var bullStarted = false
+            var bearStarted = false
+            var sigStarted = false
 
-        // 3. Reference Level Lines: 70 (Solid Green), 50 (Faint Blue/Gray), 30 (Muted Red)
-        canvas.drawLine(paddingLeftPx, y70, paddingLeftPx + chartWidth, y70, paintRsi70)
-        canvas.drawLine(paddingLeftPx, y50, paddingLeftPx + chartWidth, y50, paintRsi50)
-        canvas.drawLine(paddingLeftPx, y30, paddingLeftPx + chartWidth, y30, paintRsi30)
-
-        // 4. Right Price Scale: Highlighted Yellow Badge for Level 70
-        val badge70Rect = RectF(paddingLeftPx + chartWidth + 4f, y70 - 10f, width.toFloat() - 6f, y70 + 10f)
-        canvas.drawRoundRect(badge70Rect, 4f, 4f, paintRsiBadge70)
-        canvas.drawText("70.00", badge70Rect.left + 6f, y70 + 5f, paintRsiBadge70Text)
-
-        // Level 50 Midline label
-        canvas.drawText("50.00", paddingLeftPx + chartWidth + 10f, y50 + 5f, paintTextSec)
-
-        // Level 30 Oversold label
-        val paintRsi30Label = Paint(paintTextSec).apply { color = colorRsiOversold }
-        canvas.drawText("30.00", paddingLeftPx + chartWidth + 10f, y30 + 5f, paintRsi30Label)
-
-        // 5. Draw RSI Line (Neon Yellow) and RSI MA Line (Teal/Cyan) Paths
-        pathRsi.reset()
-        pathRsiMa.reset()
-        var rsiStarted = false
-        var rsiMaStarted = false
-
-        for (i in renderStartIndex..renderEndIndex) {
-            val cx = getX(i)
-            if (i in rsiSeries.indices && rsiSeries[i] > 0.0) {
-                val cy = getRsiY(rsiSeries[i])
-                if (!rsiStarted) {
-                    pathRsi.moveTo(cx, cy)
-                    rsiStarted = true
-                } else {
-                    pathRsi.lineTo(cx, cy)
+            for (i in renderStartIndex..renderEndIndex) {
+                val cx = getX(i)
+                if (i in andeanBullSeries.indices) {
+                    val cy = getOscY(andeanBullSeries[i])
+                    if (!bullStarted) { pathAndeanBull.moveTo(cx, cy); bullStarted = true } else { pathAndeanBull.lineTo(cx, cy) }
+                }
+                if (i in andeanBearSeries.indices) {
+                    val cy = getOscY(andeanBearSeries[i])
+                    if (!bearStarted) { pathAndeanBear.moveTo(cx, cy); bearStarted = true } else { pathAndeanBear.lineTo(cx, cy) }
+                }
+                if (i in andeanSignalSeries.indices) {
+                    val cy = getOscY(andeanSignalSeries[i])
+                    if (!sigStarted) { pathAndeanSignal.moveTo(cx, cy); sigStarted = true } else { pathAndeanSignal.lineTo(cx, cy) }
                 }
             }
-            if (i in rsiMaSeries.indices && rsiMaSeries[i] > 0.0) {
-                val cy = getRsiY(rsiMaSeries[i])
-                if (!rsiMaStarted) {
-                    pathRsiMa.moveTo(cx, cy)
-                    rsiMaStarted = true
-                } else {
-                    pathRsiMa.lineTo(cx, cy)
+
+            if (bullStarted) canvas.drawPath(pathAndeanBull, paintAndeanBull)
+            if (bearStarted) canvas.drawPath(pathAndeanBear, paintAndeanBear)
+            if (sigStarted) canvas.drawPath(pathAndeanSignal, paintAndeanSignal)
+
+            // Right scale badges for live values
+            if (candles.isNotEmpty() && andeanSignalSeries.isNotEmpty()) {
+                val lastBull = andeanBullSeries.lastOrNull() ?: 0.0
+                val lastBear = andeanBearSeries.lastOrNull() ?: 0.0
+                val lastSig = andeanSignalSeries.lastOrNull() ?: 0.0
+
+                val ySig = getOscY(lastSig)
+                val sigBadgeRect = RectF(paddingLeftPx + chartWidth + 4f, ySig - 10f, width.toFloat() - 6f, ySig + 10f)
+                val paintSigBadge = Paint().apply { color = colorAndeanSignal; style = Paint.Style.FILL }
+                canvas.drawRoundRect(sigBadgeRect, 4f, 4f, paintSigBadge)
+                canvas.drawText(String.format(Locale.US, "%.1f", lastSig), sigBadgeRect.left + 6f, ySig + 5f, paintRsiValBadgeText)
+
+                canvas.drawText(String.format(Locale.US, "%.1f", oscMaxSpan * 0.5), paddingLeftPx + chartWidth + 10f, yMid + 5f, paintTextSec)
+                canvas.drawText("0.0", paddingLeftPx + chartWidth + 10f, yZero + 5f, paintTextSec)
+            }
+
+            // Subpanel header legend
+            val legendOscY = rsiPanelTop + 16f
+            var legX = paddingLeftPx + 10f
+            val dotRadius = 3.5f
+
+            // Bull legend
+            val paintGreenDot = Paint().apply { color = colorAndeanBull; style = Paint.Style.FILL; isAntiAlias = true }
+            canvas.drawCircle(legX + dotRadius, legendOscY - 5f, dotRadius, paintGreenDot)
+            legX += dotRadius * 2 + 5f
+            val curBull = if (isCrosshairActive && selectedCandleIndex in andeanBullSeries.indices) andeanBullSeries[selectedCandleIndex] else andeanBullSeries.lastOrNull() ?: 0.0
+            val bullText = String.format(Locale.US, "Bull: %.1f", curBull)
+            val paintBullLeg = Paint(paintTextSec).apply { color = colorAndeanBull; textSize = 18f; typeface = Typeface.DEFAULT_BOLD }
+            canvas.drawText(bullText, legX, legendOscY, paintBullLeg)
+            legX += paintBullLeg.measureText(bullText) + 16f
+
+            // Bear legend
+            val paintRedDot = Paint().apply { color = colorAndeanBear; style = Paint.Style.FILL; isAntiAlias = true }
+            canvas.drawCircle(legX + dotRadius, legendOscY - 5f, dotRadius, paintRedDot)
+            legX += dotRadius * 2 + 5f
+            val curBear = if (isCrosshairActive && selectedCandleIndex in andeanBearSeries.indices) andeanBearSeries[selectedCandleIndex] else andeanBearSeries.lastOrNull() ?: 0.0
+            val bearText = String.format(Locale.US, "Bear: %.1f", curBear)
+            val paintBearLeg = Paint(paintTextSec).apply { color = colorAndeanBear; textSize = 18f; typeface = Typeface.DEFAULT_BOLD }
+            canvas.drawText(bearText, legX, legendOscY, paintBearLeg)
+            legX += paintBearLeg.measureText(bearText) + 16f
+
+            // Signal legend
+            val paintOrangeDot = Paint().apply { color = colorAndeanSignal; style = Paint.Style.FILL; isAntiAlias = true }
+            canvas.drawCircle(legX + dotRadius, legendOscY - 5f, dotRadius, paintOrangeDot)
+            legX += dotRadius * 2 + 5f
+            val curSig = if (isCrosshairActive && selectedCandleIndex in andeanSignalSeries.indices) andeanSignalSeries[selectedCandleIndex] else andeanSignalSeries.lastOrNull() ?: 0.0
+            val sigText = String.format(Locale.US, "Signal: %.1f", curSig)
+            val paintSigLeg = Paint(paintTextSec).apply { color = colorAndeanSignal; textSize = 18f; typeface = Typeface.DEFAULT_BOLD }
+            canvas.drawText(sigText, legX, legendOscY, paintSigLeg)
+            legX += paintSigLeg.measureText(sigText) + 16f
+
+            // Ranging Indicator Pill
+            val isRanging = curSig > curBull && curSig > curBear
+            if (isRanging) {
+                val rangePillRect = RectF(legX, legendOscY - 14f, legX + 96f, legendOscY + 6f)
+                val paintRangeBg = Paint().apply { color = Color.parseColor("#E63E2723"); style = Paint.Style.FILL }
+                val paintRangeBorder = Paint().apply { color = colorAndeanSignal; style = Paint.Style.STROKE; strokeWidth = 1.2f }
+                val paintRangeText = Paint().apply { color = colorAndeanSignal; textSize = 15f; typeface = Typeface.DEFAULT_BOLD; isAntiAlias = true }
+                canvas.drawRoundRect(rangePillRect, 4f, 4f, paintRangeBg)
+                canvas.drawRoundRect(rangePillRect, 4f, 4f, paintRangeBorder)
+                canvas.drawText("● RANGING", legX + 8f, legendOscY, paintRangeText)
+            }
+        } else {
+            // ── STANDARD 14-PERIOD RSI SUB-PANEL ──
+            val getRsiY = { rsiVal: Double ->
+                val clamped = rsiVal.coerceIn(0.0, 100.0)
+                (rsiPlotBottom - (clamped / 100.0) * rsiPlotHeight).toFloat()
+            }
+
+            val y70 = getRsiY(70.0)
+            val y50 = getRsiY(50.0)
+            val y30 = getRsiY(30.0)
+
+            // 2. Subtle Shaded Zone between 30 and 70
+            canvas.drawRect(paddingLeftPx, y70, paddingLeftPx + chartWidth, y30, paintRsiZone)
+
+            // 3. Reference Level Lines: 70 (Solid Green), 50 (Faint Blue/Gray), 30 (Muted Red)
+            canvas.drawLine(paddingLeftPx, y70, paddingLeftPx + chartWidth, y70, paintRsi70)
+            canvas.drawLine(paddingLeftPx, y50, paddingLeftPx + chartWidth, y50, paintRsi50)
+            canvas.drawLine(paddingLeftPx, y30, paddingLeftPx + chartWidth, y30, paintRsi30)
+
+            // 4. Right Price Scale: Highlighted Yellow Badge for Level 70
+            val badge70Rect = RectF(paddingLeftPx + chartWidth + 4f, y70 - 10f, width.toFloat() - 6f, y70 + 10f)
+            canvas.drawRoundRect(badge70Rect, 4f, 4f, paintRsiBadge70)
+            canvas.drawText("70.00", badge70Rect.left + 6f, y70 + 5f, paintRsiBadge70Text)
+
+            // Level 50 Midline label
+            canvas.drawText("50.00", paddingLeftPx + chartWidth + 10f, y50 + 5f, paintTextSec)
+
+            // Level 30 Oversold label
+            val paintRsi30Label = Paint(paintTextSec).apply { color = colorRsiOversold }
+            canvas.drawText("30.00", paddingLeftPx + chartWidth + 10f, y30 + 5f, paintRsi30Label)
+
+            // 5. Draw RSI Line (Neon Yellow) and RSI MA Line (Teal/Cyan) Paths
+            pathRsi.reset()
+            pathRsiMa.reset()
+            var rsiStarted = false
+            var rsiMaStarted = false
+
+            for (i in renderStartIndex..renderEndIndex) {
+                val cx = getX(i)
+                if (i in rsiSeries.indices && rsiSeries[i] > 0.0) {
+                    val cy = getRsiY(rsiSeries[i])
+                    if (!rsiStarted) {
+                        pathRsi.moveTo(cx, cy)
+                        rsiStarted = true
+                    } else {
+                        pathRsi.lineTo(cx, cy)
+                    }
+                }
+                if (i in rsiMaSeries.indices && rsiMaSeries[i] > 0.0) {
+                    val cy = getRsiY(rsiMaSeries[i])
+                    if (!rsiMaStarted) {
+                        pathRsiMa.moveTo(cx, cy)
+                        rsiMaStarted = true
+                    } else {
+                        pathRsiMa.lineTo(cx, cy)
+                    }
                 }
             }
-        }
 
-        if (rsiMaStarted) {
-            canvas.drawPath(pathRsiMa, paintRsiMa)
-        }
-        if (rsiStarted) {
-            canvas.drawPath(pathRsi, paintRsiLine)
-        }
-
-        // 6. Live Current RSI Value Badge on Right Scale
-        if (candles.isNotEmpty() && rsiSeries.isNotEmpty()) {
-            val lastRsi = rsiSeries.last()
-            val yCurrRsi = getRsiY(lastRsi)
-            if (abs(yCurrRsi - y70) > 16f) {
-                val rsiValStr = String.format(Locale.US, "%.1f", lastRsi)
-                val currRsiBadgeRect = RectF(paddingLeftPx + chartWidth + 4f, yCurrRsi - 10f, width.toFloat() - 6f, yCurrRsi + 10f)
-                paintRsiValBadge.color = if (lastRsi >= 70.0) colorBullish else if (lastRsi <= 30.0) colorBearish else colorRsiMa
-                canvas.drawRoundRect(currRsiBadgeRect, 4f, 4f, paintRsiValBadge)
-                canvas.drawText(rsiValStr, currRsiBadgeRect.left + 8f, yCurrRsi + 5f, paintRsiValBadgeText)
+            if (rsiMaStarted) {
+                canvas.drawPath(pathRsiMa, paintRsiMa)
             }
+            if (rsiStarted) {
+                canvas.drawPath(pathRsi, paintRsiLine)
+            }
+
+            // 6. Live Current RSI Value Badge on Right Scale
+            if (candles.isNotEmpty() && rsiSeries.isNotEmpty()) {
+                val lastRsi = rsiSeries.last()
+                val yCurrRsi = getRsiY(lastRsi)
+                if (abs(yCurrRsi - y70) > 16f) {
+                    val rsiValStr = String.format(Locale.US, "%.1f", lastRsi)
+                    val currRsiBadgeRect = RectF(paddingLeftPx + chartWidth + 4f, yCurrRsi - 10f, width.toFloat() - 6f, yCurrRsi + 10f)
+                    paintRsiValBadge.color = if (lastRsi >= 70.0) colorBullish else if (lastRsi <= 30.0) colorBearish else colorRsiMa
+                    canvas.drawRoundRect(currRsiBadgeRect, 4f, 4f, paintRsiValBadge)
+                    canvas.drawText(rsiValStr, currRsiBadgeRect.left + 8f, yCurrRsi + 5f, paintRsiValBadgeText)
+                }
+            }
+
+            // 7. Sub-Panel Header Legend (Top-Left of RSI sub-panel)
+            val legendRsiY = rsiPanelTop + 16f
+            var legX = paddingLeftPx + 10f
+
+            val dotRadius = 3.5f
+            val paintYellowDot = Paint().apply { color = colorRsiLine; style = Paint.Style.FILL; isAntiAlias = true }
+            canvas.drawCircle(legX + dotRadius, legendRsiY - 5f, dotRadius, paintYellowDot)
+            legX += dotRadius * 2 + 5f
+
+            val activeRsiVal = if (isCrosshairActive && selectedCandleIndex in rsiSeries.indices) {
+                rsiSeries[selectedCandleIndex]
+            } else if (rsiSeries.isNotEmpty()) {
+                rsiSeries.last()
+            } else 0.0
+
+            val rsiLegendText = String.format(Locale.US, "RSI 14: %.2f", activeRsiVal)
+            val paintRsiLegend = Paint(paintTextSec).apply {
+                color = colorRsiLine
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            canvas.drawText(rsiLegendText, legX, legendRsiY, paintRsiLegend)
+            legX += paintRsiLegend.measureText(rsiLegendText) + 16f
+
+            val paintTealDot = Paint().apply { color = colorRsiMa; style = Paint.Style.FILL; isAntiAlias = true }
+            canvas.drawCircle(legX + dotRadius, legendRsiY - 5f, dotRadius, paintTealDot)
+            legX += dotRadius * 2 + 5f
+
+            val activeMaVal = if (isCrosshairActive && selectedCandleIndex in rsiMaSeries.indices) {
+                rsiMaSeries[selectedCandleIndex]
+            } else if (rsiMaSeries.isNotEmpty()) {
+                rsiMaSeries.last()
+            } else 0.0
+
+            val maLegendText = String.format(Locale.US, "MA 14: %.2f", activeMaVal)
+            val paintMaLegend = Paint(paintTextSec).apply {
+                color = colorRsiMa
+                textSize = 18f
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            canvas.drawText(maLegendText, legX, legendRsiY, paintMaLegend)
         }
-
-        // 7. Sub-Panel Header Legend (Top-Left of RSI sub-panel)
-        val legendRsiY = rsiPanelTop + 16f
-        var legX = paddingLeftPx + 10f
-
-        val dotRadius = 3.5f
-        val paintYellowDot = Paint().apply { color = colorRsiLine; style = Paint.Style.FILL; isAntiAlias = true }
-        canvas.drawCircle(legX + dotRadius, legendRsiY - 5f, dotRadius, paintYellowDot)
-        legX += dotRadius * 2 + 5f
-
-        val activeRsiVal = if (isCrosshairActive && selectedCandleIndex in rsiSeries.indices) {
-            rsiSeries[selectedCandleIndex]
-        } else if (rsiSeries.isNotEmpty()) {
-            rsiSeries.last()
-        } else 0.0
-
-        val rsiLegendText = String.format(Locale.US, "RSI 14: %.2f", activeRsiVal)
-        val paintRsiLegend = Paint(paintTextSec).apply {
-            color = colorRsiLine
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        canvas.drawText(rsiLegendText, legX, legendRsiY, paintRsiLegend)
-        legX += paintRsiLegend.measureText(rsiLegendText) + 16f
-
-        val paintTealDot = Paint().apply { color = colorRsiMa; style = Paint.Style.FILL; isAntiAlias = true }
-        canvas.drawCircle(legX + dotRadius, legendRsiY - 5f, dotRadius, paintTealDot)
-        legX += dotRadius * 2 + 5f
-
-        val activeMaVal = if (isCrosshairActive && selectedCandleIndex in rsiMaSeries.indices) {
-            rsiMaSeries[selectedCandleIndex]
-        } else if (rsiMaSeries.isNotEmpty()) {
-            rsiMaSeries.last()
-        } else 0.0
-
-        val maLegendText = String.format(Locale.US, "MA 14: %.2f", activeMaVal)
-        val paintMaLegend = Paint(paintTextSec).apply {
-            color = colorRsiMa
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        canvas.drawText(maLegendText, legX, legendRsiY, paintMaLegend)
 
         // 8. Bottom Time Axis Labels (below RSI sub-panel in bottom padding)
         val timeLabelY = rsiPanelBottom + 26f
@@ -2368,7 +2845,15 @@ class BotStrategyChartView @JvmOverloads constructor(
                 val ohlcText = "O:${formatPriceValue(hc.open)} H:${formatPriceValue(hc.high)} L:${formatPriceValue(hc.low)} C:${formatPriceValue(hc.close)}"
                 canvas.drawText(ohlcText, boxX + 14f, boxY + 62f, paintTextSec)
 
-                if (showEmaStrategy) {
+                if (showAndeanStrategy) {
+                    val e7 = if (hoverIndex in ema7Series.indices) ema7Series[hoverIndex] else 0.0
+                    val e30 = if (hoverIndex in ema30Series.indices) ema30Series[hoverIndex] else 0.0
+                    val bBull = if (hoverIndex in andeanBullSeries.indices) andeanBullSeries[hoverIndex] else 0.0
+                    val bBear = if (hoverIndex in andeanBearSeries.indices) andeanBearSeries[hoverIndex] else 0.0
+                    val andeanText = "E7:${formatPriceValue(e7)} | E30:${formatPriceValue(e30)} | Bull:${String.format(Locale.US, "%.1f", bBull)} Bear:${String.format(Locale.US, "%.1f", bBear)}"
+                    val paintAndeanLegend = Paint(paintTextSec).apply { color = colorEma7; textSize = 17f }
+                    canvas.drawText(andeanText, boxX + 14f, boxY + 90f, paintAndeanLegend)
+                } else if (showEmaStrategy) {
                     val e8H = if (hoverIndex < ema8HighSeries.size) ema8HighSeries[hoverIndex] else 0.0
                     val e34H = if (hoverIndex < ema34HighSeries.size) ema34HighSeries[hoverIndex] else 0.0
                     val emaText = "EMA8:${formatPriceValue(e8H)} | EMA34:${formatPriceValue(e34H)}"

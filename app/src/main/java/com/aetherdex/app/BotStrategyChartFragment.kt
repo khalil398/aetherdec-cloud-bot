@@ -531,7 +531,11 @@ class BotStrategyChartFragment : Fragment() {
             }
         }
 
-        val isDualRibbon = activeStrategiesState.any {
+        val isAndean = activeStrategiesState.any {
+            it.contains("Andean", ignoreCase = true) ||
+            it.contains("1m", ignoreCase = true)
+        }
+        val isDualRibbon = !isAndean && activeStrategiesState.any {
             it.contains("Dual-Ribbon", ignoreCase = true) ||
             it.contains("Combined Ribbon", ignoreCase = true) ||
             it.contains("Krypt", ignoreCase = true) ||
@@ -539,20 +543,24 @@ class BotStrategyChartFragment : Fragment() {
         }
 
         val tvTitle = TextView(context).apply {
-            text = if (isDualRibbon) "🤖 5M DUAL-RIBBON STRATEGY" else "🤖 BOT 30M STRATEGY"
+            text = when {
+                isAndean -> "🤖 1M ANDEAN + EMA STRATEGY"
+                isDualRibbon -> "🤖 5M DUAL-RIBBON STRATEGY"
+                else -> "🤖 BOT 30M STRATEGY"
+            }
             textSize = 13f
             setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#00E676"))
+            setTextColor(if (isAndean) Color.parseColor("#FFAA00") else Color.parseColor("#00E676"))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         titleRow.addView(tvTitle)
         popupCard.addView(titleRow)
 
         val tvDesc = TextView(context).apply {
-            text = if (isDualRibbon) {
-                "Combined Ribbon: 134 EMA High/Low Green Band (#00E676) + Ribbon 2 (Krypt Fast 8 EMAs 20-55 on close)."
-            } else {
-                "Dual EMA channel breakout engine on 30m candles with strict breakout crossover verification."
+            text = when {
+                isAndean -> "1m High-Speed Execution: EMA 7 (Orange) & EMA 30 (Cyan/Blue) with Andean Oscillator (Bull/Bear/Signal). Trend filtered by EMA 200/233 channel with 3-candle dual confirmation."
+                isDualRibbon -> "Combined Ribbon: 134 EMA High/Low Green Band (#00E676) + Ribbon 2 (Krypt Fast 8 EMAs 20-55 on close)."
+                else -> "Dual EMA channel breakout engine on 30m candles with strict breakout crossover verification."
             }
             textSize = 11f
             setTextColor(Color.parseColor("#8A96A8"))
@@ -606,7 +614,17 @@ class BotStrategyChartFragment : Fragment() {
             popupCard.addView(row)
         }
 
-        if (isDualRibbon) {
+        if (isAndean) {
+            addLegendRow(Color.parseColor("#FFAA00"), "EMA 7", "Fast Signal Line (Orange)")
+            addLegendRow(Color.parseColor("#00B4D8"), "EMA 30", "Slow Base Line (Cyan/Blue)")
+            addLegendRow(Color.parseColor("#BA68C8"), "EMA 200/233", "Trend Baseline Channel (Purple)")
+            addLegendRow(Color.parseColor("#00E676"), "Andean Bull", "Bullish Volatility (Green)")
+            addLegendRow(Color.parseColor("#FF5252"), "Andean Bear", "Bearish Volatility (Red)")
+            addLegendRow(Color.parseColor("#FF9800"), "Andean Signal", "Signal / Range Filter (Orange)")
+            addLegendRow(Color.parseColor("#00E676"), "▲ BUY", "Long Entry: Price > 200/233 & Dual Cross <= 3 bars")
+            addLegendRow(Color.parseColor("#FF5252"), "▼ SELL", "Short Entry: Price < 200/233 & Dual Cross <= 3 bars")
+            addLegendRow(Color.parseColor("#FF9800"), "✕ EXIT", "Dual Reversal Exit within <= 3 bars")
+        } else if (isDualRibbon) {
             addLegendRow(Color.parseColor("#00E676"), "Ribbon 1", "134 EMA High/Low Green Band")
             addLegendRow(Color.parseColor("#F5EB5D"), "MA-1 (20)", "Primary Yellow Reference Line")
             addLegendRow(Color.parseColor("#F5B771"), "MA 25-35", "Krypt Fast EMAs (25, 30, 35)")
@@ -1149,7 +1167,11 @@ class BotStrategyChartFragment : Fragment() {
                     .edit().putStringSet("bot_chart_active_strategies", strategies).apply()
             } catch (_: Exception) { }
         }
-        if (strategies.any { it.contains("Dual-Ribbon", ignoreCase = true) || it.contains("5m", ignoreCase = true) }) {
+        if (strategies.any { it.contains("Andean", ignoreCase = true) || it.contains("1m", ignoreCase = true) }) {
+            if (currentTimeframe != "1m") {
+                selectTimeframe("1m")
+            }
+        } else if (strategies.any { it.contains("Dual-Ribbon", ignoreCase = true) || it.contains("5m", ignoreCase = true) }) {
             if (currentTimeframe != "5m") {
                 selectTimeframe("5m")
             }
@@ -1200,10 +1222,11 @@ class BotStrategyChartFragment : Fragment() {
                 activeStrategiesState = ownStrategies
                 botChartView.setActiveStrategies(ownStrategies)
                 // Determine target timeframe: saved value wins; else infer from strategy name
-                val targetTf = ownTimeframe ?: if (ownStrategies.any {
-                    it.contains("Dual-Ribbon", ignoreCase = true) ||
-                    it.contains("5m", ignoreCase = true)
-                }) "5m" else currentTimeframe
+                val targetTf = ownTimeframe ?: when {
+                    ownStrategies.any { it.contains("Andean", ignoreCase = true) || it.contains("1m", ignoreCase = true) } -> "1m"
+                    ownStrategies.any { it.contains("Dual-Ribbon", ignoreCase = true) || it.contains("5m", ignoreCase = true) } -> "5m"
+                    else -> currentTimeframe
+                }
                 if (currentTimeframe != targetTf) {
                     selectTimeframe(targetTf)
                 }

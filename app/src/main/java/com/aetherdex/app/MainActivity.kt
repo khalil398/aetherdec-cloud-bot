@@ -123,6 +123,7 @@ class MainActivity : AppCompatActivity(),
     private lateinit var chipStrategyEmaChannel: Chip
     private lateinit var chipStrategyFractalChoch: Chip
     private lateinit var chipStrategyDualRibbon: Chip
+    private lateinit var chipStrategyAndeanEma: Chip
     private lateinit var layoutSpotBalances: View
     private lateinit var tvSpotUsdcBalance: TextView
     private lateinit var tvSpotAssetBalance: TextView
@@ -662,6 +663,7 @@ class MainActivity : AppCompatActivity(),
             chipStrategyEmaChannel = findViewById(R.id.chipStrategyEmaChannel)
             chipStrategyFractalChoch = findViewById(R.id.chipStrategyFractalChoch)
             chipStrategyDualRibbon = findViewById(R.id.chipStrategyDualRibbon)
+            chipStrategyAndeanEma = findViewById(R.id.chipStrategyAndeanEma)
             layoutSpotBalances = findViewById(R.id.layoutSpotBalances)
             tvSpotUsdcBalance = findViewById(R.id.tvSpotUsdcBalance)
             tvSpotAssetBalance = findViewById(R.id.tvSpotAssetBalance)
@@ -4276,6 +4278,7 @@ class MainActivity : AppCompatActivity(),
                 if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = currentStrats.contains("30m EMA High/Low")
                 if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = currentStrats.contains("Fractal CHoCh (ICT)")
                 if (::chipStrategyDualRibbon.isInitialized) chipStrategyDualRibbon.isChecked = currentStrats.contains("5m Dual-Ribbon")
+                if (::chipStrategyAndeanEma.isInitialized) chipStrategyAndeanEma.isChecked = currentStrats.contains("1m Andean + EMA")
                 BotStrategyChartFragment.activeStrategiesState = currentStrats
                 val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
                 botChartFrag?.updateActiveStrategies(currentStrats)
@@ -4331,6 +4334,7 @@ class MainActivity : AppCompatActivity(),
                 if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = currentStrats.contains("30m EMA High/Low")
                 if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = currentStrats.contains("Fractal CHoCh (ICT)")
                 if (::chipStrategyDualRibbon.isInitialized) chipStrategyDualRibbon.isChecked = currentStrats.contains("5m Dual-Ribbon")
+                if (::chipStrategyAndeanEma.isInitialized) chipStrategyAndeanEma.isChecked = currentStrats.contains("1m Andean + EMA")
                 BotStrategyChartFragment.activeStrategiesState = currentStrats
                 val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
                 botChartFrag?.updateActiveStrategies(currentStrats)
@@ -4529,6 +4533,7 @@ class MainActivity : AppCompatActivity(),
             if (::chipStrategyEmaChannel.isInitialized) chipStrategyEmaChannel.isChecked = currentStrats.contains("30m EMA High/Low")
             if (::chipStrategyFractalChoch.isInitialized) chipStrategyFractalChoch.isChecked = currentStrats.contains("Fractal CHoCh (ICT)")
             if (::chipStrategyDualRibbon.isInitialized) chipStrategyDualRibbon.isChecked = currentStrats.contains("5m Dual-Ribbon")
+            if (::chipStrategyAndeanEma.isInitialized) chipStrategyAndeanEma.isChecked = currentStrats.contains("1m Andean + EMA")
 
             BotStrategyChartFragment.activeStrategiesState = currentStrats
             val botChartFrag = supportFragmentManager.findFragmentById(R.id.botChartSection) as? BotStrategyChartFragment
@@ -4613,6 +4618,7 @@ class MainActivity : AppCompatActivity(),
                         R.id.chipStrategyEmaChannel -> selectedStrats.add("30m EMA High/Low")
                         R.id.chipStrategyFractalChoch -> selectedStrats.add("Fractal CHoCh (ICT)")
                         R.id.chipStrategyDualRibbon -> selectedStrats.add("5m Dual-Ribbon")
+                        R.id.chipStrategyAndeanEma -> selectedStrats.add("1m Andean + EMA")
                     }
                 }
                 if (selectedStrats.isEmpty()) {
