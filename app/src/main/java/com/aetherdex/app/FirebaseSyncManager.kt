@@ -183,7 +183,7 @@ object FirebaseSyncManager {
         leverage: Int = 10,
         marginMode: String = "ISOLATED",
         isIsolated: Boolean = true,
-        positionDirection: String = "LONG",
+        positionDirection: String = "TWO-WAY",
         isSpotBotActive: Boolean = false,
         isFuturesBotActive: Boolean = false,
         spotStrategy: String = strategy,

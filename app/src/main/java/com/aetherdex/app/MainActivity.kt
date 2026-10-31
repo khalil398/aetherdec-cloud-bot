@@ -4476,7 +4476,7 @@ class MainActivity : AppCompatActivity(),
 
     private fun syncCurrentBotConfig(isActiveState: Boolean? = null, overrideWallet: String? = null) {
         val currentLeverage = if (::sliderLeverage.isInitialized) sliderLeverage.value.toInt() else 10
-        val direction = if (::btnShort.isInitialized && btnShort.isChecked && !btnLong.isChecked) "SHORT" else "LONG"
+        val direction = "TWO-WAY" // Automated bot is strictly TWO-WAY (executes both Long and Short based on strategy signals)
         val marginMode = if (marginModeIsolated) "ISOLATED" else "CROSS"
 
         val effectiveSpotActive = if (isActiveState == false && isSpotMode) false else (if (isSpotMode && isActiveState != null) isActiveState else isSpotBotActive)
