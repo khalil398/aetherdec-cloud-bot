@@ -1176,13 +1176,14 @@ class BotStrategyChartView @JvmOverloads constructor(
             andeanSignalSeries = calculateEMA(compMax, 9)
 
             var andeanPosState = 0 // 0 = NEUTRAL, 1 = IN_LONG, -1 = IN_SHORT
-            var lastEmaBullCross = -999
-            var lastEmaBearCross = -999
-            var lastAndeanBullCross = -999
-            var lastAndeanBearCross = -999
+            var lastEmaBullCross = -9999
+            var lastEmaBearCross = -9999
+            var lastAndeanBullCross = -9999
+            var lastAndeanBearCross = -9999
 
             for (i in 1 until n) {
                 val c = closes[i]
+                val o = opens[i]
                 val e7 = ema7Series[i]
                 val e30 = ema30Series[i]
                 val prevE7 = ema7Series[i - 1]
@@ -1207,56 +1208,63 @@ class BotStrategyChartView @JvmOverloads constructor(
 
                 if (isEmaBullCross) {
                     lastEmaBullCross = i
-                    lastEmaBearCross = -999
+                    lastEmaBearCross = -9999
                 }
                 if (isEmaBearCross) {
                     lastEmaBearCross = i
-                    lastEmaBullCross = -999
+                    lastEmaBullCross = -9999
                 }
                 if (isAndeanBullCross) {
                     lastAndeanBullCross = i
-                    lastAndeanBearCross = -999
+                    lastAndeanBearCross = -9999
                 }
                 if (isAndeanBearCross) {
                     lastAndeanBearCross = i
-                    lastAndeanBullCross = -999
+                    lastAndeanBullCross = -9999
                 }
+
+                var exitTriggeredThisCandle = false
 
                 // Exits for active position (Extended window <= 6 candles):
                 if (andeanPosState == -1) {
-                    // In SHORT: Exit when EMA 7 crosses above 30 AND Andean red crosses below green within <= 6 candles
-                    val diffExit = abs(lastEmaBullCross - lastAndeanBullCross)
-                    val exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 6
+                    // In SHORT: Exit when EMA 7 crosses above 30 AND Andean bull crosses above bear within <= 6 candles
+                    val hasBothExitBullCrosses = (lastEmaBullCross >= 0 && lastAndeanBullCross >= 0)
+                    val diffExit = if (hasBothExitBullCrosses) abs(lastEmaBullCross - lastAndeanBullCross) else 9999
+                    val exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && hasBothExitBullCrosses && diffExit <= 6
                     if (exitTriggeredNow) {
                         andeanSignals[i] = -2 // EXIT SHORT
                         andeanPosState = 0
-                        lastEmaBullCross = -999
-                        lastAndeanBullCross = -999
+                        exitTriggeredThisCandle = true
+                        lastEmaBullCross = -9999
+                        lastAndeanBullCross = -9999
                     }
                 } else if (andeanPosState == 1) {
                     // In LONG: Exit when EMA 7 crosses below 30 AND Andean bull crosses below bear within <= 6 candles
-                    val diffExit = abs(lastEmaBearCross - lastAndeanBearCross)
-                    val exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 6
+                    val hasBothExitBearCrosses = (lastEmaBearCross >= 0 && lastAndeanBearCross >= 0)
+                    val diffExit = if (hasBothExitBearCrosses) abs(lastEmaBearCross - lastAndeanBearCross) else 9999
+                    val exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && hasBothExitBearCrosses && diffExit <= 6
                     if (exitTriggeredNow) {
                         andeanSignals[i] = 2 // EXIT LONG
                         andeanPosState = 0
-                        lastEmaBearCross = -999
-                        lastAndeanBearCross = -999
+                        exitTriggeredThisCandle = true
+                        lastEmaBearCross = -9999
+                        lastAndeanBearCross = -9999
                     }
                 }
 
-                // Entries if NEUTRAL:
-                if (andeanPosState == 0) {
-                    // SHORT: Below EMA 200 & 233 channel and dual bearish cross within <= 3 candles
-                    val diffShort = abs(lastEmaBearCross - lastAndeanBearCross)
-                    val shortTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffShort <= 3
-                    val isBelowBaseline = (!hasBaseline || baselineMin <= 0.0 || c < baselineMin)
+                // Entries ONLY if NEUTRAL and NO exit happened on this exact candle:
+                if (andeanPosState == 0 && !exitTriggeredThisCandle) {
+                    // SHORT: Both candle open and close strictly broken below EMA 200 & 233 channel and dual bearish cross within <= 3 candles
+                    val hasBothBearCrosses = (lastEmaBearCross >= 0 && lastAndeanBearCross >= 0)
+                    val diffShort = if (hasBothBearCrosses) abs(lastEmaBearCross - lastAndeanBearCross) else 9999
+                    val shortTriggeredNow = (isEmaBearCross || isAndeanBearCross) && hasBothBearCrosses && diffShort <= 3
+                    val isBrokenBelowBaseline = (!hasBaseline || baselineMin <= 0.0 || (max(c, o) < baselineMin))
 
-                    if (shortTriggeredNow && isBelowBaseline) {
+                    if (shortTriggeredNow && isBrokenBelowBaseline) {
                         andeanSignals[i] = -1 // SELL/SHORT ENTRY
                         andeanPosState = -1
-                        lastEmaBearCross = -999
-                        lastAndeanBearCross = -999
+                        lastEmaBearCross = -9999
+                        lastAndeanBearCross = -9999
 
                         val recentHigh = (max(0, i - 10)..i).maxOf { highs[it] }
                         var sl = max(recentHigh, e30 * 1.002)
@@ -1268,16 +1276,17 @@ class BotStrategyChartView @JvmOverloads constructor(
                         andeanSlSeries[i] = sl
                         andeanTpSeries[i] = tp
                     } else {
-                        // LONG: Above EMA 200 & 233 channel and dual bullish cross within <= 3 candles
-                        val diffLong = abs(lastEmaBullCross - lastAndeanBullCross)
-                        val longTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffLong <= 3
-                        val isAboveBaseline = (!hasBaseline || baselineMax <= 0.0 || c > baselineMax)
+                        // LONG: Both candle open and close strictly broken above EMA 200 & 233 channel and dual bullish cross within <= 3 candles
+                        val hasBothBullCrosses = (lastEmaBullCross >= 0 && lastAndeanBullCross >= 0)
+                        val diffLong = if (hasBothBullCrosses) abs(lastEmaBullCross - lastAndeanBullCross) else 9999
+                        val longTriggeredNow = (isEmaBullCross || isAndeanBullCross) && hasBothBullCrosses && diffLong <= 3
+                        val isBrokenAboveBaseline = (!hasBaseline || baselineMax <= 0.0 || (min(c, o) > baselineMax))
 
-                        if (longTriggeredNow && isAboveBaseline) {
+                        if (longTriggeredNow && isBrokenAboveBaseline) {
                             andeanSignals[i] = 1 // BUY/LONG ENTRY
                             andeanPosState = 1
-                            lastEmaBullCross = -999
-                            lastAndeanBullCross = -999
+                            lastEmaBullCross = -9999
+                            lastAndeanBullCross = -9999
 
                             val recentLow = (max(0, i - 10)..i).minOf { lows[it] }
                             var sl = min(recentLow, e30 * 0.998)
@@ -2358,7 +2367,9 @@ class BotStrategyChartView @JvmOverloads constructor(
         }
 
         // Render Clean Active SL / TP Risk Management
-        val lastAndeanSigIdx = if (showAndeanStrategy && andeanSignals.isNotEmpty()) andeanSignals.indexOfLast { it == 1 || it == -1 } else -1
+        val lastAndeanAnySig = if (showAndeanStrategy && andeanSignals.isNotEmpty()) andeanSignals.lastOrNull { it != 0 } ?: 0 else 0
+        val isAndeanPositionOpen = (lastAndeanAnySig == 1 || lastAndeanAnySig == -1)
+        val lastAndeanSigIdx = if (showAndeanStrategy && isAndeanPositionOpen) andeanSignals.indexOfLast { it == 1 || it == -1 } else -1
         val hasExplicitRisk = explicitStopLoss > 0.0 && explicitTakeProfit > 0.0 && explicitIsLong != null
         if ((showAndeanStrategy && lastAndeanSigIdx >= 0 && lastAndeanSigIdx in andeanSlSeries.indices) || (showDualRibbon && lastDualRibbonSigIdx >= 0 && lastDualRibbonSigIdx in dualRibbonSlSeries.indices) || hasExplicitRisk) {
             val lastSig = if (hasExplicitRisk) {
