@@ -970,10 +970,10 @@ async function evaluateAndeanEmaStrategy(coin = "BTC", candles) {
   let lastExitBuyIdx = -1;
   let lastExitSellIdx = -1;
 
-  let lastEmaBullCross = -999;
-  let lastEmaBearCross = -999;
-  let lastAndeanBullCross = -999;
-  let lastAndeanBearCross = -999;
+  let lastEmaBullCross = -9999;
+  let lastEmaBearCross = -9999;
+  let lastAndeanBullCross = -9999;
+  let lastAndeanBearCross = -9999;
 
   let entryPrice = 0;
   let returnSl = 0;
@@ -981,6 +981,7 @@ async function evaluateAndeanEmaStrategy(coin = "BTC", candles) {
 
   for (let i = 1; i < n; i++) {
     const c = closePrices[i];
+    const o = openPrices[i];
     const e7 = ema7[i];
     const e30 = ema30[i];
     const prevE7 = ema7[i - 1];
@@ -1003,54 +1004,62 @@ async function evaluateAndeanEmaStrategy(coin = "BTC", candles) {
 
     if (isEmaBullCross) {
       lastEmaBullCross = i;
-      lastEmaBearCross = -999;
+      lastEmaBearCross = -9999;
     }
     if (isEmaBearCross) {
       lastEmaBearCross = i;
-      lastEmaBullCross = -999;
+      lastEmaBullCross = -9999;
     }
     if (isAndeanBullCross) {
       lastAndeanBullCross = i;
-      lastAndeanBearCross = -999;
+      lastAndeanBearCross = -9999;
     }
     if (isAndeanBearCross) {
       lastAndeanBearCross = i;
-      lastAndeanBullCross = -999;
+      lastAndeanBullCross = -9999;
     }
+
+    let exitTriggeredThisBar = false;
 
     // 1. Process EXITS for active positions (Extended window <= 6 candles)
     if (posState === "IN_SELL") { // In Short
-      const diffExit = Math.abs(lastEmaBullCross - lastAndeanBullCross);
-      const exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 6;
+      const hasBothExitBullCrosses = (lastEmaBullCross >= 0 && lastAndeanBullCross >= 0);
+      const diffExit = hasBothExitBullCrosses ? Math.abs(lastEmaBullCross - lastAndeanBullCross) : 9999;
+      const exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && hasBothExitBullCrosses && diffExit <= 6;
       if (exitTriggeredNow) {
         posState = "NEUTRAL";
         lastExitSellIdx = i;
-        lastEmaBullCross = -999;
-        lastAndeanBullCross = -999;
+        exitTriggeredThisBar = true;
+        lastEmaBullCross = -9999;
+        lastAndeanBullCross = -9999;
       }
     } else if (posState === "IN_BUY") { // In Long
-      const diffExit = Math.abs(lastEmaBearCross - lastAndeanBearCross);
-      const exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 6;
+      const hasBothExitBearCrosses = (lastEmaBearCross >= 0 && lastAndeanBearCross >= 0);
+      const diffExit = hasBothExitBearCrosses ? Math.abs(lastEmaBearCross - lastAndeanBearCross) : 9999;
+      const exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && hasBothExitBearCrosses && diffExit <= 6;
       if (exitTriggeredNow) {
         posState = "NEUTRAL";
         lastExitBuyIdx = i;
-        lastEmaBearCross = -999;
-        lastAndeanBearCross = -999;
+        exitTriggeredThisBar = true;
+        lastEmaBearCross = -9999;
+        lastAndeanBearCross = -9999;
       }
     }
 
-    // 2. Process ENTRIES if NEUTRAL
-    if (posState === "NEUTRAL") {
-      // SHORT ENTRY: Below EMA 200 & 233 baseline, and dual bearish cross within <= 3 candles
-      const diffShort = Math.abs(lastEmaBearCross - lastAndeanBearCross);
-      const shortTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffShort <= 3;
-      const isBelowBaseline = (baselineMin <= 0 || c < baselineMin);
+    // 2. Process ENTRIES ONLY if NEUTRAL and NO exit happened on this exact bar
+    if (posState === "NEUTRAL" && !exitTriggeredThisBar) {
+      // SHORT ENTRY: Full candle broken below EMA 200 & 233 baseline, and dual bearish cross within <= 3 candles
+      const hasBothBearCrosses = (lastEmaBearCross >= 0 && lastAndeanBearCross >= 0);
+      const diffShort = hasBothBearCrosses ? Math.abs(lastEmaBearCross - lastAndeanBearCross) : 9999;
+      const shortTriggeredNow = (isEmaBearCross || isAndeanBearCross) && hasBothBearCrosses && diffShort <= 3;
+      // Strict full candle breakout check: both open and close must be strictly below baselineMin
+      const isBrokenBelowBaseline = (baselineMin <= 0 || (Math.max(c, o) < baselineMin));
 
-      if (shortTriggeredNow && isBelowBaseline) {
+      if (shortTriggeredNow && isBrokenBelowBaseline) {
         posState = "IN_SELL";
         lastSellSignalIdx = i;
-        lastEmaBearCross = -999;
-        lastAndeanBearCross = -999;
+        lastEmaBearCross = -9999;
+        lastAndeanBearCross = -9999;
 
         const recentHigh = Math.max(...highPrices.slice(Math.max(0, i - 10), i + 1));
         let sl = Math.max(recentHigh, e30 * 1.002);
@@ -1062,16 +1071,18 @@ async function evaluateAndeanEmaStrategy(coin = "BTC", candles) {
         returnSl = sl;
         returnTp = tp;
       } else {
-        // LONG ENTRY: Above EMA 200 & 233 baseline, and dual bullish cross within <= 3 candles
-        const diffLong = Math.abs(lastEmaBullCross - lastAndeanBullCross);
-        const longTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffLong <= 3;
-        const isAboveBaseline = (baselineMax <= 0 || c > baselineMax);
+        // LONG ENTRY: Full candle broken above EMA 200 & 233 baseline, and dual bullish cross within <= 3 candles
+        const hasBothBullCrosses = (lastEmaBullCross >= 0 && lastAndeanBullCross >= 0);
+        const diffLong = hasBothBullCrosses ? Math.abs(lastEmaBullCross - lastAndeanBullCross) : 9999;
+        const longTriggeredNow = (isEmaBullCross || isAndeanBullCross) && hasBothBullCrosses && diffLong <= 3;
+        // Strict full candle breakout check: both open and close must be strictly above baselineMax
+        const isBrokenAboveBaseline = (baselineMax <= 0 || (Math.min(c, o) > baselineMax));
 
-        if (longTriggeredNow && isAboveBaseline) {
+        if (longTriggeredNow && isBrokenAboveBaseline) {
           posState = "IN_BUY";
           lastBuySignalIdx = i;
-          lastEmaBullCross = -999;
-          lastAndeanBullCross = -999;
+          lastEmaBullCross = -9999;
+          lastAndeanBullCross = -9999;
 
           const recentLow = Math.min(...lowPrices.slice(Math.max(0, i - 10), i + 1));
           let sl = Math.min(recentLow, e30 * 0.998);
