@@ -916,12 +916,12 @@ function calculateAndeanOscillator(candles, length = 50, sigLength = 9) {
  *      - Both signals must occur within at most 3 candles of each other (|t1 - t2| <= 3).
  *      - Price strictly above EMA 200 & EMA 233 channel.
  * 
- * 4. Dual-Confirmation Exit Setup (Window <= 3 candles):
+ * 4. Dual-Confirmation Exit Setup (Window <= 6 candles):
  *    - SHORT Exit:
- *      - EMA 7 crosses above EMA 30 AND Andean Bear (red) crosses below Bull (green) within <= 3 candles.
- *      - If one crosses but the second does not occur within 3 candles, ignore and stay in position.
+ *      - EMA 7 crosses above EMA 30 AND Andean Bear (red) crosses below Bull (green) within <= 6 candles.
+ *      - If one crosses but the second does not occur within 6 candles, ignore and stay in position.
  *    - LONG Exit:
- *      - EMA 7 crosses below EMA 30 AND Andean Bull (green) crosses below Bear (red) within <= 3 candles.
+ *      - EMA 7 crosses below EMA 30 AND Andean Bull (green) crosses below Bear (red) within <= 6 candles.
  */
 async function evaluateAndeanEmaStrategy(coin = "BTC", candles) {
   if (!candles || candles.length < 50) {
@@ -1018,10 +1018,10 @@ async function evaluateAndeanEmaStrategy(coin = "BTC", candles) {
       lastAndeanBullCross = -999;
     }
 
-    // 1. Process EXITS for active positions
+    // 1. Process EXITS for active positions (Extended window <= 6 candles)
     if (posState === "IN_SELL") { // In Short
       const diffExit = Math.abs(lastEmaBullCross - lastAndeanBullCross);
-      const exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 3;
+      const exitTriggeredNow = (isEmaBullCross || isAndeanBullCross) && diffExit <= 6;
       if (exitTriggeredNow) {
         posState = "NEUTRAL";
         lastExitSellIdx = i;
@@ -1030,7 +1030,7 @@ async function evaluateAndeanEmaStrategy(coin = "BTC", candles) {
       }
     } else if (posState === "IN_BUY") { // In Long
       const diffExit = Math.abs(lastEmaBearCross - lastAndeanBearCross);
-      const exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 3;
+      const exitTriggeredNow = (isEmaBearCross || isAndeanBearCross) && diffExit <= 6;
       if (exitTriggeredNow) {
         posState = "NEUTRAL";
         lastExitBuyIdx = i;
